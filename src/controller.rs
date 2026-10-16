@@ -1,6 +1,6 @@
-use bevy::{platform::collections::HashMap, prelude::*};
+use bevy::{platform::collections::HashMap, prelude::*, reflect::TypeRegistry};
 use bevy_hanabi::prelude::*;
-use ron::{de::from_str, ser::PrettyConfig};
+use ron::de::from_str;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
@@ -72,7 +72,11 @@ pub fn despawn_all_particle_effects(
     }
 }
 
-pub fn export_effects_to_files(filename: &str, clone: Rc<RefCell<&mut OmagariProject>>) {
+pub fn export_effects_to_files(
+    filename: &str,
+    clone: Rc<RefCell<&mut OmagariProject>>,
+    type_registry: &TypeRegistry,
+) {
     let base = filename.split('.').next().unwrap();
     let other_filename = format!("{}.hanabi.ron", base);
     let mut to_export = ExportedProject::default();
@@ -84,9 +88,7 @@ pub fn export_effects_to_files(filename: &str, clone: Rc<RefCell<&mut OmagariPro
             effect_asset: effect.produce(),
         });
     }
-    let ron_string =
-        ron::ser::to_string_pretty(&to_export, PrettyConfig::new().new_line("\n".to_string()))
-            .unwrap();
+    let ron_string = to_export.to_ron_string(type_registry).unwrap();
     let file_path = Folder::ExportedEffects.full_file_path(other_filename);
     let mut file = File::create(file_path).unwrap();
     file.write_all(ron_string.as_bytes()).unwrap();
@@ -151,3 +153,46 @@ impl Folder{
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every bundled example project must still load, build and export with the
+    /// current bevy_hanabi version.
+    #[test]
+    fn example_projects_load_and_export() {
+        let app_registry = AppTypeRegistry::new_with_derived_types();
+        bevy_hanabi::register_modifiers(&app_registry);
+        register_missing_hanabi_modifiers(&app_registry);
+        let registry = app_registry.read();
+
+        let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/examples");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(examples).unwrap() {
+            let path = entry.unwrap().path();
+            if !path.to_string_lossy().ends_with(".omagari.ron") {
+                continue;
+            }
+            let ron_string = std::fs::read_to_string(&path).unwrap();
+            let project: OmagariProject = from_str(&ron_string)
+                .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
+
+            let mut to_export = ExportedProject::default();
+            for effect in project.effects.iter() {
+                to_export.effects.push(ExportedEffect {
+                    name: effect.name().to_string(),
+                    parent: effect.parent(),
+                    texture_index: effect.texture_index(),
+                    effect_asset: effect.produce(),
+                });
+            }
+            let exported = to_export.to_ron_string(&registry).unwrap();
+            let reloaded = ExportedProject::from_ron_bytes(exported.as_bytes(), &registry)
+                .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
+            assert_eq!(reloaded.effects.len(), project.effects.len());
+            checked += 1;
+        }
+        assert!(checked > 0, "no example projects found");
+    }
+}

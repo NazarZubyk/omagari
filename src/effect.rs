@@ -203,7 +203,7 @@ impl UiProvider for EffectEditor {
                                 if *effect != self.name {
                                     if ui.button(effect).clicked() {
                                         self.parent = Some(effect.clone());
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                             }
