@@ -3,11 +3,11 @@ use bevy::prelude::*;
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::post_process::bloom::Bloom;
-use bevy::render::view::Hdr;
+use bevy::camera::Hdr;
 use bevy::{camera::Viewport, window::PrimaryWindow};
 
 use bevy_egui::{
-    egui::{self, scroll_area::ScrollBarVisibility, Layout},
+    egui::{self, scroll_area::ScrollBarVisibility, LayerId, Layout, Ui, UiBuilder},
     EguiContext, EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass,
     PrimaryEguiContext,
 };
@@ -34,6 +34,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.0, 0.0, 0.0)))
         .add_plugins(DefaultPlugins)
         .add_plugins(HanabiPlugin)
+        .add_plugins(omagari::OmagariPlugin)
         .add_plugins(PanOrbitCameraPlugin)
         .add_plugins(EguiPlugin::default())
         .add_systems(Startup, setup)
@@ -93,8 +94,17 @@ fn app_ui(
     mut res: ResMut<EffectResource>,
     effects: ResMut<Assets<EffectAsset>>,
     curr: Query<Entity, With<ParticleEffect>>,
+    type_registry: Res<AppTypeRegistry>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    // egui 0.36 panels are shown inside a root `Ui` instead of directly on the context.
+    let mut viewport_ui = Ui::new(
+        ctx.clone(),
+        "viewport".into(),
+        UiBuilder::new()
+            .layer_id(LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    );
 
     res.context.visible_effects = project
         .effects
@@ -111,9 +121,9 @@ fn app_ui(
         .unwrap_or(&"".to_string())
         .clone();
 
-    egui::TopBottomPanel::top("Toolbar")
+    egui::Panel::top("Toolbar")
         .resizable(false)
-        .show(ctx, |ui| {
+        .show(&mut viewport_ui, |ui| {
             ui.vertical(|ui| {
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
@@ -135,7 +145,11 @@ fn app_ui(
                     }
 
                     if ui.button("🖭 EXPORT").clicked() {
-                        export_effects_to_files(&filename, project.clone());
+                        export_effects_to_files(
+                            &filename,
+                            project.clone(),
+                            &type_registry.read(),
+                        );
                     }
 
                     ui.add_space(10.0);
@@ -167,7 +181,7 @@ fn app_ui(
                                 if let Ok(project) = load_project(&f) {
                                     commands.insert_resource(project);
                                     res.context.filename = Some(f.clone());
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         }
@@ -199,9 +213,9 @@ fn app_ui(
         .rect
         .height();
 
-    let left = egui::SidePanel::left("EffectsPanel")
+    let left = egui::Panel::left("EffectsPanel")
         .resizable(true)
-        .show(ctx, |ui| {
+        .show(&mut viewport_ui, |ui| {
             egui::ScrollArea::vertical()
                 .scroll_bar_visibility(ScrollBarVisibility::VisibleWhenNeeded)
                 .show(ui, |ui| {
