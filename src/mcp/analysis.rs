@@ -1774,6 +1774,27 @@ pub fn analyze_project(
             fmt_vec3(end_mean)
         );
         overall_extent = overall_extent.max(max_dist);
+        // How much each editor stage hides: the FLOOR stage's floor is at y = 0, and
+        // the OBJECT stage's rock is roughly an ellipsoid 2 units wide, 1.6 tall.
+        let path_len = samples.iter().map(|s| s.path.len()).sum::<usize>().max(1);
+        let below_floor = ys.iter().filter(|y| **y < -0.01).count() * 100 / ys.len().max(1);
+        let inside_rock = samples
+            .iter()
+            .flat_map(|s| s.path.iter())
+            .filter(|p| Vec3::new(p.x, p.y / 0.8, p.z).length() < 0.85)
+            .count()
+            * 100
+            / path_len;
+        let mut hidden = Vec::new();
+        if below_floor >= 10 {
+            hidden.push(format!("FLOOR hides {}% (below y = 0)", below_floor));
+        }
+        if inside_rock >= 10 {
+            hidden.push(format!("OBJECT hides {}% (inside the rock)", inside_rock));
+        }
+        if !hidden.is_empty() {
+            let _ = writeln!(out, "  editor stages: {}; AIR shows all", hidden.join(", "));
+        }
 
         describe_size(effect, samples, &mut out);
         describe_color(effect, samples, &mut out);

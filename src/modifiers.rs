@@ -25,8 +25,8 @@ where
 
 #[derive(Serialize, Deserialize)]
 pub struct SetAttributeModifierEditor {
-    attr: Attribute,
-    attr_expr: ExprWriterEditor,
+    pub(crate) attr: Attribute,
+    pub(crate) attr_expr: ExprWriterEditor,
 }
 
 impl SetAttributeModifierEditor {
@@ -77,7 +77,7 @@ impl Default for SetAttributeModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct InheritAttributeModifierEditor {
-    attr: Attribute,
+    pub(crate) attr: Attribute,
 }
 
 impl InheritAttributeModifierEditor {
@@ -124,9 +124,9 @@ impl Default for InheritAttributeModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct SetVelocityCircleModifierEditor {
-    center_expr: ExprWriterEditor,
-    axis_expr: ExprWriterEditor,
-    speed_expr: ExprWriterEditor,
+    pub(crate) center_expr: ExprWriterEditor,
+    pub(crate) axis_expr: ExprWriterEditor,
+    pub(crate) speed_expr: ExprWriterEditor,
 }
 
 impl SetVelocityCircleModifierEditor {
@@ -173,8 +173,8 @@ impl Default for SetVelocityCircleModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct SetVelocitySphereModifierEditor {
-    center_expr: ExprWriterEditor,
-    speed_expr: ExprWriterEditor,
+    pub(crate) center_expr: ExprWriterEditor,
+    pub(crate) speed_expr: ExprWriterEditor,
 }
 
 impl SetVelocitySphereModifierEditor {
@@ -216,9 +216,9 @@ impl Default for SetVelocitySphereModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct SetVelocityTangentModifierEditor {
-    origin_expr: ExprWriterEditor,
-    axis_expr: ExprWriterEditor,
-    speed_expr: ExprWriterEditor,
+    pub(crate) origin_expr: ExprWriterEditor,
+    pub(crate) axis_expr: ExprWriterEditor,
+    pub(crate) speed_expr: ExprWriterEditor,
 }
 
 impl SetVelocityTangentModifierEditor {
@@ -268,10 +268,10 @@ impl Default for SetVelocityTangentModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct SetPositionCircleModifierEditor {
-    center_expr: ExprWriterEditor,
-    axis_expr: ExprWriterEditor,
-    radius_expr: ExprWriterEditor,
-    dimension: ShapeDimension,
+    pub(crate) center_expr: ExprWriterEditor,
+    pub(crate) axis_expr: ExprWriterEditor,
+    pub(crate) radius_expr: ExprWriterEditor,
+    pub(crate) dimension: ShapeDimension,
 }
 
 impl SetPositionCircleModifierEditor {
@@ -324,9 +324,9 @@ impl Default for SetPositionCircleModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct SetPositionSphereModifierEditor {
-    center_expr: ExprWriterEditor,
-    radius_expr: ExprWriterEditor,
-    dimension: ShapeDimension,
+    pub(crate) center_expr: ExprWriterEditor,
+    pub(crate) radius_expr: ExprWriterEditor,
+    pub(crate) dimension: ShapeDimension,
 }
 
 impl SetPositionSphereModifierEditor {
@@ -374,7 +374,7 @@ impl Default for SetPositionSphereModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct AccelModifierEditor {
-    accel_expr: ExprWriterEditor,
+    pub(crate) accel_expr: ExprWriterEditor,
 }
 
 impl AccelModifierEditor {
@@ -415,7 +415,7 @@ impl Default for AccelModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct LinearDragModifierEditor {
-    drag_expr: ExprWriterEditor,
+    pub(crate) drag_expr: ExprWriterEditor,
 }
 
 impl LinearDragModifierEditor {
@@ -452,9 +452,9 @@ impl Default for LinearDragModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct EmitSpawnEventModifierEditor {
-    condition: EventEmitCondition,
-    count_expr: ExprWriterEditor,
-    child_index: u32,
+    pub(crate) condition: EventEmitCondition,
+    pub(crate) count_expr: ExprWriterEditor,
+    pub(crate) child_index: u32,
 }
 
 impl EmitSpawnEventModifierEditor {
@@ -504,11 +504,11 @@ impl Default for EmitSpawnEventModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct ConformToSphereModifierEditor {
-    origin_expr: ExprWriterEditor,
-    radius_expr: ExprWriterEditor,
-    influence_dist_expr: ExprWriterEditor,
-    attraction_accel_expr: ExprWriterEditor,
-    max_attraction_speed_expr: ExprWriterEditor,
+    pub(crate) origin_expr: ExprWriterEditor,
+    pub(crate) radius_expr: ExprWriterEditor,
+    pub(crate) influence_dist_expr: ExprWriterEditor,
+    pub(crate) attraction_accel_expr: ExprWriterEditor,
+    pub(crate) max_attraction_speed_expr: ExprWriterEditor,
 }
 
 impl ConformToSphereModifierEditor {
@@ -567,7 +567,7 @@ impl Default for ConformToSphereModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct SizeOverLifetimeModifierEditor {
-    gradient: GradientVec3Editor,
+    pub(crate) gradient: GradientVec3Editor,
 }
 
 impl SizeOverLifetimeModifierEditor {
@@ -607,9 +607,9 @@ impl Default for SizeOverLifetimeModifierEditor {
 
 #[derive(Serialize, Deserialize)]
 pub struct ColorOverLifetimeModifierEditor {
-    gradient: GradientVec4Editor,
-    blend: Option<ColorBlendMode>,
-    mask: Option<ColorBlendMask>,
+    pub(crate) gradient: GradientVec4Editor,
+    pub(crate) blend: Option<ColorBlendMode>,
+    pub(crate) mask: Option<ColorBlendMask>,
 }
 
 impl ColorOverLifetimeModifierEditor {
@@ -674,8 +674,8 @@ impl Default for ColorOverLifetimeModifierEditor {
 }
 
 #[derive(Serialize, Deserialize)]
-struct GradientVec3Editor {
-    g: Vec<(f32, Vec3)>,
+pub(crate) struct GradientVec3Editor {
+    pub(crate) g: Vec<(f32, Vec3)>,
 }
 
 impl GradientVec3Editor {
@@ -717,8 +717,8 @@ impl UiProvider for GradientVec3Editor {
 }
 
 #[derive(Serialize, Deserialize)]
-struct GradientVec4Editor {
-    g: Vec<(f32, Vec4)>,
+pub(crate) struct GradientVec4Editor {
+    pub(crate) g: Vec<(f32, Vec4)>,
 }
 
 impl GradientVec4Editor {

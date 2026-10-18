@@ -11,7 +11,7 @@ Fetch one section at a time with `guide(section: "...")`: workflow, format, spaw
 3. **Save with `write_project(name, ron)`.** It refuses to save on errors and returns the analysis. Fix every ERROR. Read every WARNING; most are real problems.
 4. **Tune with `analyze_project(name)` until the numbers match the intent.** Check: spawn pattern, peak count vs capacity, lifetime, motion extents (is it the right size? does it go up/down/outward?), size in world units, colors and the alpha window. Use `effect: "<name>"` to describe a single effect and save tokens.
 5. **For small changes, edit the saved file directly** (`saved_effects/<name>.omagari.ron`) with your file-edit tool, then call `check_project(name)` or `analyze_project(name)`. This is far cheaper than resending the whole RON.
-6. **Show it to the user with `preview_in_editor(name)`.** Ask what they see and what to change, in words ("too fast", "too dim", "should spread wider"). Section "design" maps common feedback to parameters. This replaces any unsaved edits the user had open in the editor, so say so if they were editing.
+6. **Show it to the user with `preview_in_editor(name, stage)`**, with stage `air`, `floor` or `object` (see section "design"). Ask what they see and what to change, in words ("too fast", "too dim", "should spread wider"). Section "design" maps common feedback to parameters. This replaces any unsaved edits the user had open in the editor, so say so if they were editing.
 7. **Export with `export_project(name, copy_to?)`** when the user is happy. `copy_to` can be the game's asset folder. Remind the user how textures are passed (section "textures").
 
 The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSphere is approximate). Trust it for scale, timing, counts and colors, not for exact looks.
@@ -330,6 +330,41 @@ These pass `check_project`. Copy one, then adjust the numbers.
 )
 ```
 
+### Barrier around an object (looping; preview with stage "object")
+
+```ron
+(
+    effects: [
+        (
+            name: "barrier",
+            parent: None,
+            capacity: 1024,
+            spawner_settings: (count: Single(500.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+            texture_index: Some(5),
+            init_modifiers: [
+                SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.8), Float(1.4))))),
+                SetAttribute((attr: "size", attr_expr: Float(0.05))),
+                SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(1.4), dimension: Surface)),
+                SetVelocityTangent((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), speed_expr: Operator(Uniform(Float(0.3), Float(0.8))))),
+            ],
+            update_modifiers: [
+                ConformToSphereModifier((origin_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(1.4), influence_dist_expr: Float(3.0), attraction_accel_expr: Float(6.0), max_attraction_speed_expr: Float(1.0))),
+            ],
+            render_modifiers: [
+                ColorOverLifetime((
+                    gradient: (g: [(0.0, (0.5, 2.0, 4.0, 0.0)), (0.2, (0.5, 2.5, 5.0, 0.8)), (1.0, (0.3, 1.0, 3.0, 0.0))]),
+                    blend: Some(Overwrite),
+                    mask: Some((15)),
+                )),
+            ],
+        ),
+    ],
+)
+```
+
+The radius (1.4) is just outside the rock; the lower part of the bubble is under the floor, like a dome. For a body in the game, set the radius to the character's size.
+
 ### Explosion with debris (parent → child on death)
 
 ```ron
@@ -391,6 +426,13 @@ These pass `check_project`. Copy one, then adjust the numbers.
 ## Design
 
 **Scale.** Everything is in world units and seconds. The editor camera starts 5 units from the origin and shows about ±2 units; `analyze_project` says when an effect is bigger. Size the effect to the user's game, not to the editor view.
+
+**The editor scene.** Effects play inside a big light gray cube (40 units wide) with grid lines every 1 unit (darker every 5) and small axes at the spawn point (X red, Y green, Z blue). You can refer the user to the grid ("each spark should travel about 2 squares"). The toolbar has a STAGE button, and `preview_in_editor` takes a `stage`, for where the effect plays:
+- `air`: the spawn point is in the middle of the room, nothing nearby. Shows everything, including particles that fall.
+- `floor`: the floor is at y = 0, under the spawn point, like ground in a game. Particles below y = 0 are hidden; `analyze_project` warns about that.
+- `object`: a rock about 2 units wide (radius ~1, 1.6 tall) is centered on the spawn point and rests on the floor. Use it for shields, barriers, auras and hit effects on a body; particles inside the rock are hidden.
+
+Pick the stage that matches how the game uses the effect. The BG button switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow.
 
 **Typical values** (1 unit = 1 m):
 

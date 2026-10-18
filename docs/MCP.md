@@ -16,7 +16,13 @@ Claude ──MCP (stdio)──▶ omagari --mcp ──writes──▶ saved_effe
 
 ## Setup
 
-1. Build once, so the server starts quickly:
+1. Build once, so the server starts quickly. Double-click `start.bat` in the repository folder: it builds everything and opens the editor. From a terminal:
+
+   ```bash
+   start.bat
+   ```
+
+   or build without opening the editor:
 
    ```bash
    cargo build --release --features editor
@@ -32,13 +38,14 @@ Claude ──MCP (stdio)──▶ omagari --mcp ──writes──▶ saved_effe
 
    Then ask Claude to copy exports into your game, using `export_project`'s `copy_to` argument.
 
-3. To watch effects, start the editor next to Claude and leave it open:
-
-   ```bash
-   cargo run --release --features editor
-   ```
+3. To watch effects, open the editor with `start.bat` (or `cargo run --release --features editor`) and leave it open next to Claude. You don't start the MCP server yourself; Claude Code starts it when needed.
 
    The editor picks up preview requests every quarter second. If it isn't running, a request waits and loads the next time the editor starts.
+
+   Effects play inside a big light gray cube (40 units wide) with a 1-unit grid on every face (darker lines every 5 units) and small axes at the spawn point (X red, Y green, Z blue), so you keep your orientation while rotating and can judge sizes. Two toolbar buttons change the scene:
+
+   - **STAGE** sets where the effect plays: **AIR** (middle of the room, nothing nearby; you see everything, including particles that fall), **FLOOR** (the floor is right at the spawn point, like ground in a game; particles below it are hidden) and **OBJECT** (a rock about 2 units wide sits on the spawn point, for shields, barriers and auras). Claude can also choose the stage when it asks for a preview.
+   - **BG** cycles through a light room, a dark room and black. Glow is easier to judge on dark or black.
 
 ## Using it
 
@@ -92,7 +99,7 @@ OK: no errors.
 | `check_project` | Validation only. |
 | `analyze_project` | Validation plus the CPU simulation and text description. `effect` limits it to one effect, `samples` sets the accuracy. |
 | `export_project` | Writes `exported_effects/<name>.hanabi.ron`, and with `copy_to` also a copy elsewhere. |
-| `preview_in_editor` | Asks the running editor to load and play a saved project. Returns only whether the editor picked it up. |
+| `preview_in_editor` | Asks the running editor to load and play a saved project, optionally in a given stage (`air`, `floor`, `object`). Returns only whether the editor picked it up. |
 
 ## Token use
 
@@ -108,7 +115,7 @@ OK: no errors.
 
 ## Troubleshooting
 
-- **The `omagari` server fails to start or times out:** build it first (step 1). The first `cargo run` after source changes recompiles; on Windows that fails while the editor (the same `.exe`) is running, so close the editor, build, and restart both. You can also set `MCP_TIMEOUT=60000` for Claude Code.
-- **"no editor picked it up within 3s":** the editor isn't running, or runs from a different folder. Start it from this repository with `cargo run --release --features editor`.
-- **Textures are missing in the editor:** start it with `cargo run` from the repository root, not by launching `target/release/omagari.exe` directly, so Bevy finds `assets/`.
+- **The `omagari` server fails to start or times out:** build it first (step 1). The first `cargo run` after source changes recompiles; on Windows that fails while the editor (the same `.exe`) is running, so close the editor, run `start.bat`, and restart Claude's session. You can also set `MCP_TIMEOUT=60000` for Claude Code.
+- **"no editor picked it up within 3s":** the editor isn't running, or runs from a different folder. Start it with `start.bat`.
+- **Textures are missing in the editor:** start it with `start.bat` or `cargo run` from the repository root. Launching `target/release/omagari.exe` directly only finds `assets/` if `BEVY_ASSET_ROOT` points to the repository, which `start.bat` sets.
 - **The effect is invisible in the game but fine in the editor:** the game must pass the particle textures to `EffectComplex::spawn` in the editor's order (see the guide's "Textures" section), and needs a camera with HDR and bloom for colors above 1.0 to glow.

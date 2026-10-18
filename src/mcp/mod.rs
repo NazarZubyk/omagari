@@ -198,7 +198,14 @@ fn tool_list() -> Value {
             "description": "Ask the running Omagari editor to load a saved project and play it, so the USER can watch it. You get no image back, only whether the editor picked up the request.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "name": name_prop },
+                "properties": {
+                    "name": name_prop,
+                    "stage": {
+                        "type": "string",
+                        "enum": ["air", "floor", "object"],
+                        "description": "Scene to play it in: \"air\" (middle of an empty room), \"floor\" (floor at y = 0), \"object\" (a ~2-unit rock centered on the spawn point, floor under it). Omit to keep the user's current choice."
+                    }
+                },
                 "required": ["name"]
             }
         }
@@ -286,13 +293,21 @@ fn call_tool(name: &str, args: &Value, registry: &bevy::prelude::AppTypeRegistry
                 ));
             }
             let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+            let stage = match str_arg("stage") {
+                None => String::new(),
+                Some(s @ ("air" | "floor" | "object")) => s.to_string(),
+                Some(other) => return Err(format!("unknown stage \"{}\": use air, floor or object", other)),
+            };
             let request = Folder::SavedEffects.full_file_path(PREVIEW_REQUEST_FILE.to_string());
-            fs::write(&request, &file_name).map_err(|e| format!("{}: {}", request.display(), e))?;
+            fs::write(&request, format!("{}
+{}", file_name, stage))
+                .map_err(|e| format!("{}: {}", request.display(), e))?;
             // The editor deletes the request once it has loaded the project.
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(3) {
                 if !request.exists() {
-                    return Ok(format!("The editor loaded {} and is playing it for the user.", file_name));
+                    let in_stage = if stage.is_empty() { String::new() } else { format!(" in the {} stage", stage) };
+                    return Ok(format!("The editor loaded {} and is playing it for the user{}.", file_name, in_stage));
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
