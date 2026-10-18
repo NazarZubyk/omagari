@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "omagari": {
+      "command": "cargo",
+      "args": ["run", "--release", "--quiet", "--features", "editor", "--", "--mcp"]
+    }
+  }
+}
