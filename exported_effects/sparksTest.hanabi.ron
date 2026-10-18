@@ -1,0 +1,143 @@
+(
+    effects: [
+        (
+            name: "spark",
+            parent: None,
+            texture_index: Some(2),
+            effect_asset: (
+                name: "spark",
+                capacity: 16384,
+                spawner: (
+                    count: Single(500.0),
+                    spawn_duration: Single(1.0),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                z_layer_2d: 0.0,
+                simulation_space: Global,
+                simulation_condition: WhenVisible,
+                prng_seed: 0,
+                init_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "lifetime",
+                            value: "#1",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "size",
+                            value: "#2",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::position::SetPositionSphereModifier": (
+                            center: "#3",
+                            radius: "#4",
+                            dimension: Surface,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::velocity::SetVelocitySphereModifier": (
+                            center: "#5",
+                            speed: "#6",
+                        ),
+                    },
+                ],
+                update_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::accel::AccelModifier": (
+                            accel: "#11",
+                        ),
+                    },
+                ],
+                render_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::output::ColorOverLifetimeModifier": (
+                            gradient: (
+                                keys: [
+                                    (
+                                        ratio: 0.0,
+                                        value: (0.0, 4.0, 4.0, 0.0),
+                                    ),
+                                    (
+                                        ratio: 0.1,
+                                        value: (0.0, 4.0, 4.0, 1.0),
+                                    ),
+                                    (
+                                        ratio: 0.3,
+                                        value: (4.0, 4.0, 0.0, 1.0),
+                                    ),
+                                    (
+                                        ratio: 0.6,
+                                        value: (4.0, 0.0, 0.0, 0.0),
+                                    ),
+                                    (
+                                        ratio: 1.0,
+                                        value: (4.0, 0.0, 0.0, 0.0),
+                                    ),
+                                ],
+                            ),
+                            blend: Overwrite,
+                            mask: (15),
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::ParticleTextureModifier": (
+                            texture_slot: "#12",
+                            sample_mapping: ModulateOpacityFromR,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::OrientModifier": (
+                            mode: AlongVelocity,
+                            rotation: None,
+                        ),
+                    },
+                ],
+                motion_integration: PostUpdate,
+                module: (
+                    expressions: [
+                        Literal(Scalar(Float(1.5))),
+                        Literal(Scalar(Float(0.05))),
+                        Literal(Vector(Vec3((0.0, 0.0, 0.0)))),
+                        Literal(Scalar(Float(0.2))),
+                        Literal(Vector(Vec3((0.0, 0.0, 0.0)))),
+                        Literal(Scalar(Float(2.0))),
+                        BuiltIn((
+                            operator: Rand(Vector((
+                                elem_type: Float,
+                                count: 3,
+                            ))),
+                        )),
+                        Literal(Vector(Vec3((2.0, 2.0, 2.0)))),
+                        Binary(
+                            op: Mul,
+                            left: "#7",
+                            right: "#8",
+                        ),
+                        Literal(Vector(Vec3((-0.0, -3.0, -0.0)))),
+                        Binary(
+                            op: Sub,
+                            left: "#9",
+                            right: "#10",
+                        ),
+                        Literal(Scalar(Uint(0))),
+                    ],
+                    properties: [],
+                    texture_layout: (
+                        layout: [
+                            (
+                                name: "color",
+                            ),
+                        ],
+                    ),
+                ),
+                alpha_mode: Blend,
+                mesh: None,
+            ),
+        ),
+    ],
+)
