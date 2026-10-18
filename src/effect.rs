@@ -153,14 +153,14 @@ enum ProducedModifier {
 
 #[derive(Serialize, Deserialize)]
 pub struct EffectEditor {
-    name: String,
-    parent: Option<String>,
-    capacity: u32,
-    spawner_settings: SpawnerSettings,
-    texture_index: Option<usize>,
-    init_modifiers: Vec<ModifierEditor>,
-    update_modifiers: Vec<ModifierEditor>,
-    render_modifiers: Vec<RenderModifierEditor>,
+    pub(crate) name: String,
+    pub(crate) parent: Option<String>,
+    pub(crate) capacity: u32,
+    pub(crate) spawner_settings: SpawnerSettings,
+    pub(crate) texture_index: Option<usize>,
+    pub(crate) init_modifiers: Vec<ModifierEditor>,
+    pub(crate) update_modifiers: Vec<ModifierEditor>,
+    pub(crate) render_modifiers: Vec<RenderModifierEditor>,
 }
 
 impl UiProvider for EffectEditor {

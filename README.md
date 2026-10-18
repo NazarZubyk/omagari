@@ -26,6 +26,8 @@ cd omagari/
 cargo run --release --features editor
 ```
 
+On Windows you can also double-click `start.bat`, which builds the editor (and the MCP server, see below) and opens it.
+
 - Omagari uses Hanabi's public API only, utilizing a set of serializable proxy editors that together compose a project file that you can save and load.
 
 - Omagari project files should be named `{project_name}.omagari.ron`.
@@ -35,6 +37,10 @@ cargo run --release --features editor
 - Exported files will be named `{project_name}.hanabi.ron`.
 
 - All delete ('`X`') buttons require right-click activation for safety.
+
+### Creating effects with Claude
+
+Omagari includes an MCP server (`omagari --mcp`) that lets Claude Code create, check, tune and export effects. Claude doesn't get images: the server validates projects and simulates them on the CPU to describe them in text, and you watch the result in the open editor. See [docs/MCP.md](docs/MCP.md) for setup and usage.
 
 ### Using exported effects in a game
 
