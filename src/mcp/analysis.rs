@@ -1364,7 +1364,7 @@ pub fn resolve_for_analysis(project: &ProjectV2, values: &[(String, ParamValue)]
 }
 
 /// How a layer is attached, in words.
-fn attach_text(project: &ProjectV2, attach: &AttachDef) -> String {
+pub(crate) fn attach_text(project: &ProjectV2, attach: &AttachDef) -> String {
     let socket = |name: &str| match project.socket(name) {
         Some(s) => match &s.node {
             Some(node) => format!("socket \"{}\" (node \"{}\" + offset {})", name, node, fmt_vec3(s.offset)),
@@ -1680,16 +1680,26 @@ fn check_layer_bindings(d: &mut Diagnostics, project: &ProjectV2, layer: &Partic
     };
     match &layer.rate {
         Some(Binding::Const(rate)) if *rate < 0.0 => d.error(name, format!("rate {} is below 0", rate)),
-        Some(Binding::Param(param, keys)) => {
-            float_param(d, "rate", param);
+        Some(binding @ (Binding::Param(..) | Binding::Age(_))) => {
+            let keys = binding.keys().unwrap_or_default();
+            let over = match binding.param() {
+                Some(param) => {
+                    float_param(d, "rate", param);
+                    "parameter value"
+                }
+                None => "age",
+            };
             if keys.is_empty() {
                 d.error(name, "rate curve has no keys");
             }
             if keys.windows(2).any(|w| w[1].0 < w[0].0) {
-                d.error(name, "rate curve keys must be sorted by parameter value");
+                d.error(name, format!("rate curve keys must be sorted by {}", over));
             }
             if keys.iter().any(|(_, v)| *v < 0.0) {
                 d.error(name, "rate curve has a value below 0");
+            }
+            if binding.reads_age() && keys.iter().any(|(t, _)| *t < 0.0) {
+                d.warn(name, "rate curve over age has keys below 0 s; the age starts at 0");
             }
         }
         _ => {}
@@ -2137,7 +2147,9 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
                 d.error(&label, format!("node \"{}\" is not a node {}; the socket would sit at the target root", node, model.place));
             }
         }
-        if !layers.iter().any(|l| l.attach.socket_names().contains(&socket.name.as_str())) {
+        let used = layers.iter().any(|l| l.attach.socket_names().contains(&socket.name.as_str()))
+            || project.shape_layers().any(|(_, l)| l.attach.socket_names().contains(&socket.name.as_str()));
+        if !used {
             d.warn(&label, "not used by any layer");
         }
     }
@@ -2398,6 +2410,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
     }
 
     super::surface_check::check_surface_layers(&mut d, project, assets_root);
+    super::shape_check::check_shape_layers(&mut d, project, model_nodes.as_ref());
 
     match package_string(project) {
         Ok(text) => match ProjectV2::from_ron_str_with_warnings(&text) {
@@ -3366,6 +3379,13 @@ fn bindings_text(project: &ProjectV2, layer: &ParticlesLayerDef) -> Vec<String> 
             let keys: Vec<String> = keys.iter().map(|(x, v)| format!("{}→{}/s", fmt_num(*x), fmt_num(*v))).collect();
             lines.push(format!("rate: curve over \"{}\": {} (steady stream, replaces the spawner's count)", p, keys.join(", ")));
         }
+        Some(Binding::Age(keys)) => {
+            let keys: Vec<String> = keys.iter().map(|(x, v)| format!("{} s→{}/s", fmt_num(*x), fmt_num(*v))).collect();
+            lines.push(format!(
+                "rate: curve over the layer's age (seconds since it started, or since its trigger / While switched it on): {} (steady stream; the simulation uses its value at age 0)",
+                keys.join(", ")
+            ));
+        }
         None => {}
     }
     if let Some(v) = &layer.visible {
@@ -3524,6 +3544,7 @@ fn parameters_report(project: &ProjectV2, n_samples: usize, sets: &[(String, Par
         }
     }
     super::surface_check::surface_sets_report(project, sets, only_effect, out);
+    super::shape_check::shape_sets_report(project, sets, only_effect, out);
     for (effect, rows) in effects.iter().zip(rows.iter()) {
         if only_effect.is_some_and(|o| o != effect.name) {
             continue;
@@ -3745,9 +3766,17 @@ pub fn analyze_project_with_sets(
             super::surface_check::describe_surface_layer(project, index, layer, &mut out);
         }
     }
+    for (index, layer) in project.shape_layers() {
+        if only_effect.is_none_or(|o| o == layer.name) {
+            super::shape_check::describe_shape_layer(project, index, layer, &mut out);
+        }
+    }
 
     if only_effect.is_none() && effects.is_empty() {
         let _ = writeln!(out, "\n## Whole project\n  no particle layers");
+        if let Some(text) = super::shape_check::shapes_lifecycle_text(project) {
+            let _ = writeln!(out, "  {}", text);
+        }
     } else if only_effect.is_none() {
         let _ = writeln!(out, "\n## Whole project");
         let peak = total_alive.iter().cloned().fold(0.0, f32::max);
@@ -3879,7 +3908,7 @@ mod tests {
             assert!(report.contains("## Whole project"), "{}", report);
             checked += 1;
         }
-        assert!(checked >= 14, "only {} recipes found", checked);
+        assert!(checked >= 22, "only {} recipes found", checked);
     }
 
     fn has(list: &[String], needle: &str) -> bool {

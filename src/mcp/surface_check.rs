@@ -1,6 +1,7 @@
 //! Checks and descriptions of surface layers (P4) for `check_project` and
-//! `analyze_project`. Surface layers are not simulated: their look is
-//! computed from the bindings at parameter values and described in words.
+//! `analyze_project`, and of the effect material they share with shape
+//! layers (`shape_check.rs`). Surface layers are not simulated: their look
+//! is computed from the bindings at parameter values and described in words.
 
 use std::fmt::Write;
 use std::path::Path;
@@ -35,7 +36,7 @@ pub fn preview_target_model(project: &ProjectV2, assets_root: &Path) -> Option<(
 }
 
 /// A lookup of parameter values for [`EffectMaterialDef::evaluate`].
-fn lookup(values: &[(String, ParamValue)]) -> impl Fn(&str) -> Option<ParamValue> + '_ {
+pub(crate) fn lookup(values: &[(String, ParamValue)]) -> impl Fn(&str) -> Option<ParamValue> + '_ {
     move |name: &str| values.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
 }
 
@@ -134,38 +135,9 @@ pub fn check_surface_layers(d: &mut Diagnostics, project: &ProjectV2, assets_roo
             d.error(name, "fade in / out must be 0 or more seconds");
         }
 
-        // Textures.
+        // Textures, parts and bindings.
         let m = &layer.material;
-        let parts = [("noise_a", m.noise_a.as_ref().map(|n| (&n.texture, &n.strength))), ("noise_b", m.noise_b.as_ref().map(|n| (&n.texture, &n.strength))), ("mask", m.mask.as_ref().map(|k| (&k.texture, &k.strength)))];
-        for (part, slot) in parts {
-            let Some((slot, strength)) = slot else { continue };
-            if slot.asset.trim().is_empty() {
-                let strong = !matches!(strength, Binding::Const(s) if *s <= 0.0);
-                if strong {
-                    d.warn(name, format!("{} has no texture but a strength above 0: that part is off; pick a texture (e.g. the built-in noise)", part));
-                }
-            } else if project.texture(&slot.asset).is_none() {
-                d.error(name, format!("{} texture \"{}\" is not in the assets list", part, slot.asset));
-            }
-        }
-        if m.dissolve.is_some() && m.noise_a.is_none() && m.noise_b.is_none() {
-            d.warn(name, "dissolve breaks the surface up by the noise, but there is no noise A or B: nothing dissolves until the threshold reaches 1");
-        }
-        if let Some(rim) = &m.rim {
-            if matches!(rim.power, Binding::Const(p) if p <= 0.0) {
-                d.warn(name, "rim power must be above 0");
-            }
-        }
-        if let Some(fill) = &m.fill {
-            if let (Binding::Const(from), Binding::Const(to)) = (&fill.from, &fill.to) {
-                if from > to {
-                    d.warn(name, format!("fill from {} is above to {}: nothing shows", fmt_num(*from), fmt_num(*to)));
-                }
-            }
-        }
-
-        // Bindings.
-        check_bindings(d, project, layer);
+        check_material(d, project, name, m, layer.visible.as_ref());
 
         // Opaque Blend overlays hide the model.
         if m.blend == EffectBlendDef::Blend {
@@ -188,9 +160,45 @@ pub fn check_surface_layers(d: &mut Diagnostics, project: &ProjectV2, assets_roo
     }
 }
 
-fn check_bindings(d: &mut Diagnostics, project: &ProjectV2, layer: &SurfaceLayerDef) {
-    let name = layer.name.as_str();
-    let m = &layer.material;
+/// The checks of an effect material (surface and shape layers): texture
+/// slots, parts that need others, curves and the parameters they read, and
+/// the layer's `visible` range.
+pub fn check_material(d: &mut Diagnostics, project: &ProjectV2, name: &str, m: &EffectMaterialDef, visible: Option<&VisibleRangeDef>) {
+    let parts = [
+        ("noise_a", m.noise_a.as_ref().map(|n| (&n.texture, &n.strength))),
+        ("noise_b", m.noise_b.as_ref().map(|n| (&n.texture, &n.strength))),
+        ("mask", m.mask.as_ref().map(|k| (&k.texture, &k.strength))),
+    ];
+    for (part, slot) in parts {
+        let Some((slot, strength)) = slot else { continue };
+        if slot.asset.trim().is_empty() {
+            let strong = !matches!(strength, Binding::Const(s) if *s <= 0.0);
+            if strong {
+                d.warn(name, format!("{} has no texture but a strength above 0: that part is off; pick a texture (e.g. the built-in noise)", part));
+            }
+        } else if project.texture(&slot.asset).is_none() {
+            d.error(name, format!("{} texture \"{}\" is not in the assets list", part, slot.asset));
+        }
+    }
+    if m.dissolve.is_some() && m.noise_a.is_none() && m.noise_b.is_none() {
+        d.warn(name, "dissolve breaks the surface up by the noise, but there is no noise A or B: nothing dissolves until the threshold reaches 1");
+    }
+    if let Some(rim) = &m.rim {
+        if matches!(rim.power, Binding::Const(p) if p <= 0.0) {
+            d.warn(name, "rim power must be above 0");
+        }
+    }
+    if let Some(fill) = &m.fill {
+        if let (Binding::Const(from), Binding::Const(to)) = (&fill.from, &fill.to) {
+            if from > to {
+                d.warn(name, format!("fill from {} is above to {}: nothing shows", fmt_num(*from), fmt_num(*to)));
+            }
+        }
+    }
+    check_bindings(d, project, name, m, visible);
+}
+
+fn check_bindings(d: &mut Diagnostics, project: &ProjectV2, name: &str, m: &EffectMaterialDef, visible: Option<&VisibleRangeDef>) {
     for (what, param) in m.binding_params() {
         match project.param(param).map(|p| p.kind()) {
             None => d.error(name, format!("{} reads \"{}\", which is not a parameter of this package", what, param)),
@@ -200,10 +208,12 @@ fn check_bindings(d: &mut Diagnostics, project: &ProjectV2, layer: &SurfaceLayer
             _ => {}
         }
     }
-    // Curves: keys present and sorted (a Color parameter needs none).
+    // Curves: keys present and sorted (a Color parameter needs none). An
+    // age curve has the "parameter" "" here.
     fn keys<T>(b: &Binding<T>) -> Option<(Vec<f32>, &str)> {
         match b {
             Binding::Param(p, keys) => Some((keys.iter().map(|k| k.0).collect(), p.as_str())),
+            Binding::Age(keys) => Some((keys.iter().map(|k| k.0).collect(), "")),
             Binding::Const(_) => None,
         }
     }
@@ -253,6 +263,18 @@ fn check_bindings(d: &mut Diagnostics, project: &ProjectV2, layer: &SurfaceLayer
         add!("mask.strength", &k.strength);
     }
     for (what, xs, param) in all {
+        if param.is_empty() {
+            if xs.is_empty() {
+                d.error(name, format!("{} curve over age has no keys", what));
+            }
+            if xs.windows(2).any(|w| w[1] < w[0]) {
+                d.error(name, format!("{} curve keys must be sorted by age", what));
+            }
+            if xs.iter().any(|x| *x < 0.0) {
+                d.warn(name, format!("{} curve over age has keys below 0 s; the age starts at 0", what));
+            }
+            continue;
+        }
         let is_color_param = project.param(param).is_some_and(|p| p.kind() == ParamKind::Color);
         if is_color_param {
             if !xs.is_empty() {
@@ -267,7 +289,7 @@ fn check_bindings(d: &mut Diagnostics, project: &ProjectV2, layer: &SurfaceLayer
             d.error(name, format!("{} curve keys must be sorted by parameter value", what));
         }
     }
-    if let Some(visible) = &layer.visible {
+    if let Some(visible) = visible {
         match project.param(&visible.param).map(|p| p.kind()) {
             None => d.error(name, format!("visible reads \"{}\", which is not a parameter of this package", visible.param)),
             Some(ParamKind::Color) => {
@@ -284,24 +306,48 @@ fn check_bindings(d: &mut Diagnostics, project: &ProjectV2, layer: &SurfaceLayer
     }
 }
 
-fn color_text(c: Vec4) -> String {
+pub(crate) fn color_text(c: Vec4) -> String {
     format!("{} a{}", color_name(c.truncate()), fmt_num(c.w))
 }
 
-fn mapping_text(mapping: NoiseMappingDef, scale: f32) -> String {
-    match mapping {
-        NoiseMappingDef::Triplanar => format!("triplanar in the rest pose (sticks to the body), {} repeats per metre", fmt_num(scale)),
-        NoiseMappingDef::Uv => format!("by the mesh's UVs, {} repeats per UV square", fmt_num(scale)),
+/// What a material is drawn on, for its description.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MaterialOn {
+    /// A surface layer's copies of the model's meshes.
+    Body,
+    /// A shape layer's mesh.
+    Shape,
+}
+
+fn mapping_text(mapping: NoiseMappingDef, scale: f32, on: MaterialOn) -> String {
+    match (mapping, on) {
+        (NoiseMappingDef::Triplanar, MaterialOn::Body) => {
+            format!("triplanar in the rest pose (sticks to the body), {} repeats per metre", fmt_num(scale))
+        }
+        (NoiseMappingDef::Triplanar, MaterialOn::Shape) => format!(
+            "triplanar in the shape's space, {} repeats per metre (turns with the shape; a growing shape grows through the pattern)",
+            fmt_num(scale)
+        ),
+        (NoiseMappingDef::Uv, MaterialOn::Body) => format!("by the mesh's UVs, {} repeats per UV square", fmt_num(scale)),
+        (NoiseMappingDef::Uv, MaterialOn::Shape) => format!(
+            "by the shape's UVs (u around / along, v up / across), {} repeats per UV square (sticks to the shape as it grows)",
+            fmt_num(scale)
+        ),
     }
 }
 
-fn noise_text(project: &ProjectV2, def: &NoiseDef, v: &NoiseValues) -> String {
+fn noise_text(project: &ProjectV2, def: &NoiseDef, v: &NoiseValues, on: MaterialOn) -> String {
     let speed = v.scroll.length();
     let scroll = if speed <= 1e-6 {
         "still".to_string()
     } else {
-        let metres = match v.mapping {
-            NoiseMappingDef::Triplanar if v.scale > 0.0 => format!(" ≈ {} m/s on the body", fmt_num(speed / v.scale)),
+        let metres = match (v.mapping, on) {
+            (NoiseMappingDef::Triplanar, MaterialOn::Body) if v.scale > 0.0 => {
+                format!(" ≈ {} m/s on the body", fmt_num(speed / v.scale))
+            }
+            (NoiseMappingDef::Triplanar, MaterialOn::Shape) if v.scale > 0.0 => {
+                format!(" ≈ {} m/s", fmt_num(speed / v.scale))
+            }
             _ => String::new(),
         };
         format!("scrolls ({}, {}) squares/s{}", fmt_num(v.scroll.x), fmt_num(v.scroll.y), metres)
@@ -312,7 +358,75 @@ fn noise_text(project: &ProjectV2, def: &NoiseDef, v: &NoiseValues) -> String {
         None => format!("\"{}\" MISSING (off)", def.texture.asset),
     };
     let contrast = if (v.contrast - 1.0).abs() > 1e-4 { format!(", contrast {}", fmt_num(v.contrast)) } else { String::new() };
-    format!("{}; {}; {}; strength {}{}", texture, mapping_text(v.mapping, v.scale), scroll, fmt_num(v.strength), contrast)
+    format!("{}; {}; {}; strength {}{}", texture, mapping_text(v.mapping, v.scale, on), scroll, fmt_num(v.strength), contrast)
+}
+
+/// The material's optional parts in words (noise, rim, pulse, flash,
+/// dissolve, fill, mask), one line each, at the values `v`.
+pub fn describe_material(project: &ProjectV2, m: &EffectMaterialDef, v: &EffectValues, on: MaterialOn, out: &mut String) {
+    for (label, def, value) in [("noise A", &m.noise_a, v.noise_a), ("noise B", &m.noise_b, v.noise_b)] {
+        if let (Some(def), Some(value)) = (def, value) {
+            let _ = writeln!(out, "  {}: {}", label, noise_text(project, def, &value, on));
+        }
+    }
+    if let Some((c, p, i)) = v.rim {
+        let width = if p < 1.5 { "wide, soft" } else if p < 3.5 { "medium" } else { "thin" };
+        let _ = writeln!(out, "  rim: {} × {} on the edges facing away from the camera ({} rim, power {})", color_text(c), fmt_num(i), width, fmt_num(p));
+    }
+    if let Some((f, a)) = v.pulse {
+        let _ = writeln!(
+            out,
+            "  pulse: {} per second; opacity breathes between {} and 1 of its value",
+            fmt_num(f),
+            fmt_num((1.0 - a).clamp(0.0, 1.0))
+        );
+    }
+    if let Some(flash) = &m.flash {
+        let source = match flash.param() {
+            Some(p) => {
+                let pulses: Vec<String> = project
+                    .triggers
+                    .iter()
+                    .flat_map(|t| t.pulses.iter().filter(|q| q.param == p).map(move |q| (t, q)))
+                    .map(|(t, q)| format!("trigger \"{}\" pulses it to {} for {} s", t.name, fmt_num(q.to), fmt_num(q.decay)))
+                    .collect();
+                format!("follows \"{}\"{}", p, if pulses.is_empty() { String::new() } else { format!(" ({})", pulses.join("; ")) })
+            }
+            None if flash.reads_age() => format!("over the layer's age ({} at age 0)", fmt_num(v.flash)),
+            None => format!("constant {}", fmt_num(v.flash)),
+        };
+        let _ = writeln!(out, "  flash: {} (1 = three times as bright, half-way to opaque)", source);
+    }
+    if let Some((t, w, c)) = v.dissolve {
+        let _ = writeln!(out, "  dissolve: threshold {} (0 whole, 1 gone), edge {} wide, edge colour {}", fmt_num(t), fmt_num(w), color_text(c));
+    }
+    if let Some((axis, from, to, soft)) = v.fill {
+        let what = match on {
+            MaterialOn::Body => "the model",
+            MaterialOn::Shape => "the shape",
+        };
+        let ends = if axis.is_uv() { "0..1 of the texture coordinate" } else { "0 = low end, 1 = high end" };
+        let _ = writeln!(
+            out,
+            "  fill: shows the band {}..{} of {} along {} ({}), soft edges {}",
+            fmt_num(from),
+            fmt_num(to),
+            what,
+            axis.name(),
+            ends,
+            fmt_num(soft)
+        );
+    }
+    if let (Some(def), Some((mapping, channel, scale, strength))) = (&m.mask, v.mask) {
+        let _ = writeln!(
+            out,
+            "  mask: \"{}\" {}; {}; strength {}",
+            def.texture.asset,
+            channel.name(),
+            mapping_text(mapping, scale, on),
+            fmt_num(strength)
+        );
+    }
 }
 
 /// One line of a layer's look at a parameter set, for comparisons.
@@ -371,60 +485,10 @@ pub fn describe_surface_layer(project: &ProjectV2, index: usize, layer: &Surface
         fmt_num(v.opacity),
         fmt_num(cover_opacity(layer, &v))
     );
-    for (label, def, value) in [("noise A", &m.noise_a, v.noise_a), ("noise B", &m.noise_b, v.noise_b)] {
-        if let (Some(def), Some(value)) = (def, value) {
-            let _ = writeln!(out, "  {}: {}", label, noise_text(project, def, &value));
-        }
-    }
-    if let Some((c, p, i)) = v.rim {
-        let width = if p < 1.5 { "wide, soft" } else if p < 3.5 { "medium" } else { "thin" };
-        let _ = writeln!(out, "  rim: {} × {} on the edges facing away from the camera ({} rim, power {})", color_text(c), fmt_num(i), width, fmt_num(p));
-    }
-    if let Some((f, a)) = v.pulse {
-        let _ = writeln!(
-            out,
-            "  pulse: {} per second; opacity breathes between {} and 1 of its value",
-            fmt_num(f),
-            fmt_num((1.0 - a).clamp(0.0, 1.0))
-        );
-    }
-    if let Some(flash) = &m.flash {
-        let source = match flash.param() {
-            Some(p) => {
-                let pulses: Vec<String> = project
-                    .triggers
-                    .iter()
-                    .flat_map(|t| t.pulses.iter().filter(|q| q.param == p).map(move |q| (t, q)))
-                    .map(|(t, q)| format!("trigger \"{}\" pulses it to {} for {} s", t.name, fmt_num(q.to), fmt_num(q.decay)))
-                    .collect();
-                format!("follows \"{}\"{}", p, if pulses.is_empty() { String::new() } else { format!(" ({})", pulses.join("; ")) })
-            }
-            None => format!("constant {}", fmt_num(v.flash)),
-        };
-        let _ = writeln!(out, "  flash: {} (1 = three times as bright, half-way to opaque)", source);
-    }
-    if let Some((t, w, c)) = v.dissolve {
-        let _ = writeln!(out, "  dissolve: threshold {} (0 whole, 1 gone), edge {} wide, edge colour {}", fmt_num(t), fmt_num(w), color_text(c));
-    }
-    if let Some((axis, from, to, soft)) = v.fill {
-        let _ = writeln!(
-            out,
-            "  fill: shows the band {}..{} of the model along {} (0 = low end, 1 = high end), soft edges {}",
-            fmt_num(from),
-            fmt_num(to),
-            axis.name(),
-            fmt_num(soft)
-        );
-    }
-    if let (Some(def), Some((mapping, channel, scale, strength))) = (&m.mask, v.mask) {
-        let _ = writeln!(
-            out,
-            "  mask: \"{}\" {}; {}; strength {}",
-            def.texture.asset,
-            channel.name(),
-            mapping_text(mapping, scale),
-            fmt_num(strength)
-        );
+    describe_material(project, m, &v, MaterialOn::Body, out);
+    if !m.age_bindings().is_empty() {
+        let ages: Vec<String> = m.age_bindings().iter().map(|(w, last)| format!("{} (keys to {} s)", w, fmt_num(*last))).collect();
+        let _ = writeln!(out, "  over its age (seconds since the effect started; a restart starts it again): {}", ages.join(", "));
     }
     let shells: Vec<String> = layer
         .shells
