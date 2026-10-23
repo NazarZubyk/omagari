@@ -1,0 +1,125 @@
+(
+    version: 2,
+    assets: [
+        (id: "glow1", kind: Texture((path: "omagari://textures/glow1.png"))),
+        (id: "spark1", kind: Texture((path: "omagari://textures/spark1.png"))),
+    ],
+    layers: [
+        Particles((
+            name: "cone fountain",
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 512,
+                spawner: (count: Single(150.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(1.0), Float(1.4))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.05))),
+                    SetPositionCone3d((height_expr: Float(0.2), base_radius_expr: Float(0.03), top_radius_expr: Float(0.12), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Normalized(Operator(Add(Operator(Attr("position")), Vec3((0.0, 0.05, 0.0)))))), Operator(Uniform(Float(3.5), Float(4.5))))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel_expr: Vec3((0.0, -9.8, 0.0)))),
+                    KillAabb((center_expr: Vec3((0.0, -50.0, 0.0)), half_size_expr: Vec3((50.0, 50.0, 50.0)), kill_inside: true)),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (0.4, 1.2, 3.0, 0.0)), (0.1, (0.4, 1.2, 3.0, 1.0)), (1.0, (0.1, 0.3, 1.5, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+        Particles((
+            name: "swirl aura",
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 512,
+                spawner: (count: Single(100.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(1.5), Float(2.5))))),
+                    SetAttribute((attr: "size", attr_expr: Operator(Uniform(Float(0.03), Float(0.06))))),
+                    SetPositionCircle((center_expr: Vec3((0.0, 0.1, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.6), dimension: Volume)),
+                    SetVelocityTangent((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), speed_expr: Float(1.2))),
+                ],
+                update_modifiers: [
+                    TangentAccel((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), accel_expr: Float(1.5))),
+                    RadialAccel((origin_expr: Vec3((0.0, 0.0, 0.0)), accel_expr: Float(-2.5))),
+                    AccelModifier((accel_expr: Vec3((0.0, 0.6, 0.0)))),
+                    LinearDragModifier((drag_expr: Float(0.8))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (1.0, 0.3, 2.5, 0.0)), (0.2, (1.0, 0.3, 2.5, 1.0)), (1.0, (0.3, 0.1, 1.5, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane, rotation_expr: Some(Operator(Multiply(Age, Float(2.0)))))),
+                ],
+            ),
+        )),
+        Particles((
+            name: "caged sparks",
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("spark1"),
+            effect: (
+                capacity: 512,
+                spawner: (count: Single(60.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                prng_seed: Some(7),
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Float(3.0))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.08))),
+                    SetPositionSphere((center_expr: Vec3((1.5, 1.0, 0.0)), radius_expr: Float(0.05), dimension: Volume)),
+                    SetVelocitySphere((center_expr: Vec3((1.5, 1.0, 0.0)), speed_expr: Operator(Uniform(Float(0.5), Float(1.5))))),
+                ],
+                update_modifiers: [
+                    KillSphere((center_expr: Vec3((1.5, 1.0, 0.0)), radius_expr: Float(0.6), kill_inside: false)),
+                ],
+                render_modifiers: [
+                    SetColor((color: Single((3.0, 1.5, 0.3, 1.0)), blend: Modulate, mask: (15))),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: FaceCameraPosition, rotation_expr: Some(Operator(Multiply(Age, Float(4.0)))))),
+                ],
+            ),
+        )),
+        Particles((
+            name: "pixel dots",
+            simulation_space: Local,
+            play: Loop,
+            texture: None,
+            effect: (
+                capacity: 256,
+                spawner: (count: Single(20.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Float(2.0))),
+                    SetPositionSphere((center_expr: Vec3((-1.5, 1.0, 0.0)), radius_expr: Float(0.4), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 0.2, 0.0)))),
+                ],
+                update_modifiers: [],
+                render_modifiers: [
+                    SetColor((color: Single((0.2, 1.0, 0.4, 1.0)), blend: Overwrite, mask: (15))),
+                    SetSize((size: Single((12.0, 12.0, 12.0)))),
+                    ScreenSpaceSize(()),
+                    Round((roundness_expr: Float(1.0))),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+    ],
+)
