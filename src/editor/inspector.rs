@@ -2,12 +2,13 @@
 //! the preview settings, parameters, triggers and assets.
 
 use bevy_egui::egui::{self, RichText};
-use omagari::format::{LayerDef, ParamValue, ProjectV2};
+use omagari::format::{LayerDef, ProjectV2};
 
 use super::assets::{assets_tab, TexturePreviews};
 use super::camera::PreviewCamera;
 use super::effect::draw_particles_layer;
 use super::package::{motion_panel, sockets_and_fit_panel};
+use super::params_panel::{parameters_tab, triggers_tab};
 use super::problems::{message_list, subject_box, ACCENT};
 use super::scene::{Backdrop, Stage};
 use super::session::{EditorSession, RightTab};
@@ -18,8 +19,8 @@ const TABS: [(RightTab, &str, &str); 6] = [
     (RightTab::Layer, "🔧 LAYER", "Settings of the selected layer"),
     (RightTab::SocketsFit, "⚓ SOCKETS & FIT", "Named points on the target, and size fit"),
     (RightTab::Preview, "🎬 PREVIEW", "Stage, camera, backdrop and target motion of the preview"),
-    (RightTab::Parameters, "PARAMETERS", "Values the game sets at runtime (P2)"),
-    (RightTab::Triggers, "⚡ TRIGGERS", "Events the game fires (P2)"),
+    (RightTab::Parameters, "📈 PARAMETERS", "Values the game sets while the effect plays (intensity, tint, ...)"),
+    (RightTab::Triggers, "⚡ TRIGGERS", "Events the game fires (hit, tick, ...): bursts and pulses"),
     (RightTab::Assets, "🖼 ASSETS", "Textures of the project"),
 ];
 
@@ -57,8 +58,8 @@ pub fn right_panel(
                 message_list(ui, fit_messages);
             }
             RightTab::Preview => preview_tab(ui, project, session, backdrop),
-            RightTab::Parameters => parameters_tab(ui, project),
-            RightTab::Triggers => triggers_tab(ui, project),
+            RightTab::Parameters => parameters_tab(ui, project, session, app),
+            RightTab::Triggers => triggers_tab(ui, project, session, app),
             RightTab::Assets => assets_tab(ui, project, session, previews, game_assets),
         });
 }
@@ -69,7 +70,7 @@ fn layer_tab(ui: &mut egui::Ui, project: &mut ProjectV2, session: &mut EditorSes
         ui.label(RichText::new("Select a layer on the left, or ➕ ADD one.").weak());
         return;
     };
-    let ProjectV2 { layers, assets, .. } = project;
+    let ProjectV2 { layers, assets, parameters, .. } = project;
     let name = layers[index].name().to_string();
     match &mut layers[index] {
         LayerDef::Particles(layer) => {
@@ -81,7 +82,7 @@ fn layer_tab(ui: &mut egui::Ui, project: &mut ProjectV2, session: &mut EditorSes
             });
             subject_box(ui, session, &name);
             ui.add_space(4.0);
-            draw_particles_layer(layer, assets, app, ui, index as u64);
+            draw_particles_layer(layer, assets, parameters, app, ui, index as u64);
         }
     }
 }
@@ -133,33 +134,4 @@ fn preview_tab(ui: &mut egui::Ui, project: &mut ProjectV2, session: &mut EditorS
     ui.label(RichText::new("Model, animation and socket preview come in P3.").weak());
 }
 
-fn parameters_tab(ui: &mut egui::Ui, project: &ProjectV2) {
-    ui.label("Parameters are values the game sets while the effect plays (e.g. intensity 0..1, a tint colour).");
-    ui.label(RichText::new("Editing them and binding layer values to them comes in P2.").weak());
-    ui.separator();
-    if project.parameters.is_empty() {
-        ui.label(RichText::new("This project declares no parameters.").weak());
-    }
-    egui::Grid::new("parameters").striped(true).show(ui, |ui| {
-        for p in project.parameters.iter() {
-            ui.label(&p.name);
-            ui.label(match &p.default {
-                ParamValue::Float(v) => format!("number, default {}", v),
-                ParamValue::Color(c) => format!("colour, default {:?}", c),
-            });
-            ui.end_row();
-        }
-    });
-}
 
-fn triggers_tab(ui: &mut egui::Ui, project: &ProjectV2) {
-    ui.label("Triggers are named one-shot events the game fires (e.g. hit, tick, swing_start).");
-    ui.label(RichText::new("Editing them and playing layers on a trigger comes in P2.").weak());
-    ui.separator();
-    if project.triggers.is_empty() {
-        ui.label(RichText::new("This project declares no triggers.").weak());
-    }
-    for t in project.triggers.iter() {
-        ui.label(&t.name);
-    }
-}

@@ -64,6 +64,9 @@ pub enum Action {
     DeleteAsset(String),
     /// Writes one channel of an asset as a grayscale PNG and adds it.
     ExtractChannel { asset: String, channel: ChannelDef },
+    /// Fires a trigger on the preview, optionally at a random point near the
+    /// target.
+    FireTrigger { name: String, random_point: bool },
     /// Runs the action without asking (the user already confirmed).
     Confirmed(Box<Action>),
 }
@@ -266,6 +269,14 @@ impl ActionContext<'_> {
                 }
             }
             Action::Render => self.render(),
+            Action::FireTrigger { name, random_point } => {
+                self.preview.push(PreviewCommand::Fire { name: name.clone(), random_point });
+                self.status(format!(
+                    "Fired \"{}\"{}",
+                    name,
+                    if random_point { " at a random point near the target" } else { "" }
+                ));
+            }
             Action::Stop => self.preview.push(PreviewCommand::Stop),
             Action::Restart => {
                 self.preview.push(PreviewCommand::Restart);
@@ -502,9 +513,19 @@ impl ActionContext<'_> {
                 if let Some(camera) = request.camera.as_deref().and_then(super::camera::PreviewCamera::parse) {
                     camera.store(&mut loaded);
                 }
-                // The request's stage and motion are viewing choices: the
-                // project still counts as saved.
+                if !request.params.is_empty() {
+                    let preview = loaded.preview.get_or_insert_with(PreviewDef::default);
+                    for (name, value) in request.params.iter() {
+                        preview.params.retain(|(n, _)| n != name);
+                        preview.params.push((name.clone(), *value));
+                    }
+                }
+                // The request's stage, motion and values are viewing
+                // choices: the project still counts as saved.
                 self.replace_project(loaded, Some(filename.clone()), true);
+                if let Some(trigger) = request.trigger {
+                    self.preview.push(PreviewCommand::Fire { name: trigger, random_point: false });
+                }
                 self.status(format!("Previewing {} (requested by Claude)", filename));
             }
             Err(e) => {

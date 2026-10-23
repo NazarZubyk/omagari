@@ -4,10 +4,11 @@ use std::fs::create_dir;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use omagari::format::{PreviewMotion, ProjectV2, TextureAssetDef};
-use omagari::runtime::{apply_texture_settings, InMemoryPackageAssets};
-use omagari::{VfxCommandsExt, VfxControl, VfxPackage};
+use omagari::format::{ParamKind, ParamValue, PreviewMotion, ProjectV2, TextureAssetDef};
+use omagari::runtime::{apply_texture_settings_to, InMemoryPackageAssets};
+use omagari::{TriggerArgs, VfxCommandsExt, VfxControl, VfxPackage};
 
+use crate::editor::params_panel::preview_value;
 use crate::editor::session::EditorSession;
 use crate::editor::AppContext;
 use crate::settings::{GameAssets, GAME_ASSET_SOURCE};
@@ -24,7 +25,7 @@ pub struct EffectResource {
 pub struct PreviewTarget;
 
 /// What the playback buttons, live preview and MCP preview requests ask for.
-#[derive(Message, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Message, Clone, PartialEq, Debug)]
 pub enum PreviewCommand {
     /// Rebuild the package from the open project and play it again: the
     /// running preview instance gets the new package (old particles finish,
@@ -35,7 +36,14 @@ pub enum PreviewCommand {
     /// Remove the preview instances at once (no lingering particles) and
     /// play the project from the start in a new instance.
     Restart,
+    /// Fire a trigger on the preview instance, without a payload or at a
+    /// random point near the target.
+    Fire { name: String, random_point: bool },
 }
+
+/// Frames a preview trigger waits for its instance (spawned the same frame)
+/// before it is dropped.
+const FIRE_WAIT_FRAMES: u32 = 30;
 
 /// The preview package and its instances. Only these instances are touched
 /// by the preview, so other `ParticleEffect`s in the world are left alone.
@@ -51,6 +59,9 @@ pub struct PreviewState {
     /// The textures of the last build and their settings
     /// ([`sync_preview_texture_settings`]).
     pub textures: Vec<(Handle<Image>, TextureAssetDef)>,
+    /// Triggers to fire on the preview instance, with the frames they have
+    /// waited for it.
+    pub pending_fires: Vec<(String, TriggerArgs, u32)>,
 }
 
 pub fn spawn_preview_target(mut commands: Commands) {
@@ -74,11 +85,12 @@ pub fn apply_preview_commands(
     session: Res<EditorSession>,
     mut effects: ResMut<Assets<EffectAsset>>,
     asset_server: Res<AssetServer>,
-    target: Single<Entity, With<PreviewTarget>>,
+    target: Single<(Entity, &GlobalTransform), With<PreviewTarget>>,
     mut state: ResMut<PreviewState>,
     // Both read the packages; only one is used at a time.
     mut packages_or_control: ParamSet<(ResMut<Assets<VfxPackage>>, VfxControl)>,
 ) {
+    let (target, target_transform) = *target;
     for request in requests.read() {
         match request {
             PreviewCommand::Render | PreviewCommand::Restart => {
@@ -105,7 +117,7 @@ pub fn apply_preview_commands(
                 // instances are gone.
                 let handle = packages_or_control.p0().add(package);
                 let mut vfx = packages_or_control.p1();
-                if *request == PreviewCommand::Restart {
+                if matches!(request, PreviewCommand::Restart) {
                     for instance in state.instances.drain(..) {
                         commands.entity(instance).try_despawn();
                     }
@@ -118,7 +130,7 @@ pub fn apply_preview_commands(
                     .last()
                     .is_some_and(|&i| vfx.replace_package(i, handle.clone()));
                 if !replaced {
-                    let instance = commands.spawn_vfx(&handle, *target);
+                    let instance = commands.spawn_vfx(&handle, target);
                     state.instances.push(instance);
                 }
                 state.package = Some(handle);
@@ -131,8 +143,25 @@ pub fn apply_preview_commands(
                     .filter(|&instance| vfx.stop(instance))
                     .collect();
             }
+            PreviewCommand::Fire { name, random_point } => {
+                let args = if *random_point {
+                    random_point_near(target_transform, rand::random(), rand::random(), rand::random())
+                } else {
+                    TriggerArgs::default()
+                };
+                state.pending_fires.push((name.clone(), args, 0));
+            }
         }
     }
+}
+
+/// A trigger payload at a point near the target: within 1 m around it,
+/// 0.3–1.5 m up, pointing away from it (a hit on a body). `a`, `b`, `c` are
+/// random numbers in 0..1.
+pub fn random_point_near(target: &GlobalTransform, a: f32, b: f32, c: f32) -> TriggerArgs {
+    let offset = Vec3::new(a * 2.0 - 1.0, 0.3 + b * 1.2, c * 2.0 - 1.0);
+    let outward = Vec3::new(offset.x, 0.0, offset.z).normalize_or(Vec3::X);
+    TriggerArgs::at(target.translation() + offset).with_direction(outward)
 }
 
 /// Gives the preview's textures the settings the project asks for: Bevy
@@ -141,16 +170,99 @@ pub fn apply_preview_commands(
 /// ones until the editor restarts.
 pub fn sync_preview_texture_settings(state: Res<PreviewState>, mut images: ResMut<Assets<Image>>) {
     for (handle, texture) in state.textures.iter() {
-        let Some(image) = images.get(handle) else { continue };
-        let mut probe = Image {
-            texture_descriptor: image.texture_descriptor.clone(),
-            sampler: image.sampler.clone(),
-            ..default()
-        };
-        if apply_texture_settings(&mut probe, texture) {
-            if let Some(mut image) = images.get_mut(handle) {
-                apply_texture_settings(&mut image, texture);
+        apply_texture_settings_to(&mut images, handle, texture);
+    }
+}
+
+/// What [`drive_preview`] last sent to the preview instance.
+#[derive(Default)]
+pub struct PreviewDrive {
+    instance: Option<Entity>,
+    values: Vec<(String, ParamValue)>,
+    /// Seconds since each auto-fired trigger last fired.
+    auto: Vec<(String, f32)>,
+}
+
+/// Drives the preview instance like a game would: the PARAMETERS tab's
+/// values (`preview.params`, or the "animate" in progress) through
+/// `set_param` (smoothed; a new instance gets them at once), the triggers
+/// fired by the TRIGGERS tab and MCP, and the preview's auto-fire.
+pub fn drive_preview(
+    time: Res<Time>,
+    project: Res<ProjectV2>,
+    mut session: ResMut<EditorSession>,
+    mut state: ResMut<PreviewState>,
+    target: Single<&GlobalTransform, With<PreviewTarget>>,
+    mut vfx: VfxControl,
+    mut drive: Local<PreviewDrive>,
+) {
+    let dt = time.delta_secs();
+    let Some(&instance) = state.instances.last() else {
+        drive.instance = None;
+        state.pending_fires.clear();
+        return;
+    };
+
+    // Parameters.
+    if let Some(animation) = &mut session.param_animation {
+        animation.elapsed += dt;
+    }
+    if session.param_animation.as_ref().is_some_and(|a| a.finished()) {
+        session.param_animation = None;
+    }
+    let wanted: Vec<(String, ParamValue)> = project
+        .parameters
+        .iter()
+        .map(|p| {
+            let value = match &session.param_animation {
+                Some(a) if a.name == p.name && p.kind() == ParamKind::Float => {
+                    ParamValue::Float(p.min + (p.max - p.min) * a.fraction())
+                }
+                _ => preview_value(&project, p),
+            };
+            (p.name.clone(), value)
+        })
+        .collect();
+    let fresh = drive.instance != Some(instance);
+    for (name, value) in wanted.iter() {
+        if fresh {
+            vfx.set_param_now(instance, name, *value);
+        } else if !drive.values.iter().any(|(n, v)| n == name && v == value) {
+            vfx.set_param(instance, name, *value);
+        }
+    }
+    drive.instance = Some(instance);
+    drive.values = wanted;
+
+    // Triggers from the UI and MCP; they wait for an instance spawned this
+    // frame.
+    let fires = std::mem::take(&mut state.pending_fires);
+    for (name, args, waited) in fires {
+        if !vfx.trigger_at(instance, &name, args) && waited < FIRE_WAIT_FRAMES {
+            state.pending_fires.push((name, args, waited + 1));
+        }
+    }
+
+    // Auto-fire.
+    let auto_triggers = project.preview.as_ref().map(|p| p.auto_triggers.clone()).unwrap_or_default();
+    drive.auto.retain(|(name, _)| auto_triggers.iter().any(|(n, _)| n == name));
+    for (name, every) in auto_triggers.iter().filter(|(_, every)| *every > 0.0) {
+        let index = match drive.auto.iter().position(|(n, _)| n == name) {
+            Some(i) => i,
+            None => {
+                drive.auto.push((name.clone(), 0.0));
+                drive.auto.len() - 1
             }
+        };
+        drive.auto[index].1 += dt;
+        if drive.auto[index].1 >= *every {
+            drive.auto[index].1 = drive.auto[index].1.rem_euclid(*every);
+            let args = if session.auto_fire_random {
+                random_point_near(*target, rand::random(), rand::random(), rand::random())
+            } else {
+                TriggerArgs::default()
+            };
+            vfx.trigger_at(instance, name, args);
         }
     }
 }
@@ -383,5 +495,84 @@ mod tests {
     fn export_needs_a_file_name() {
         let dir = std::env::temp_dir();
         assert!(export_package(&sample_project(), "", &dir).is_err());
+    }
+
+    #[test]
+    fn random_trigger_points_are_near_the_target_and_point_outward() {
+        let target = GlobalTransform::from_xyz(10.0, 0.0, 0.0);
+        for (a, b, c) in [(0.0, 0.0, 0.0), (1.0, 1.0, 1.0), (0.5, 0.5, 0.9)] {
+            let args = random_point_near(&target, a, b, c);
+            let offset = args.position.unwrap() - target.translation();
+            assert!(offset.x.abs() <= 1.0 && offset.z.abs() <= 1.0 && offset.y >= 0.3 && offset.y <= 1.5, "{}", offset);
+            let dir = args.direction.unwrap();
+            assert!((dir.length() - 1.0).abs() < 1e-5 && dir.y == 0.0, "{}", dir);
+            assert!(dir.dot(Vec3::new(offset.x, 0.0, offset.z)) >= 0.0, "away from the target");
+        }
+    }
+
+    /// The PARAMETERS tab's values and the TRIGGERS tab's FIRE reach the
+    /// preview instance through the runtime API, like a game's calls.
+    #[test]
+    fn preview_values_and_fired_triggers_reach_the_instance() {
+        use crate::editor::session::ParamAnimation;
+        use omagari::format::ParamValue;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), bevy::image::ImagePlugin::default()))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(0.1)))
+            .init_asset::<EffectAsset>()
+            .add_plugins(omagari::OmagariPlugin)
+            .init_resource::<EditorSession>()
+            .init_resource::<PreviewState>()
+            .add_systems(Startup, spawn_preview_target)
+            .add_systems(Update, drive_preview.before(omagari::runtime::VfxSystems));
+        let project = ProjectV2::from_ron_str(
+            r#"(
+                parameters: [(name: "power", default: Float(0.0), min: 0.0, max: 2.0, smoothing: 0.0)],
+                triggers: [(name: "hit", pulses: [(param: "power", to: 2.0, decay: 1.0)])],
+                layers: [Particles((name: "a"))],
+                preview: Some((params: [("power", Float(0.5))])),
+            )"#,
+        )
+        .unwrap();
+        let package = app.world_mut().resource_scope(|world, mut effects: Mut<Assets<EffectAsset>>| {
+            let server = world.resource::<AssetServer>();
+            VfxPackage::build(project.clone(), &mut (&mut *effects, server), &mut Vec::new())
+        });
+        app.insert_resource(project);
+        let handle = app.world_mut().resource_mut::<Assets<VfxPackage>>().add(package);
+        app.update();
+        let target = app.world_mut().query_filtered::<Entity, With<PreviewTarget>>().single(app.world()).unwrap();
+        let instance = app.world_mut().commands().spawn_vfx(&handle, target);
+        app.world_mut().flush();
+        app.world_mut().resource_mut::<PreviewState>().instances.push(instance);
+        let power = |app: &App| {
+            app.world().get::<omagari::VfxInstance>(instance).unwrap().params().get("power").and_then(|v| v.as_float())
+        };
+
+        app.update();
+        app.update();
+        assert_eq!(power(&app), Some(0.5), "the saved preview value");
+
+        app.world_mut().resource_mut::<EditorSession>().param_animation =
+            Some(ParamAnimation { name: "power".into(), elapsed: 1.0 });
+        app.update();
+        // 1.1 s of 4: 55% of the way up to max 2.
+        assert!((power(&app).unwrap() - 1.1).abs() < 1e-4, "{:?}", power(&app));
+
+        app.world_mut().resource_mut::<EditorSession>().param_animation = None;
+        app.world_mut().resource_mut::<PreviewState>().pending_fires.push(("hit".into(), TriggerArgs::default(), 0));
+        app.update();
+        app.update();
+        let pulsed = power(&app).unwrap();
+        assert!(pulsed > 1.5, "the trigger's pulse: {}", pulsed);
+        assert!(app.world().resource::<PreviewState>().pending_fires.is_empty());
+
+        let mut project = app.world_mut().resource_mut::<ProjectV2>();
+        project.preview.as_mut().unwrap().params[0].1 = ParamValue::Float(0.25);
+        for _ in 0..12 {
+            app.update();
+        }
+        assert_eq!(power(&app), Some(0.25), "a new slider value, after the pulse");
     }
 }

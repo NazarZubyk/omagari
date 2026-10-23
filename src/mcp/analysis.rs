@@ -255,13 +255,54 @@ fn eval(e: &ExprWriterEditor, env: &mut Env) -> Result<Val, String> {
         ExprWriterEditor::Time => Val::F(env.time),
         ExprWriterEditor::Age => env.attrs.get(Attribute::AGE),
         ExprWriterEditor::Operator(op) => eval_op(op, env)?,
-        // The simulation substitutes real values first (`resolve_properties`).
+        // The simulation substitutes real values first (`resolve_for_analysis`).
         ExprWriterEditor::Property(name) => match runtime_property(name) {
             Some(RuntimePropertyType::Float) => Val::F(0.0),
             Some(RuntimePropertyType::Vec3) => Val::V3(Vec3::ZERO),
             None => return Err(format!("Property(\"{}\") is not a runtime property", name)),
         },
+        // Declared parameters are substituted by `resolve_for_analysis`;
+        // what is left is unknown.
+        ExprWriterEditor::Param(name) => {
+            return Err(format!("Param(\"{}\") is not a parameter of this package", name))
+        }
     })
+}
+
+/// Applies `f` to each component of same-typed float values (`args[i]` may
+/// be an f32 when `scalar_ok[i]`); `name` is used in the error.
+fn componentwise(name: &str, args: &[Val], scalar_ok: &[bool], f: impl Fn(&[f32]) -> f32) -> Result<Val, String> {
+    let floats: Vec<Option<(usize, [f32; 4])>> = args.iter().map(|a| a.floats()).collect();
+    let n = floats.iter().flatten().map(|(n, _)| *n).max().unwrap_or(1);
+    let ok = floats.iter().zip(scalar_ok).all(|(v, scalar)| match v {
+        Some((k, _)) => *k == n || (*k == 1 && *scalar),
+        None => false,
+    });
+    if !ok {
+        let types: Vec<&str> = args.iter().map(Val::type_name).collect();
+        return Err(format!(
+            "{} needs values of the same float type (f32, vec2, vec3 or vec4), got ({})",
+            name,
+            types.join(", ")
+        ));
+    }
+    let mut out = [0.0; 4];
+    for (i, slot) in out.iter_mut().enumerate().take(n) {
+        let xs: Vec<f32> = floats
+            .iter()
+            .map(|v| {
+                let (k, c) = v.unwrap();
+                if k == 1 { c[0] } else { c[i] }
+            })
+            .collect();
+        *slot = f(&xs);
+    }
+    Ok(Val::from_floats(n, out))
+}
+
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    let t = if high != low { ((x - low) / (high - low)).clamp(0.0, 1.0) } else if x < low { 0.0 } else { 1.0 };
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn eval_op(op: &ExprOperatorEditor, env: &mut Env) -> Result<Val, String> {
@@ -363,6 +404,28 @@ fn eval_op(op: &ExprOperatorEditor, env: &mut Env) -> Result<Val, String> {
                     a.map_floats(|x| x * inv).unwrap()
                 }
                 _ => return Err(format!("Normalized needs a vector, got {}", a.type_name())),
+            }
+        }
+        O::Mix(a, b, t) => {
+            let args = [eval(a, env)?, eval(b, env)?, eval(t, env)?];
+            componentwise("Mix", &args, &[false, false, true], |x| x[0] + (x[1] - x[0]) * x[2])?
+        }
+        O::Clamp(x, low, high) => {
+            let args = [eval(x, env)?, eval(low, env)?, eval(high, env)?];
+            componentwise("Clamp", &args, &[false, false, false], |x| x[0].max(x[1]).min(x[2]))?
+        }
+        O::SmoothStep(low, high, x) => {
+            let args = [eval(low, env)?, eval(high, env)?, eval(x, env)?];
+            componentwise("SmoothStep", &args, &[false, false, false], |x| smoothstep(x[0], x[1], x[2]))?
+        }
+        O::Min(a, b) | O::Max(a, b) => {
+            let max = matches!(op, O::Max(..));
+            match (eval(a, env)?, eval(b, env)?) {
+                (Val::U(x), Val::U(y)) => Val::U(if max { x.max(y) } else { x.min(y) }),
+                (Val::I(x), Val::I(y)) => Val::I(if max { x.max(y) } else { x.min(y) }),
+                (a, b) => componentwise(op.name(), &[a, b], &[false, false], |x| {
+                    if max { x[0].max(x[1]) } else { x[0].min(x[1]) }
+                })?,
             }
         }
         O::Attr(attr) => env.attrs.get(*attr),
@@ -740,20 +803,9 @@ impl Diagnostics {
 }
 
 fn expr_has_placeholder(e: &ExprWriterEditor) -> bool {
-    use ExprOperatorEditor as O;
-    match e {
-        ExprWriterEditor::Placeholder => true,
-        ExprWriterEditor::Operator(op) => match op.as_ref() {
-            O::Uniform(a, b) | O::Multiply(a, b) | O::Subtract(a, b) | O::Add(a, b) | O::Distance(a, b) => {
-                expr_has_placeholder(a) || expr_has_placeholder(b)
-            }
-            O::Sin(a) | O::Cos(a) | O::Pack4x8UNorm(a) | O::Normalized(a) => expr_has_placeholder(a),
-            O::Vec3(a, b, c) => [a, b, c].iter().any(|x| expr_has_placeholder(x)),
-            O::Vec4(a, b, c, d) => [a, b, c, d].iter().any(|x| expr_has_placeholder(x)),
-            O::Attr(_) | O::ParentAttr(_) => false,
-        },
-        _ => false,
-    }
+    let mut found = false;
+    e.visit(&mut |e| found |= matches!(e, ExprWriterEditor::Placeholder));
+    found
 }
 
 fn modifier_exprs(m: &ModifierEditor) -> Vec<&ExprWriterEditor> {
@@ -769,8 +821,40 @@ fn socket_position(project: &ProjectV2, name: &str) -> Vec3 {
 
 /// A copy of the project whose `Property(...)` reads are replaced by the
 /// values the runtime would write for a still target: segment ends at their
-/// socket positions.
+/// socket positions, the trigger payload of a trigger without one (layer
+/// origin, +Y, strength 1), visibility 1.
 pub fn resolve_properties(project: &ProjectV2) -> ProjectV2 {
+    resolve_for_analysis(project, &[])
+}
+
+/// Value of each parameter for the analysis: `values` where given (and of
+/// the right kind), else the default; Float values clamped.
+pub fn param_values(project: &ProjectV2, values: &[(String, ParamValue)]) -> Vec<(String, ParamValue)> {
+    project
+        .parameters
+        .iter()
+        .map(|p| {
+            let value = values
+                .iter()
+                .find(|(n, v)| *n == p.name && v.kind() == p.kind())
+                .map(|(_, v)| *v)
+                .unwrap_or(p.default);
+            (p.name.clone(), p.clamp(value))
+        })
+        .collect()
+}
+
+/// A copy of the project as the runtime plays it with these parameter
+/// values (missing ones at their default), for the CPU simulation:
+/// `Param(..)` and `Property(..)` reads become literals, `rate` × `visible`
+/// becomes the spawner's count (a steady stream per second when `rate` is
+/// set), a `While` layer below its threshold spawns nothing, and an
+/// `OnTrigger` layer plays as if its trigger fired once at the start.
+/// Reads of unknown parameters are left in place (the type check reports
+/// them).
+pub fn resolve_for_analysis(project: &ProjectV2, values: &[(String, ParamValue)]) -> ProjectV2 {
+    let values = param_values(project, values);
+    let float = |name: &str| values.iter().find(|(n, _)| n == name).and_then(|(_, v)| v.as_float());
     let mut resolved = project.clone();
     for layer in resolved.layers.iter_mut() {
         let Some(layer) = layer.as_particles_mut() else {
@@ -780,18 +864,49 @@ pub fn resolve_properties(project: &ProjectV2) -> ProjectV2 {
             AttachDef::Segment { from, to } => (socket_position(project, from), socket_position(project, to)),
             _ => (Vec3::ZERO, Vec3::ZERO),
         };
-        let effect = &mut layer.effect;
-        for m in effect.init_modifiers.iter_mut().chain(effect.update_modifiers.iter_mut()) {
-            for e in m.exprs_mut() {
-                e.visit_mut(&mut |e| {
-                    if let ExprWriterEditor::Property(name) = e {
-                        match name.as_str() {
-                            "segment_a" => *e = ExprWriterEditor::Vec3(a),
-                            "segment_b" => *e = ExprWriterEditor::Vec3(b),
-                            _ => {}
-                        }
-                    }
-                });
+        let visibility = match &layer.visible {
+            Some(visible) => float(&visible.param).map(|v| visible.factor(v)).unwrap_or(1.0),
+            None => 1.0,
+        };
+        for e in layer.effect.exprs_mut() {
+            e.visit_mut(&mut |e| match e {
+                ExprWriterEditor::Property(name) => match name.as_str() {
+                    "segment_a" => *e = ExprWriterEditor::Vec3(a),
+                    "segment_b" => *e = ExprWriterEditor::Vec3(b),
+                    "trigger_pos" => *e = ExprWriterEditor::Vec3(Vec3::ZERO),
+                    "trigger_dir" => *e = ExprWriterEditor::Vec3(Vec3::Y),
+                    "trigger_strength" => *e = ExprWriterEditor::Float(1.0),
+                    "visibility" => *e = ExprWriterEditor::Float(visibility),
+                    _ => {}
+                },
+                ExprWriterEditor::Param(name) => match values.iter().find(|(n, _)| n == name) {
+                    Some((_, ParamValue::Float(v))) => *e = ExprWriterEditor::Float(*v),
+                    Some((_, ParamValue::Color(c))) => *e = ExprWriterEditor::Vec4(*c),
+                    None => {}
+                },
+                _ => {}
+            });
+        }
+        let spawner = &mut layer.effect.spawner;
+        match layer.rate.as_ref().and_then(|r| r.evaluate(|n| float(n))) {
+            Some(rate) => {
+                spawner.count = CpuValueDef::Single(rate.max(0.0) * visibility);
+                spawner.spawn_duration = CpuValueDef::Single(1.0);
+                spawner.period = CpuValueDef::Single(1.0);
+            }
+            None if visibility < 1.0 => {
+                let [lo, hi] = spawner.count.range();
+                spawner.count = if lo == hi {
+                    CpuValueDef::Single(lo * visibility)
+                } else {
+                    CpuValueDef::Uniform((lo * visibility, hi * visibility))
+                };
+            }
+            None => {}
+        }
+        if let PlayDef::While(param, threshold) = &layer.play {
+            if !float(param).is_some_and(|v| v >= *threshold) {
+                spawner.count = CpuValueDef::Single(0.0);
             }
         }
     }
@@ -978,6 +1093,162 @@ fn check_attach(d: &mut Diagnostics, project: &ProjectV2, layers: &[&ParticlesLa
     }
 }
 
+/// Subject of the messages about a parameter.
+pub fn param_subject(name: &str) -> String {
+    format!("parameter \"{}\"", name)
+}
+
+/// Subject of the messages about a trigger.
+pub fn trigger_subject(name: &str) -> String {
+    format!("trigger \"{}\"", name)
+}
+
+/// Declared parameters and triggers: names, ranges, pulses, use, preview
+/// values.
+fn check_params_and_triggers(d: &mut Diagnostics, project: &ProjectV2) {
+    let mut properties: Vec<(String, &str)> = Vec::new();
+    for (i, p) in project.parameters.iter().enumerate() {
+        let label = param_subject(&p.name);
+        if p.name.trim().is_empty() {
+            d.errors.push("a parameter has an empty name".into());
+            continue;
+        }
+        if project.parameters[..i].iter().any(|q| q.name == p.name) {
+            d.error(&label, "duplicate parameter name; the game and the layers find parameters by name");
+        }
+        let property = param_property_name(&p.name);
+        if let Some((_, other)) = properties.iter().find(|(prop, other)| *prop == property && **other != p.name) {
+            d.error(&label, format!("same hanabi property name as parameter \"{}\"", other));
+        }
+        properties.push((property, &p.name));
+        if p.smoothing < 0.0 || !p.smoothing.is_finite() {
+            d.error(&label, format!("smoothing {} must be 0 (immediate) or more seconds", p.smoothing));
+        }
+        if let ParamValue::Float(default) = p.default {
+            if !(p.min <= p.max) {
+                d.error(&label, format!("min {} is above max {}", p.min, p.max));
+            } else if default < p.min || default > p.max {
+                d.warn(
+                    &label,
+                    format!("default {} is outside [{}, {}]; it is clamped to the range", default, p.min, p.max),
+                );
+            }
+        }
+        if project.param_users(&p.name).is_empty() {
+            d.note(&label, "not used by any layer or pulse; the game can set it, but nothing changes");
+        }
+    }
+    for (i, t) in project.triggers.iter().enumerate() {
+        let label = trigger_subject(&t.name);
+        if t.name.trim().is_empty() {
+            d.errors.push("a trigger has an empty name".into());
+            continue;
+        }
+        if project.triggers[..i].iter().any(|u| u.name == t.name) {
+            d.error(&label, "duplicate trigger name; the game and the layers find triggers by name");
+        }
+        for pulse in t.pulses.iter() {
+            match project.param(&pulse.param).map(|p| p.kind()) {
+                None => d.error(&label, format!("pulse on \"{}\", which is not a parameter", pulse.param)),
+                Some(ParamKind::Color) => d.error(
+                    &label,
+                    format!("pulse on \"{}\", a Color parameter; pulses work on Float parameters only", pulse.param),
+                ),
+                Some(ParamKind::Float) => {}
+            }
+            if pulse.decay < 0.0 || !pulse.decay.is_finite() {
+                d.error(&label, format!("pulse decay {} must be 0 or more seconds", pulse.decay));
+            }
+        }
+        if t.pulses.is_empty() && project.trigger_users(&t.name).is_empty() {
+            d.note(&label, "no layer plays on it and it has no pulses; firing it does nothing");
+        }
+    }
+    if let Some(preview) = &project.preview {
+        for (name, value) in preview.params.iter() {
+            match project.param(name) {
+                None => d.warnings.push(format!("preview value for \"{}\", which is not a parameter", name)),
+                Some(p) if p.kind() != value.kind() => d.warnings.push(format!(
+                    "preview value for \"{}\" is a {}, but the parameter is a {}",
+                    name,
+                    value.kind().name(),
+                    p.kind().name()
+                )),
+                _ => {}
+            }
+        }
+        for (name, every) in preview.auto_triggers.iter() {
+            if project.trigger(name).is_none() {
+                d.warnings.push(format!("preview auto-fires \"{}\", which is not a trigger", name));
+            }
+            if !(*every > 0.0) {
+                d.warnings.push(format!("preview auto-fires \"{}\" every {} s; use more than 0", name, every));
+            }
+        }
+    }
+}
+
+/// A layer's parameter and trigger references: expressions, `rate`,
+/// `visible`, `play`.
+fn check_layer_bindings(d: &mut Diagnostics, project: &ProjectV2, layer: &ParticlesLayerDef) {
+    let name = layer.name.as_str();
+    for param in layer.effect.params_read() {
+        if project.param(&param).is_none() {
+            d.error(name, format!("Param(\"{}\") is not a parameter of this package", param));
+        }
+    }
+    let float_param = |d: &mut Diagnostics, what: &str, param: &str| match project.param(param).map(|p| p.kind()) {
+        None => d.error(name, format!("{} reads \"{}\", which is not a parameter of this package", what, param)),
+        Some(ParamKind::Color) => d.error(name, format!("{} reads \"{}\", a Color parameter; it needs a Float one", what, param)),
+        Some(ParamKind::Float) => {}
+    };
+    match &layer.rate {
+        Some(Binding::Const(rate)) if *rate < 0.0 => d.error(name, format!("rate {} is below 0", rate)),
+        Some(Binding::Param(param, keys)) => {
+            float_param(d, "rate", param);
+            if keys.is_empty() {
+                d.error(name, "rate curve has no keys");
+            }
+            if keys.windows(2).any(|w| w[1].0 < w[0].0) {
+                d.error(name, "rate curve keys must be sorted by parameter value");
+            }
+            if keys.iter().any(|(_, v)| *v < 0.0) {
+                d.error(name, "rate curve has a value below 0");
+            }
+        }
+        _ => {}
+    }
+    if let Some(visible) = &layer.visible {
+        float_param(d, "visible", &visible.param);
+        if visible.from > visible.to {
+            d.error(name, format!("visible from {} is above to {}", visible.from, visible.to));
+        }
+        if visible.fade < 0.0 {
+            d.error(name, format!("visible fade {} must be 0 or more", visible.fade));
+        }
+    }
+    match &layer.play {
+        PlayDef::OnTrigger(trigger) => {
+            if project.trigger(trigger).is_none() {
+                d.error(name, format!("plays on trigger \"{}\", which is not a trigger of this package", trigger));
+            }
+        }
+        PlayDef::While(param, _) => float_param(d, "play While", param),
+        PlayDef::Loop | PlayDef::OnStart => {}
+    }
+    let reads = layer.effect.properties_read();
+    let reads_trigger = reads.iter().any(|p| p.starts_with("trigger_"));
+    if reads_trigger && layer.play.trigger().is_none() {
+        d.warn(
+            name,
+            "reads trigger_pos / trigger_dir / trigger_strength, but only layers with play OnTrigger get them (they stay at the layer origin, +Y, 1)",
+        );
+    }
+    if reads.iter().any(|p| p == "visibility") && layer.visible.is_none() {
+        d.warn(name, "reads Property(\"visibility\"), but the layer has no visible range, so it stays 1");
+    }
+}
+
 /// Texture settings that do not fit the purpose, sprite-sheet grids, and
 /// files Bevy loads in a form particles cannot sample.
 fn check_texture_settings(d: &mut Diagnostics, label: &str, t: &TextureAssetDef, assets_root: &Path) {
@@ -1042,6 +1313,8 @@ fn check_texture_settings(d: &mut Diagnostics, label: &str, t: &TextureAssetDef,
 pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
     let mut d = Diagnostics::default();
     let layers = particle_layers(project);
+    let resolved = resolve_for_analysis(project, &[]);
+    let resolved_layers = particle_layers(&resolved);
 
     if layers.is_empty() {
         d.errors.push("project has no layers".into());
@@ -1092,14 +1365,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         }
     }
 
-    for (what, used) in [
-        ("parameters", !project.parameters.is_empty()),
-        ("triggers", !project.triggers.is_empty()),
-    ] {
-        if used {
-            d.warnings.push(format!("{} are stored but not used by the runtime yet", what));
-        }
-    }
+    check_params_and_triggers(&mut d, project);
 
     for (i, socket) in project.sockets.iter().enumerate() {
         let label = format!("socket \"{}\"", socket.name);
@@ -1159,15 +1425,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         }
 
         check_attach(&mut d, project, &layers, i);
-        if matches!(layer.play, PlayDef::OnTrigger(_) | PlayDef::While(..)) {
-            d.warn(name, format!("play {:?} is not supported yet; the layer plays as authored", layer.play));
-        }
-        if layer.rate.is_some() {
-            d.warn(name, "rate is not used by the runtime yet; the spawner's count applies");
-        }
-        if layer.visible.is_some() {
-            d.warn(name, "visible is not used by the runtime yet; the layer is always visible");
-        }
+        check_layer_bindings(&mut d, project, layer);
 
         if let Some(parent) = &layer.parent {
             if parent == name {
@@ -1193,13 +1451,13 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
             if s.count.range()[1] <= 0.0 {
                 d.warn(name, "spawner count is 0, nothing spawns");
             }
-            if !s.starts_active {
+            if !s.starts_active && !layer.play.is_driven() {
                 d.warn(name, "spawner starts_active is false; game code must activate it");
             }
             if s.cycle_count == 0 && s.period.range()[1] <= 0.0 && s.spawn_duration.range()[1] <= 0.0 {
                 d.warn(name, "spawner repeats forever with period 0 and duration 0: it bursts `count` particles every frame");
             }
-            match layer.play {
+            match &layer.play {
                 PlayDef::Loop if s.cycle_count != 0 => d.warn(
                     name,
                     format!("play is Loop, but the spawner stops after {} cycle(s); use cycle_count 0 or play OnStart", s.cycle_count),
@@ -1207,7 +1465,31 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
                 PlayDef::OnStart if s.cycle_count == 0 => {
                     d.warn(name, "play is OnStart, but the spawner repeats forever (cycle_count 0); use play Loop")
                 }
+                PlayDef::OnTrigger(trigger) if s.cycle_count == 0 => d.warn(
+                    name,
+                    format!(
+                        "play is OnTrigger(\"{}\"), but the spawner repeats forever (cycle_count 0): after the first trigger it never stops; use a finite cycle_count (cycle_count 1 = one burst per trigger)",
+                        trigger
+                    ),
+                ),
                 _ => {}
+            }
+            if layer.rate.is_some() && s.cycle_count != 0 {
+                d.warn(
+                    name,
+                    format!(
+                        "rate is a steady stream per second, but the spawner runs {} cycle(s) only; rate applies only while they run (use cycle_count 0, or bind nothing and use the spawner's count for bursts)",
+                        s.cycle_count
+                    ),
+                );
+            }
+        }
+        if layer.parent.is_some() {
+            if layer.play.is_driven() {
+                d.warn(name, "play OnTrigger / While is ignored on a child layer: its particles are spawned by the parent's particles; give the parent the play mode");
+            }
+            if layer.rate.is_some() {
+                d.warn(name, "rate is ignored on a child layer: its particles are spawned by the parent's particles");
             }
         }
 
@@ -1242,18 +1524,19 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
 
         let errors_before = d.errors.len();
 
-        // Type check with one dry-run particle. Expressions have no branches, so
-        // one evaluation visits every node.
+        // Type check with one dry-run particle, parameters at their defaults.
+        // Expressions have no branches, so one evaluation visits every node.
         let mut rng = StdRng::seed_from_u64(0);
         let parent_attrs = layer.parent.as_ref().map(|_| Attrs::default());
         let mut p = Attrs::default();
-        for m in effect.init_modifiers.iter() {
+        let dry = &resolved_layers[i].effect;
+        for m in dry.init_modifiers.iter() {
             if let Err(e) = apply_init(m, &mut p, parent_attrs.as_ref(), &mut rng, 0.0) {
                 d.error(name, format!("init {}: {}", modifier_name(m), e));
             }
         }
         let mut emissions = Vec::new();
-        for m in effect.update_modifiers.iter() {
+        for m in dry.update_modifiers.iter() {
             if let Err(e) = apply_update(m, &mut p, parent_attrs.as_ref(), &mut rng, 0.0, true, true, &mut emissions) {
                 d.error(name, format!("update {}: {}", modifier_name(m), e));
             }
@@ -1264,10 +1547,11 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         // Skipped when the checks above already failed, to avoid duplicates.
         // Wrong-list modifiers were reported above, so produce()'s own
         // warnings are not repeated.
-        let asset = layer.produce(&mut Vec::new());
+        let params = &project.parameters;
+        let asset = layer.produce(params, &mut Vec::new());
         if d.errors.len() == errors_before {
             let parent_layout =
-                parent_index(&layers, i).map(|pi| layers[pi].produce(&mut Vec::new()).particle_layout());
+                parent_index(&layers, i).map(|pi| layers[pi].produce(params, &mut Vec::new()).particle_layout());
             if let Err(e) = EffectShaderSources::generate(&asset, parent_layout.as_ref(), n_children) {
                 d.error(name, format!("bevy_hanabi shader generation failed: {}", e));
             }
@@ -1603,7 +1887,7 @@ fn simulate_project(project: &ProjectV2, n_samples: usize, seed: u64) -> (Vec<Ef
     let mortal: Vec<bool> = effects
         .iter()
         .map(|e| {
-            let layout = e.produce(&mut Vec::new()).particle_layout();
+            let layout = e.produce(&project.parameters, &mut Vec::new()).particle_layout();
             layout.contains(Attribute::AGE) && layout.contains(Attribute::LIFETIME)
         })
         .collect();
@@ -2107,6 +2391,260 @@ pub fn analyze_project(
     n_samples: usize,
     only_effect: Option<&str>,
 ) -> String {
+    analyze_project_with_sets(project, assets_root, n_samples, only_effect, None)
+}
+
+/// Parameter values for one simulation: (name, value); missing parameters
+/// keep their default.
+pub type ParamSet = Vec<(String, ParamValue)>;
+
+/// The parameter sets analysed when none are given: every Float parameter
+/// at its min, middle and max together (others at their default), with a
+/// label each. Empty without Float parameters.
+pub fn default_param_sets(project: &ProjectV2) -> Vec<(String, ParamSet)> {
+    let floats: Vec<&ParamDef> = project.parameters.iter().filter(|p| p.kind() == ParamKind::Float).collect();
+    if floats.is_empty() {
+        return Vec::new();
+    }
+    [("min", 0.0f32), ("middle", 0.5), ("max", 1.0)]
+        .iter()
+        .map(|(label, f)| {
+            let set: ParamSet = floats
+                .iter()
+                .map(|p| (p.name.clone(), ParamValue::Float(p.min + (p.max - p.min) * f)))
+                .collect();
+            (format!("number parameters at {}", label), set)
+        })
+        .collect()
+}
+
+/// A parameter value in words: `0.5`, `(1, 0.2, 0, 1)`.
+fn param_value_text(value: &ParamValue) -> String {
+    match value {
+        ParamValue::Float(v) => fmt_num(*v),
+        ParamValue::Color(c) => format!("({}, {}, {}, {}) {}", fmt_num(c.x), fmt_num(c.y), fmt_num(c.z), fmt_num(c.w), color_name(c.truncate())),
+    }
+}
+
+/// A set as `a=0.5, tint=(...)`.
+fn param_set_text(set: &[(String, ParamValue)]) -> String {
+    set.iter()
+        .map(|(n, v)| format!("{}={}", n, param_value_text(v)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// How a layer depends on parameters and triggers, in words (empty when it
+/// does not).
+fn bindings_text(project: &ProjectV2, layer: &ParticlesLayerDef) -> Vec<String> {
+    let mut lines = Vec::new();
+    match &layer.play {
+        PlayDef::OnTrigger(t) => lines.push(format!(
+            "play: OnTrigger(\"{}\") — bursts each time the game fires \"{}\" (simulated as fired once at t = 0), not at the start; a restart does not replay it",
+            t, t
+        )),
+        PlayDef::While(p, threshold) => lines.push(format!(
+            "play: While(\"{}\", {}) — emits while {} ≥ {}",
+            p,
+            fmt_num(*threshold),
+            p,
+            fmt_num(*threshold)
+        )),
+        _ => {}
+    }
+    match &layer.rate {
+        Some(Binding::Const(rate)) => lines.push(format!("rate: steady {}/s (replaces the spawner's count)", fmt_num(*rate))),
+        Some(Binding::Param(p, keys)) => {
+            let keys: Vec<String> = keys.iter().map(|(x, v)| format!("{}→{}/s", fmt_num(*x), fmt_num(*v))).collect();
+            lines.push(format!("rate: curve over \"{}\": {} (steady stream, replaces the spawner's count)", p, keys.join(", ")));
+        }
+        None => {}
+    }
+    if let Some(v) = &layer.visible {
+        lines.push(format!(
+            "visible: only while {} is in [{}, {}], fading out over {} outside; multiplies the spawn rate{}",
+            v.param,
+            fmt_num(v.from),
+            fmt_num(v.to),
+            fmt_num(v.fade),
+            if layer.effect.properties_read().iter().any(|p| p == "visibility") {
+                " and alpha (reads Property(\"visibility\"))"
+            } else {
+                "; live particles do not fade (read Property(\"visibility\") for that)"
+            }
+        ));
+    }
+    let read = layer.effect.params_read();
+    if !read.is_empty() {
+        let read: Vec<String> = read
+            .iter()
+            .map(|n| match project.param(n) {
+                Some(p) => format!("{} ({})", n, p.kind().name()),
+                None => format!("{} (unknown)", n),
+            })
+            .collect();
+        lines.push(format!("expressions read parameters: {}", read.join(", ")));
+    }
+    let payload: Vec<String> = layer.effect.properties_read().into_iter().filter(|p| p.starts_with("trigger_")).collect();
+    if !payload.is_empty() {
+        lines.push(format!(
+            "reads the trigger payload ({}): trigger_at puts the burst at the contact point / along its direction",
+            payload.join(", ")
+        ));
+    }
+    lines
+}
+
+/// Colour of a layer's particles at half their life: the mean birth colour
+/// through ColorOverLifetime.
+fn mid_life_color(effect: &ParticleEffectDef, samples: &[Sample]) -> Vec4 {
+    let base = if samples.is_empty() {
+        Vec4::ONE
+    } else {
+        samples.iter().map(|s| base_color(&s.init)).sum::<Vec4>() / samples.len() as f32
+    };
+    match effect.render_modifiers.iter().find_map(|m| match m {
+        RenderModifierEditor::ColorOverLifetime(c) => Some(c),
+        _ => None,
+    }) {
+        None => base,
+        Some(c) => {
+            let g = gradient_eval4(&c.gradient.g, 0.5);
+            let mixed = match c.blend.unwrap_or_default() {
+                ColorBlendMode::Overwrite => g,
+                ColorBlendMode::Modulate => base * g,
+                ColorBlendMode::Add => base + g,
+            };
+            if c.mask.unwrap_or_default().contains(ColorBlendMask::A) { mixed } else { mixed.truncate().extend(base.w) }
+        }
+    }
+}
+
+/// One line about a simulated layer: count, size, colour, reach.
+fn layer_summary(effect: &ParticleEffectDef, sim: &EffectSim) -> String {
+    if let Some(e) = &sim.error {
+        return format!("simulation failed: {}", e);
+    }
+    if sim.samples.is_empty() {
+        return "nothing spawns".into();
+    }
+    let count = if sim.forever {
+        let tail = &sim.alive[sim.alive.len() * 3 / 4..];
+        format!("~{} alive", (tail.iter().sum::<f32>() / tail.len().max(1) as f32).round())
+    } else {
+        format!("~{} in total", sim.births.iter().sum::<f32>().round())
+    };
+    let sizes: Vec<f32> = sim
+        .samples
+        .iter()
+        .filter(|s| s.init.0.iter().any(|(a, _)| *a == Attribute::SIZE))
+        .map(|s| s.init.f32(Attribute::SIZE))
+        .collect();
+    let size = if !sizes.is_empty() {
+        format!("size {}", range_text(&sizes, ""))
+    } else if effect.render_modifiers.iter().any(|m| matches!(m, RenderModifierEditor::SizeOverLifetime(_))) {
+        "size from SizeOverLifetime".into()
+    } else {
+        "size 1 (default)".into()
+    };
+    let c = mid_life_color(effect, &sim.samples);
+    let reach = sim
+        .samples
+        .iter()
+        .flat_map(|s| s.path.iter().chain(std::iter::once(&s.end_pos)))
+        .filter(|p| p.is_finite())
+        .map(|p| p.length())
+        .fold(0.0f32, f32::max);
+    format!(
+        "{}; {}; colour at mid-life {} a{}; reaches {} m",
+        count,
+        size,
+        color_name(c.truncate()),
+        fmt_num(c.w),
+        fmt_num(reach)
+    )
+}
+
+/// The project's parameters and triggers, and the layers simulated at each
+/// parameter set side by side.
+fn parameters_report(project: &ProjectV2, n_samples: usize, sets: &[(String, ParamSet)], only_effect: Option<&str>, out: &mut String) {
+    if project.parameters.is_empty() && project.triggers.is_empty() && sets.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "\n## Parameters and triggers");
+    for p in project.parameters.iter() {
+        let range = match p.kind() {
+            ParamKind::Float => format!(", range [{}, {}]", fmt_num(p.min), fmt_num(p.max)),
+            ParamKind::Color => String::new(),
+        };
+        let users = project.param_users(&p.name);
+        let _ = writeln!(
+            out,
+            "  parameter \"{}\": {}, default {}{}, smoothing {}s; used by {}",
+            p.name,
+            p.kind().name(),
+            param_value_text(&p.default),
+            range,
+            fmt_num(p.smoothing),
+            if users.is_empty() { "nothing".to_string() } else { users.join(", ") }
+        );
+    }
+    for t in project.triggers.iter() {
+        let pulses: Vec<String> = t
+            .pulses
+            .iter()
+            .map(|p| format!("{} jumps to {} and returns over {}s", p.param, fmt_num(p.to), fmt_num(p.decay)))
+            .collect();
+        let layers = project.trigger_users(&t.name);
+        let _ = writeln!(
+            out,
+            "  trigger \"{}\": {}{}",
+            t.name,
+            if layers.is_empty() { "no layer bursts".to_string() } else { format!("bursts {}", layers.join(", ")) },
+            if pulses.is_empty() { String::new() } else { format!("; pulses: {}", pulses.join("; ")) }
+        );
+    }
+    if sets.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(out, "\n## Parameter sets");
+    let effects = particle_layers(project);
+    let mut rows: Vec<Vec<String>> = vec![Vec::new(); effects.len()];
+    for (label, set) in sets.iter() {
+        let values = param_values(project, set);
+        let _ = writeln!(out, "  set {}: {}", label, param_set_text(&values));
+        let resolved = resolve_for_analysis(project, set);
+        let (sims, _) = simulate_project(&resolved, n_samples.clamp(20, 2000), 42);
+        for (i, (effect, sim)) in particle_layers(&resolved).iter().zip(sims.iter()).enumerate() {
+            rows[i].push(layer_summary(&effect.effect, sim));
+        }
+    }
+    for (effect, rows) in effects.iter().zip(rows.iter()) {
+        if only_effect.is_some_and(|o| o != effect.name) {
+            continue;
+        }
+        if rows.windows(2).all(|w| w[0] == w[1]) {
+            let _ = writeln!(out, "  [{}] same in every set: {}", effect.name, rows.first().cloned().unwrap_or_default());
+        } else {
+            let _ = writeln!(out, "  [{}] changes with the parameters:", effect.name);
+            for ((label, _), row) in sets.iter().zip(rows.iter()) {
+                let _ = writeln!(out, "    {}: {}", label, row);
+            }
+        }
+    }
+}
+
+/// [`analyze_project`] at chosen parameter sets: the main report uses the
+/// defaults, then every layer is simulated at each set and compared. `None`
+/// = [`default_param_sets`].
+pub fn analyze_project_with_sets(
+    project: &ProjectV2,
+    assets_root: &Path,
+    n_samples: usize,
+    only_effect: Option<&str>,
+    sets: Option<&[(String, ParamSet)]>,
+) -> String {
     let diagnostics = check_project(project, assets_root);
     let mut out = diagnostics.render();
     if !diagnostics.errors.is_empty() {
@@ -2149,6 +2687,9 @@ pub fn analyze_project(
         let _ = writeln!(out, "  {}", render_text(&effect.effect));
         let _ = writeln!(out, "  space: {}", space_text(project, effect, &effects, i));
         let _ = writeln!(out, "  attach: {}", attach_text(project, &effect.attach));
+        for line in bindings_text(project, effect) {
+            let _ = writeln!(out, "  {}", line);
+        }
         if let Some(e) = &sim.error {
             let _ = writeln!(out, "  simulation failed: {}", e);
             continue;
@@ -2328,6 +2869,15 @@ pub fn analyze_project(
         };
         let _ = writeln!(out, "  farthest particle {} units from the origin: {}", fmt_num(overall_extent), fits);
     }
+    let default_sets;
+    let sets = match sets {
+        Some(sets) => sets,
+        None => {
+            default_sets = default_param_sets(project);
+            &default_sets
+        }
+    };
+    parameters_report(project, n_samples, sets, only_effect, &mut out);
     let _ = writeln!(
         out,
         "\n(CPU approximation, {} samples per layer, 60 updates/s. Spawned at the origin of a still target, Y is up.)",
@@ -2390,7 +2940,7 @@ mod tests {
             );
             let mut produce_warnings = Vec::new();
             for (_, layer) in project.particle_layers() {
-                layer.produce(&mut produce_warnings);
+                layer.produce(&project.parameters, &mut produce_warnings);
             }
             assert!(produce_warnings.is_empty(), "{:?}", produce_warnings);
             let report = analyze_project(&project, &assets_root(), 50, None);
@@ -2472,10 +3022,10 @@ mod tests {
         // Unknown properties are errors.
         let p = layer_project(
             "play: OnStart,",
-            &effect(r#"SetAttribute((attr: "position", attr_expr: Property("trigger_pos")))"#),
+            &effect(r#"SetAttribute((attr: "position", attr_expr: Property("contact_point")))"#),
         );
         let d = check_project(&p, &assets_root());
-        assert!(has(&d.errors, "Property(\"trigger_pos\") is not a runtime property"), "{}", d.render());
+        assert!(has(&d.errors, "Property(\"contact_point\") is not a runtime property"), "{}", d.render());
 
         // Fit: a reference height is needed; Global layers are not scaled.
         let mut p = layer_project("play: OnStart, simulation_space: Global,", &effect(""));
@@ -2752,5 +3302,184 @@ mod tests {
         assert!(d.errors.is_empty() && d.warnings.is_empty(), "{}", d.render());
         let text = package_string(&project).unwrap();
         assert!(text.contains("version: 2") && !text.contains("preview"), "{}", text);
+    }
+
+    /// A project with a layer and the given top-level blocks.
+    fn param_project(blocks: &str, layer_fields: &str, init: &str) -> ProjectV2 {
+        parse(&format!(
+            r#"(
+                version: 2,
+                {}
+                assets: [(id: "spark1", kind: Texture((path: "omagari://textures/spark1.png")))],
+                layers: [Particles((
+                    name: "a",
+                    texture: Some("spark1"),
+                    {}
+                    effect: (
+                        capacity: 64,
+                        spawner: (count: Single(10.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0),
+                        init_modifiers: [SetAttribute((attr: "age", attr_expr: Float(0.0))), SetAttribute((attr: "lifetime", attr_expr: Float(0.5))), {}],
+                        render_modifiers: [ParticleTexture(()), Orient((mode: ParallelCameraDepthPlane))],
+                    ),
+                ))],
+            )"#,
+            blocks, layer_fields, init
+        ))
+    }
+
+    #[test]
+    fn parameter_and_trigger_references_are_checked() {
+        let blocks = r#"
+            parameters: [
+                (name: "power", default: Float(0.5), min: 0.0, max: 1.0),
+                (name: "tint", default: Color((1.0, 0.0, 0.0, 1.0))),
+                (name: "spare", default: Float(2.0), min: 1.0, max: 0.0),
+                (name: "power", default: Float(0.0)),
+            ],
+            triggers: [
+                (name: "tick", pulses: [(param: "tint", to: 1.0, decay: 0.2), (param: "gone", to: 1.0, decay: -1.0)]),
+                (name: "idle"),
+            ],
+            preview: Some((params: [("ghost", Float(1.0)), ("tint", Float(1.0))], auto_triggers: [("nope", 0.0)])),
+        "#;
+        let p = param_project(
+            blocks,
+            r#"play: OnTrigger("boom"), rate: Some(Param("tint", [(0.0, 1.0)])), visible: Some((param: "missing", from: 1.0, to: 0.0, fade: -1.0)),"#,
+            r#"SetAttribute((attr: "size", attr_expr: Param("tint"))), SetAttribute((attr: "position", attr_expr: Operator(Mix(Vec3((0.0, 0.0, 0.0)), Vec3((1.0, 1.0, 1.0)), Param("nope")))))"#,
+        );
+        let d = check_project(&p, &assets_root());
+        for needle in [
+            "duplicate parameter name",
+            "min 1 is above max 0",
+            "pulse on \"tint\", a Color parameter",
+            "pulse on \"gone\", which is not a parameter",
+            "pulse decay -1",
+            "Param(\"nope\") is not a parameter of this package",
+            "rate reads \"tint\", a Color parameter",
+            "visible reads \"missing\", which is not a parameter",
+            "visible from 1 is above to 0",
+            "visible fade -1",
+            "plays on trigger \"boom\", which is not a trigger",
+            "SetAttribute(\"size\") needs f32, got vec4",
+        ] {
+            assert!(has(&d.errors, needle), "{}\n{}", needle, d.render());
+        }
+        for needle in [
+            "preview value for \"ghost\", which is not a parameter",
+            "preview value for \"tint\" is a Float, but the parameter is a Color",
+            "preview auto-fires \"nope\"",
+            "after the first trigger it never stops",
+        ] {
+            assert!(has(&d.warnings, needle), "{}\n{}", needle, d.render());
+        }
+        assert!(has(&d.notes, "[trigger \"idle\"] no layer plays on it"), "{}", d.render());
+        assert!(has(&d.notes, "[parameter \"spare\"] not used"), "{}", d.render());
+        assert!(d.about("parameter \"spare\"").next().is_some(), "messages are grouped by parameter");
+
+        // Payload and visibility reads without the matching layer settings.
+        let p = param_project(
+            r#"parameters: [(name: "power", default: Float(0.5))],"#,
+            "",
+            r#"SetAttribute((attr: "position", attr_expr: Property("trigger_pos"))), SetAttribute((attr: "alpha", attr_expr: Property("visibility")))"#,
+        );
+        let d = check_project(&p, &assets_root());
+        assert!(d.errors.is_empty(), "{}", d.render());
+        assert!(has(&d.warnings, "only layers with play OnTrigger get them"), "{}", d.render());
+        assert!(has(&d.warnings, "has no visible range"), "{}", d.render());
+        assert!(has(&d.notes, "[parameter \"power\"] not used"), "{}", d.render());
+    }
+
+    #[test]
+    fn new_operators_evaluate_and_type_check() {
+        let mut rng = StdRng::seed_from_u64(1);
+        let attrs = Attrs::default();
+        let mut env = Env { rng: &mut rng, attrs: &attrs, parent: None, time: 0.0 };
+        let mut value = |text: &str| eval(&ron::from_str::<ExprWriterEditor>(text).unwrap(), &mut env);
+        assert_eq!(value("Operator(Mix(Float(2.0), Float(4.0), Float(0.25)))"), Ok(Val::F(2.5)));
+        assert_eq!(
+            value("Operator(Mix(Vec3((0.0, 0.0, 0.0)), Vec3((2.0, 4.0, 6.0)), Float(0.5)))"),
+            Ok(Val::V3(Vec3::new(1.0, 2.0, 3.0))),
+            "a vector mix with an f32 fraction"
+        );
+        assert_eq!(value("Operator(Clamp(Float(3.0), Float(0.0), Float(1.0)))"), Ok(Val::F(1.0)));
+        assert_eq!(value("Operator(SmoothStep(Float(0.0), Float(1.0), Float(0.5)))"), Ok(Val::F(0.5)));
+        assert_eq!(value("Operator(SmoothStep(Float(0.0), Float(2.0), Float(3.0)))"), Ok(Val::F(1.0)));
+        assert_eq!(value("Operator(Min(Float(3.0), Float(1.0)))"), Ok(Val::F(1.0)));
+        assert_eq!(value("Operator(Max(U32(3), U32(7)))"), Ok(Val::U(7)));
+        assert!(value("Operator(Clamp(Vec3((0.0, 0.0, 0.0)), Float(0.0), Float(1.0)))").unwrap_err().contains("same float type"));
+        assert!(value("Param(\"x\")").unwrap_err().contains("not a parameter"));
+        assert_eq!(ExprWriterEditor::Operator(Box::new(ExprOperatorEditor::Max(ExprWriterEditor::Float(1.0), ExprWriterEditor::RandFloat))).scalar_range(), Some((1.0, 1.0)));
+        // Every operator has a table row.
+        for info in OPERATORS.iter() {
+            assert_eq!((info.make)().name(), info.name);
+            assert_eq!((info.make)().args().len(), info.args.len(), "{}", info.name);
+        }
+    }
+
+    /// The default parameter sets (min, middle, max) show how a bound rate,
+    /// a parameter-driven size and a While layer change.
+    #[test]
+    fn analysis_compares_parameter_sets() {
+        let p = parse(
+            r#"(
+                version: 2,
+                parameters: [
+                    (name: "power", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.3),
+                    (name: "tint", default: Color((0.2, 1.0, 0.2, 1.0))),
+                ],
+                assets: [(id: "glow1", kind: Texture((path: "omagari://textures/glow1.png")))],
+                layers: [
+                    Particles((
+                        name: "aura",
+                        texture: Some("glow1"),
+                        rate: Some(Param("power", [(0.0, 5.0), (1.0, 50.0)])),
+                        effect: (
+                            capacity: 256,
+                            spawner: (count: Single(10.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0),
+                            init_modifiers: [
+                                SetAttribute((attr: "position", attr_expr: Vec3((0.0, 0.0, 0.0)))),
+                                SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                                SetAttribute((attr: "lifetime", attr_expr: Float(1.0))),
+                                SetAttribute((attr: "size", attr_expr: Operator(Mix(Float(0.1), Float(0.3), Param("power"))))),
+                                SetAttribute((attr: "hdr_color", attr_expr: Param("tint"))),
+                            ],
+                            render_modifiers: [ParticleTexture(()), Orient((mode: ParallelCameraDepthPlane))],
+                        ),
+                    )),
+                    Particles((
+                        name: "sparks",
+                        texture: Some("glow1"),
+                        play: While("power", 0.75),
+                        effect: (
+                            capacity: 64,
+                            spawner: (count: Single(20.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0),
+                            init_modifiers: [SetAttribute((attr: "position", attr_expr: Vec3((0.0, 0.0, 0.0)))), SetAttribute((attr: "age", attr_expr: Float(0.0))), SetAttribute((attr: "lifetime", attr_expr: Float(0.5)))],
+                            render_modifiers: [ParticleTexture(()), Orient((mode: ParallelCameraDepthPlane))],
+                        ),
+                    )),
+                ],
+            )"#,
+        );
+        let d = check_project(&p, &assets_root());
+        assert!(d.errors.is_empty() && d.warnings.is_empty() && d.notes.is_empty(), "{}", d.render());
+        let report = analyze_project(&p, &assets_root(), 100, None);
+        assert!(report.contains("rate: curve over \"power\""), "{}", report);
+        assert!(report.contains("play: While(\"power\", 0.75)"), "{}", report);
+        assert!(report.contains("parameter \"power\": Float, default 0"), "{}", report);
+        assert!(report.contains("set number parameters at max: power=1, tint="), "{}", report);
+        assert!(report.contains("[aura] changes with the parameters:"), "{}", report);
+        assert!(report.contains("number parameters at min: ~5 alive; size 0.1"), "{}", report);
+        let at_max = report.split("number parameters at max: ~").nth(1).unwrap_or_default();
+        let alive: f32 = at_max.split(' ').next().unwrap_or_default().parse().unwrap_or(0.0);
+        assert!((45.0..=55.0).contains(&alive) && at_max.contains("size 0.30 (fixed)"), "{}", report);
+        assert!(report.contains("colour at mid-life green"), "{}", report);
+        assert!(report.contains("number parameters at min: nothing spawns"), "{}", report);
+
+        // Chosen sets; colours too.
+        let red: ParamSet = vec![("tint".into(), ParamValue::Color(Vec4::new(1.0, 0.0, 0.0, 1.0)))];
+        let sets = vec![("red".to_string(), red), ("default".to_string(), Vec::new())];
+        let report = analyze_project_with_sets(&p, &assets_root(), 50, Some("aura"), Some(&sets));
+        assert!(report.contains("red: ~5 alive; size 0.1") && report.contains("colour at mid-life red"), "{}", report);
+        assert!(!report.contains("[sparks]"), "only the asked layer: {}", report);
     }
 }
