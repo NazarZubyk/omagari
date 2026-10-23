@@ -165,6 +165,7 @@ A spawner repeats a cycle: spawn `count` particles spread evenly over `spawn_dur
 - With `cycle_count: 1` the period is ignored.
 - Never combine `cycle_count: 0` with `period: 0.0` and `spawn_duration: 0.0`: that bursts `count` particles every frame.
 - `count`, `spawn_duration` and `period` also accept `Uniform((min, max))`; the analysis uses the mean count.
+- The editor's spawner **presets** are bevy_hanabi's constructors and keep the count (also a `Uniform` range): **Once** = `(count, spawn_duration: Single(0.0), period: Single(0.0), cycle_count: 1)`, **Rate** = `(count, spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0)` (count per second), **Burst** = `(count, spawn_duration: Single(0.0), period, cycle_count: 0)` (count every period).
 - `starts_active: false` or `emit_on_start: false` mean game code has to start the layer; leave both `true`.
 - When the game stops an effect, spawners stop and live particles finish their life, so a looping layer ends smoothly.
 
@@ -183,6 +184,7 @@ All expressions (`*_expr`) are expression trees (section "expressions"). Types m
 | `SetVelocitySphere((center_expr: vec3, speed_expr: f32))` | — | Velocity pointing away from `center` (needs a position set first, otherwise every particle sits on the center and the direction is undefined). |
 | `SetVelocityCircle((center_expr: vec3, axis_expr: vec3, speed_expr: f32))` | — | Velocity pointing away from the axis, in the circle's plane. |
 | `SetVelocityTangent((origin_expr: vec3, axis_expr: vec3, speed_expr: f32))` | — | Velocity tangent around the axis (swirls). Needs a position off the axis. |
+| `SetPositionCone3d((height_expr: f32, base_radius_expr: f32, top_radius_expr: f32, dimension: Volume))` | base circle at the layer origin, opening up +Y | Random position inside a truncated cone (fountains, thrusters, torches); top radius 0 = a point. It always fills the volume (`Surface` is ignored, the check warns) and turns with the emitter. **Init only.** Give the velocity from the position, e.g. `velocity = Normalized(Attr("position")) × speed` for a spray. |
 
 Order matters: set the position before a velocity modifier that reads it. Positions are relative to the target in `Local` space (and to the spawn point in `Global`).
 
@@ -194,8 +196,12 @@ Order matters: set the position before a velocity modifier that reads it. Positi
 | `LinearDragModifier((drag_expr: f32))` | 0 = none, 1–5 typical | Slows particles down; velocity × (1 − drag·dt) each frame. |
 | `ConformToSphereModifier((origin_expr: vec3, radius_expr: f32, influence_dist_expr: f32, attraction_accel_expr: f32, max_attraction_speed_expr: f32))` | — | Pulls particles within `influence_dist` toward a sphere surface. |
 | `EmitSpawnEventModifier((condition: OnDie, count_expr: U32(100), child_index: 0))` | `Always` or `OnDie` | Spawns particles in a child layer. `Always` emits `count` **every frame** per alive particle (60 fps → ×60 per second). See section "hierarchy". |
+| `RadialAccel((origin_expr: vec3, accel_expr: f32))` | m/s², + pushes away, − pulls in | Acceleration along the line from `origin` to the particle: implosions, black holes, keeping a swirl together. |
+| `TangentAccel((origin_expr: vec3, axis_expr: vec3, accel_expr: f32))` | m/s², − turns the other way | Acceleration around the axis through `origin` (direction = axis × (position − origin)): swirls, tornados, auras. Alone it spirals outwards; add a `RadialAccel` pull to keep particles circling. |
+| `KillSphere((center_expr: vec3, radius_expr: f32, kill_inside: false))` | `kill_inside: true` kills inside | Removes particles that leave (or enter) a sphere. |
+| `KillAabb((center_expr: vec3, half_size_expr: vec3, kill_inside: false))` | half the box size per axis | Removes particles that leave (or enter) a box (a floor: center (0, −50, 0), half size (50, 50, 50) with `kill_inside: true`). |
 
-Putting an init modifier in `update_modifiers` (or the reverse) is an error: it is ignored.
+`SetAttribute`, `SetPositionSphere/Circle` and `SetVelocity*` may also be in `update_modifiers`: they then run **every frame** (an animated `sprite_index`, a position on a path with `motion_integration: None`). Putting an init-only modifier (`InheritAttribute`, `SetPositionCone3d`) in `update_modifiers`, or an update-only one (forces, kill, spawn events) in `init_modifiers`, is an error: it is ignored.
 
 ## Expressions
 
@@ -207,8 +213,15 @@ Putting an init modifier in `update_modifiers` (or the reverse) is an error: it 
 | `Vec4((x, y, z, w))` | vec4 | literal |
 | `RandFloat` | f32 | random in [0, 1) |
 | `RandVec3` | vec3 | each component random in [0, 1) (not centered!) |
-| `RandU32` | u32 | random integer |
+| `I32(-2)`, `Bool(true)` | i32, bool | literals |
+| `Vec2((x, y))`, `IVec3((1, 2, 3))`, `UVec2((1, 2))`, `BVec3((true, false, true))` | vec2, ivec2..4, uvec2..4, bvec2..4 | vector literals of every type |
+| `Rand(Vec2)` | the type | random in [0, 1) per component; **float types only** (`F32`, `Vec2`, `Vec3`, `Vec4`) |
+| `RandU32` | — | **an error**: bevy_hanabi 0.19's shaders have no integer random function; use `Operator(Cast(Operator(Multiply(RandFloat, Float(10.0))), U32))` |
 | `Time` | f32 | effect time in seconds |
+| `DeltaTime` | f32 | seconds since the last simulation step |
+| `VirtualTime`, `VirtualDeltaTime`, `RealTime`, `RealDeltaTime` | f32 | the game's virtual clock (pausable) and the real clock |
+| `IsAlive` | bool | whether the particle is alive; **update modifiers only** |
+| `AlphaCutoff` | — | **an error**: broken in bevy_hanabi 0.19 (the shader fails to compile) |
 | `Age` | f32 | the particle's age (same as `Operator(Attr("age"))`) |
 | `Placeholder` | f32 | empty slot, evaluates to 0.0; never leave one |
 | `Operator(Add(a, b))`, `Operator(Subtract(a, b))`, `Operator(Multiply(a, b))` | same as inputs | same types, or a vector with an f32 (`vec3 * f32`) |
@@ -223,6 +236,20 @@ Putting an init modifier in `update_modifiers` (or the reverse) is an error: it 
 | `Operator(Clamp(x, low, high))` | type of x | x kept in [low, high]; all the same type |
 | `Operator(SmoothStep(low, high, x))` | type of x | 0 below low, 1 above high, a smooth S-curve between; all the same type |
 | `Operator(Min(a, b))`, `Operator(Max(a, b))` | type of a | the smaller / larger; same types |
+| `Operator(Divide(a, b))`, `Operator(Remainder(a, b))` | type of a | `a / b`, `a % b` (like Add: same types, or a vector and a number); integer division by 0 gives `a` |
+| `Operator(Abs(x))`, `Sign`, `Floor`, `Ceil`, `Round`, `Fract`, `Saturate` | type of x | per component; `Round` rounds halves to even, `Fract` = x − floor(x), `Saturate` = clamp to [0, 1] |
+| `Operator(Sqrt(x))`, `InvSqrt`, `Exp`, `Exp2`, `Log`, `Log2`, `Tan`, `Asin`, `Acos`, `Atan` | type of x | float math per component; `Asin`/`Acos` of a constant outside −1..1 does not compile (the check reports it) |
+| `Operator(Atan2(y, x))` | type of y | the angle of the point (x, y) |
+| `Operator(Step(edge, x))` | type of x | 1 where x ≥ edge, else 0 |
+| `Operator(Normal(mean, std_dev))` | type of mean | normally distributed random value (floats) |
+| `Operator(Length(v))`, `Operator(Dot(a, b))` | f32 | length; dot product (also integer vectors → i32 / u32) |
+| `Operator(Cross(a, b))` | vec3 | cross product of two vec3 |
+| `Operator(Vec2(x, y))`, `Operator(Vec4XyzW(xyz, w))` | vec2, vec4 | build vectors; `Vec2`/`Vec3`/`Vec4` also from i32, u32 or bool numbers (→ ivec, uvec, bvec) |
+| `Operator(X(v))`, `Y`, `Z`, `W` | element type | one component of a vector (`Z` needs 3, `W` 4 components) |
+| `Operator(GreaterThan(a, b))`, `GreaterThanOrEqual`, `LessThan`, `LessThanOrEqual` | bool / bvecN | comparison per component; same number types |
+| `Operator(All(v))`, `Operator(Any(v))` | bool | all / any component of a bool vector is true |
+| `Operator(Cast(x, I32))` | the type | conversion: a number to any number type (`F32`, `I32`, `U32`, `Bool`; f32 → i32 drops the fraction), a number or a same-size vector to a vector type (`Vec3`, `IVec2`, ...) |
+| `Operator(Pack4x8SNorm(v))`, `Operator(Unpack4x8UNorm(u))`, `Operator(Unpack4x8SNorm(u))` | u32 / vec4 | (un)pack 4 values in −1..1 or 0..1 into a u32 |
 | `Param("intensity")` | f32 / vec4 | a parameter of the project (section "parameters"): f32 for `Float`, vec4 (linear RGBA) for `Color` |
 | `Property("segment_a")`, `Property("segment_b")` | vec3 | ends of a `Segment`-attached layer (section "attach"); the analysis puts them at the sockets' offsets |
 | `Property("trigger_pos")`, `Property("trigger_dir")` | vec3 | position and direction of the last trigger of an `OnTrigger` layer (section "triggers"); the analysis uses the layer origin and +Y |
@@ -230,6 +257,8 @@ Putting an init modifier in `update_modifiers` (or the reverse) is an error: it 
 | `Property("visibility")` | f32 | the layer's `visible` factor, 0..1 (1 without `visible`) |
 | `Operator(Attr("<name>"))` | attribute type | this particle's attribute |
 | `Operator(ParentAttr("<name>"))` | attribute type | the parent particle's attribute (children only) |
+
+`Uniform` and `Normal` need operands whose type bevy_hanabi knows while writing the shader: numbers, random values, attributes, `Cast`. Wrap a `Param`, `Property` or a calculation: `Operator(Uniform(Float(0.1), Operator(Cast(Param("power"), F32))))` (the check reports it otherwise).
 
 Useful building blocks:
 - Random value in a range: `Operator(Uniform(Float(0.8), Float(1.2)))`
@@ -241,6 +270,8 @@ Useful building blocks:
 - Random packed color per particle: `Operator(Pack4x8UNorm(Operator(Vec4(RandFloat, RandFloat, RandFloat, Float(1.0)))))`
 - Grows with a parameter: `Operator(Mix(Float(0.05), Float(0.15), Param("intensity")))`
 - Colour from dim to bright with a parameter: `Operator(Mix(Vec4((0.6, 0.1, 0.9, 1.0)), Vec4((3.0, 0.6, 5.0, 1.0)), Param("intensity")))` into `hdr_color`
+- Flipbook frame over the lifetime (update list, 16 frames): `SetAttribute((attr: "sprite_index", attr_expr: Operator(Cast(Operator(Multiply(Operator(Divide(Age, Operator(Attr("lifetime")))), Float(16.0))), I32))))`
+- Spinning sprites (Orient rotation): `Operator(Multiply(Age, Float(3.0)))` radians
 
 ## Attributes
 
@@ -257,7 +288,9 @@ Useful building blocks:
 | `"alpha"` | f32 | 1.0 | |
 | `"f32_0"`…`"f32_3"`, `"f32x2_0"`…, `"f32x3_0"`…, `"f32x4_0"`…, `"u32_0"`…`"u32_3"` | various | 0 | Free slots, e.g. to pass data to children with `ParentAttr`. |
 
-Others exist (`"id"`, `"particle_counter"`, `"axis_x"`, `"axis_y"`, `"axis_z"`, `"sprite_index"`, `"prev"`, `"next"`, `"ribbon_id"`) but are rarely useful here.
+| `"sprite_index"` | i32 | 0 | The frame a `Flipbook` draws; set it with a `Cast(..., I32)` (section "render"). |
+
+Others exist (`"id"`, `"particle_counter"`, `"axis_x"`, `"axis_y"`, `"axis_z"`, `"prev"`, `"next"`, `"ribbon_id"`) but are rarely useful here (ribbons come later).
 
 ## Render
 
@@ -276,7 +309,26 @@ Others exist (`"id"`, `"particle_counter"`, `"axis_x"`, `"axis_y"`, `"axis_z"`, 
 
 **`Orient((mode: AlongVelocity))`**: `AlongVelocity` (the sprite's X axis follows the velocity: sparks, streaks; motionless particles may vanish), `ParallelCameraDepthPlane` (flat to the screen: puffs, glows), `FaceCameraPosition` (faces the camera). Always add one: without it, particles are flat quads in the effect's XY plane and vanish when seen from the side (the check warns).
 
+`Orient` also takes **`rotation_expr: Some(E)`** (f32 radians, evaluated when drawing): spinning sprites with `Operator(Multiply(Age, Float(3.0)))`. It works with `ParallelCameraDepthPlane` and `FaceCameraPosition` (ignored with `AlongVelocity`, the check warns).
+
+**`SetColor((color: Single((r, g, b, a)), blend: Modulate, mask: (15)))`** sets the colour when drawing, combined with the particle's colour like ColorOverLifetime (`Overwrite`, `Add`, `Modulate`; `mask` `(15)` RGBA, `(7)` RGB, `(8)` alpha only). `Uniform((a, b))` gives every particle the **same** value (bevy_hanabi's render shader has no per-particle seed; the check warns); for per-particle colours set `hdr_color` at birth.
+
+**`SetSize((size: Single((x, y, z))))`** sets the size in metres when drawing; like SizeOverLifetime it replaces the `size` attribute, and the later one in the list wins. `Uniform` has the same limit as SetColor.
+
+**`ScreenSpaceSize(())`**: the size (attribute, SetSize or SizeOverLifetime, placed before it) is read as **screen pixels**, so particles keep their size on screen at any distance (sparkles, dots). Use sizes like 8–32; the check warns below 2 pixels.
+
+**`Round((roundness_expr: Float(1.0)))`** rounds the corners of particle squares: 0 = square, 1 = circle (f32, evaluated when drawing). Untextured round dots: `Round` without `ParticleTexture`.
+
+**`Flipbook(())`** plays a sprite sheet: each particle draws frame `sprite_index` (an i32 attribute; frames count left to right, then top to bottom) of the layer's texture. The grid comes from the texture asset's `grid: Some((rows, cols))` (or the modifier's own `Flipbook((grid: Some((4, 4))))`). Animate the frame with an **update** `SetAttribute` on `"sprite_index"` (section "expressions": "Flipbook frame over the lifetime"; the editor's Update + menu has it). Use `ParticleTexture((sample_mapping: Modulate))` for colour sheets. The check warns about a missing grid, texture sampling, or `sprite_index`. Recipe "Flipbook".
+
+Gradients (ColorOverLifetime, SizeOverLifetime) are linear between keys; bevy_hanabi 0.19 has no other gradient options, and SizeOverLifetime's `screen_space_size` does nothing (use ScreenSpaceSize).
+
 **`alpha_mode`**: `Blend` (normal transparency), `Add` (additive: overlapping particles get brighter, good for glow, fire, magic; black adds nothing), `Premultiply`, `Multiply` (darkens), `Mask(0.5)` (opaque cut-out at that alpha), `Opaque`.
+
+Effect settings (written only when not the default):
+- `motion_integration`: `PostUpdate` (default: `position += velocity × dt` after the update modifiers), `PreUpdate` (before them), `None` (velocity does not move particles; only modifiers that set `position` do, e.g. an update `SetAttribute` on a path; the check warns when velocities are set but nothing moves them). `None` also silences bevy_hanabi's "missing VELOCITY" log for layers that never move.
+- `simulation_condition`: `WhenVisible` (default) or `Always` (keeps simulating off screen, so it is up to date when it comes back into view; costs more).
+- `prng_seed: Some(7)`: a fixed seed for the GPU random numbers (the same random spread every time; another seed gives another variation). Default: bevy_hanabi's seed 0.
 
 ## Textures
 
@@ -320,7 +372,7 @@ Formats: **PNG** (works everywhere), **JPG** (the game needs Bevy's `jpeg` featu
 | `Mask` | Clamp | Linear | black/white shapes |
 | `Gradient` | Clamp | Srgb | colour ramps |
 
-`filter: Some(Nearest)` gives hard pixels (pixel art), default `Linear`. `grid: Some((rows, cols))` marks a sprite sheet (flipbooks come later); it must divide the image evenly. `check_project` warns about settings that fight the purpose (Noise + Clamp, Gradient + Repeat, Noise/Mask + Srgb).
+`filter: Some(Nearest)` gives hard pixels (pixel art), default `Linear`. `grid: Some((rows, cols))` marks a sprite sheet for `Flipbook` (section "render"); it must divide the image evenly. `check_project` warns about settings that fight the purpose (Noise + Clamp, Gradient + Repeat, Noise/Mask + Srgb).
 
 ```ron
 (id: "noise", kind: Texture((path: "vfx/textures/perlin_noise.png", purpose: Noise))),
@@ -518,6 +570,135 @@ For smoke left behind a moving character, switch to `simulation_space: Global` (
 ```
 
 Additive blending adds up where particles overlap, so the colors here are half of what `Blend` would need.
+
+### Cone fountain (looping, additive)
+
+```ron
+(
+    version: 2,
+    assets: [(id: "glow1", kind: Texture((path: "omagari://textures/glow1.png")))],
+    layers: [
+        Particles((
+            name: "fountain",
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 512,
+                spawner: (count: Single(150.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(1.0), Float(1.4))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.05))),
+                    SetPositionCone3d((height_expr: Float(0.2), base_radius_expr: Float(0.03), top_radius_expr: Float(0.12), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Normalized(Operator(Add(Operator(Attr("position")), Vec3((0.0, 0.05, 0.0)))))), Operator(Uniform(Float(3.5), Float(4.5))))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel_expr: Vec3((0.0, -9.8, 0.0)))),
+                    KillAabb((center_expr: Vec3((0.0, -50.0, 0.0)), half_size_expr: Vec3((50.0, 50.0, 50.0)), kill_inside: true)),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (0.4, 1.2, 3.0, 0.0)), (0.1, (0.4, 1.2, 3.0, 1.0)), (1.0, (0.1, 0.3, 1.5, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+    ],
+)
+```
+
+The cone sprays droplets up and outwards (its velocity points from the cone's apex below the origin through each droplet); gravity brings them back, and the `KillAabb` (a box below y = 0, `kill_inside`) removes them at the floor. Narrow the top radius for a jet, widen it for a shower.
+
+### Swirl aura (looping, TangentAccel + RadialAccel, additive)
+
+```ron
+(
+    version: 2,
+    assets: [(id: "glow1", kind: Texture((path: "omagari://textures/glow1.png")))],
+    layers: [
+        Particles((
+            name: "swirl",
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 512,
+                spawner: (count: Single(100.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(1.5), Float(2.5))))),
+                    SetAttribute((attr: "size", attr_expr: Operator(Uniform(Float(0.03), Float(0.06))))),
+                    SetPositionCircle((center_expr: Vec3((0.0, 0.1, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.6), dimension: Volume)),
+                    SetVelocityTangent((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), speed_expr: Float(1.2))),
+                ],
+                update_modifiers: [
+                    TangentAccel((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), accel_expr: Float(1.5))),
+                    RadialAccel((origin_expr: Vec3((0.0, 0.0, 0.0)), accel_expr: Float(-2.5))),
+                    AccelModifier((accel_expr: Vec3((0.0, 0.6, 0.0)))),
+                    LinearDragModifier((drag_expr: Float(0.8))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (1.0, 0.3, 2.5, 0.0)), (0.2, (1.0, 0.3, 2.5, 1.0)), (1.0, (0.3, 0.1, 1.5, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane, rotation_expr: Some(Operator(Multiply(Age, Float(2.0)))))),
+                ],
+            ),
+        )),
+    ],
+)
+```
+
+`TangentAccel` keeps particles turning around the body's vertical axis, the `RadialAccel` pull (negative) keeps them from flying outwards, and a light upward acceleration makes the swirl rise. More tangent acceleration = faster spin; a stronger pull = a tighter ring.
+
+### Flipbook (sprite sheet animated over the lifetime)
+
+```ron
+(
+    version: 2,
+    assets: [(id: "flame_sheet", kind: Texture((path: "vfx/textures/flipbook_4x4.png", grid: Some((4, 4)))))],
+    layers: [
+        Particles((
+            name: "flames",
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("flame_sheet"),
+            effect: (
+                capacity: 128,
+                spawner: (count: Single(12.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Float(1.0))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.5))),
+                    SetPositionCircle((center_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.2), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 0.8, 0.0)))),
+                ],
+                update_modifiers: [
+                    SetAttribute((attr: "sprite_index", attr_expr: Operator(Cast(Operator(Multiply(Operator(Divide(Age, Operator(Attr("lifetime")))), Float(16.0))), I32)))),
+                ],
+                render_modifiers: [
+                    ParticleTexture((sample_mapping: Modulate)),
+                    Flipbook(()),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+    ],
+)
+```
+
+Replace `vfx/textures/flipbook_4x4.png` with the user's sprite sheet (bring it in with `import_asset`, then set `grid: Some((rows, cols))` on the asset) and the `16.0` with rows × columns. Each particle plays the whole sheet once over its life. For a looping animation independent of the lifetime use `Operator(Cast(Operator(Remainder(Operator(Multiply(Age, Float(12.0))), Float(16.0))), I32))` (12 frames per second).
 
 ### Barrier around an object (looping; preview with stage "object")
 
