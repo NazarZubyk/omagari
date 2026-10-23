@@ -1,19 +1,24 @@
 //! The VFX runtime: [`VfxPackage`] assets, instances attached to entities
-//! (sockets, segments, size fit), parameters and triggers, and built-in
-//! textures. Added by [`crate::OmagariPlugin`].
+//! (sockets, segments, size fit), parameters and triggers, surface layers
+//! with Omagari's effect material, and built-in textures. Added by
+//! [`crate::OmagariPlugin`].
 
 mod attach;
 mod builtin;
+mod effect_material;
 mod instance;
 mod package;
 mod params;
 mod render_fix;
+mod surface;
 mod triggers;
 
 pub use attach::*;
 pub use builtin::{resolve_asset_path, resolve_asset_path_in, BUILTIN_TEXTURES};
+pub use effect_material::*;
 pub use instance::*;
 pub use package::*;
+pub use surface::*;
 pub use params::{evaluate_binding, smooth, smooth_value, ParamError, ParamSlot, ParamState, VfxWarnOnce};
 pub use triggers::TriggerArgs;
 
@@ -30,6 +35,7 @@ pub struct VfxSystems;
 
 pub(crate) fn build(app: &mut App) {
     builtin::register_builtin_textures(app);
+    effect_material::build(app);
     render_fix::build(app);
     app.init_asset::<VfxPackage>()
         .init_asset_loader::<VfxPackageLoader>()
@@ -37,6 +43,7 @@ pub(crate) fn build(app: &mut App) {
         .add_message::<VfxFinished>()
         .add_observer(instance::on_instance_removed)
         .add_observer(instance::on_layer_removed)
+        .add_observer(surface::on_surface_layer_removed)
         .add_systems(
             Update,
             (
@@ -48,6 +55,8 @@ pub(crate) fn build(app: &mut App) {
                 triggers::apply_triggers,
                 triggers::drive_layer_spawners,
                 params::upload_layer_values,
+                surface::sync_surface_overlays,
+                surface::update_surface_materials,
                 instance::finish_instances,
             )
                 .chain()

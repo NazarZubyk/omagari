@@ -13,9 +13,11 @@ use bevy::prelude::*;
 
 use crate::format::BUILTIN_TEXTURES_PREFIX;
 
-/// The built-in textures: file name and PNG bytes. Same files and order as
-/// [`crate::format::PARTICLE_TEXTURES`].
-pub const BUILTIN_TEXTURES: [(&str, &[u8]); 7] = [
+/// The built-in textures: file name and PNG bytes. The particle textures
+/// (same files and order as [`crate::format::PARTICLE_TEXTURES`]), then the
+/// tileable noise of the effect shader
+/// ([`crate::format::BUILTIN_NOISE_TEXTURE`]).
+pub const BUILTIN_TEXTURES: [(&str, &[u8]); 8] = [
     ("cloud.png", include_bytes!("../../assets/cloud.png")),
     ("cloud2.png", include_bytes!("../../assets/cloud2.png")),
     ("spark1.png", include_bytes!("../../assets/spark1.png")),
@@ -23,6 +25,7 @@ pub const BUILTIN_TEXTURES: [(&str, &[u8]); 7] = [
     ("spark3.png", include_bytes!("../../assets/spark3.png")),
     ("glow1.png", include_bytes!("../../assets/glow1.png")),
     ("splat1.png", include_bytes!("../../assets/splat1.png")),
+    ("noise.png", include_bytes!("../../assets/noise.png")),
 ];
 
 /// Folder of the built-in textures in the `embedded` asset source.
@@ -67,13 +70,14 @@ pub fn resolve_asset_path_in(path: &str, source: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::{builtin_texture_path, PARTICLE_TEXTURES};
+    use crate::format::{builtin_texture_path, BUILTIN_NOISE_TEXTURE, PARTICLE_TEXTURES};
 
     #[test]
     fn builtin_textures_match_editor_list() {
         let files: Vec<&str> = BUILTIN_TEXTURES.iter().map(|(f, _)| *f).collect();
         let editor: Vec<&str> = PARTICLE_TEXTURES.iter().map(|t| t.filename).collect();
-        assert_eq!(files, editor);
+        assert_eq!(files[..editor.len()], editor[..], "the v1 particle textures first, in order");
+        assert_eq!(files[editor.len()..], [BUILTIN_NOISE_TEXTURE]);
         for (_, bytes) in BUILTIN_TEXTURES {
             assert!(bytes.starts_with(b"\x89PNG"));
         }

@@ -10,8 +10,8 @@ use bevy_hanabi::prelude::*;
 
 use super::builtin::{resolve_asset_path, resolve_asset_path_in};
 use crate::format::{
-    param_property_name, AttachDef, Binding, ParamKind, PlayDef, ProjectV2, SimulationSpaceDef,
-    TextureAssetDef, TextureColorSpace, TextureFilter, TextureWrap, VisibleRangeDef,
+    param_property_name, AttachDef, Binding, EffectMaterialDef, ParamKind, PlayDef, ProjectV2, SimulationSpaceDef,
+    SurfaceLayerDef, TextureAssetDef, TextureColorSpace, TextureFilter, TextureWrap, VisibleRangeDef,
 };
 
 /// Stop duration used for a layer whose particle lifetime cannot be estimated.
@@ -25,10 +25,30 @@ pub struct VfxPackage {
     pub project: ProjectV2,
     /// One entry per particle layer, in layer order.
     pub particle_layers: Vec<PreparedParticleLayer>,
+    /// One entry per surface layer, in layer order.
+    pub surface_layers: Vec<PreparedSurfaceLayer>,
     /// Seconds after which an instance finishes by itself: set when every
     /// root particle layer is one-shot (`play: OnStart` with a finite
-    /// `cycle_count`); the last spawn plus the longest particle life.
+    /// `cycle_count`) and there are no surface layers; the last spawn plus
+    /// the longest particle life.
     pub auto_finish: Option<f32>,
+}
+
+/// A surface layer ready to be spawned: its definition and the textures of
+/// its slots.
+pub struct PreparedSurfaceLayer {
+    /// Index of the layer in `project.layers`.
+    pub layer_index: usize,
+    pub def: SurfaceLayerDef,
+    /// Textures of noise A, noise B and the mask (`None` = slot off, or its
+    /// asset is missing).
+    pub textures: [Option<Handle<Image>>; 3],
+}
+
+impl PreparedSurfaceLayer {
+    pub fn name(&self) -> &str {
+        &self.def.name
+    }
 }
 
 /// A particle layer ready to be spawned.
@@ -338,6 +358,38 @@ impl VfxPackage {
             });
         }
 
+        let mut surface_layers = Vec::new();
+        for (layer_index, layer) in project.surface_layers() {
+            check_surface_params(&project, layer, warnings);
+            let material: &EffectMaterialDef = &layer.material;
+            let mut slot_texture = |slot: Option<&crate::format::TextureSlotDef>, what: &str| -> Option<Handle<Image>> {
+                let slot = slot?;
+                if let Some((_, handle)) = textures.iter().find(|(t, _)| *t == slot.asset) {
+                    return Some(handle.clone());
+                }
+                let Some(def) = project.texture(&slot.asset) else {
+                    warnings.push(format!(
+                        "[{}] {} texture \"{}\" is not in the assets list; that part is off",
+                        layer.name, what, slot.asset
+                    ));
+                    return None;
+                };
+                let handle = assets.load_texture(def);
+                textures.push((slot.asset.clone(), handle.clone()));
+                Some(handle)
+            };
+            let textures = [
+                slot_texture(material.noise_a.as_ref().map(|n| &n.texture), "noise A"),
+                slot_texture(material.noise_b.as_ref().map(|n| &n.texture), "noise B"),
+                slot_texture(material.mask.as_ref().map(|m| &m.texture), "mask"),
+            ];
+            surface_layers.push(PreparedSurfaceLayer {
+                layer_index,
+                def: layer.clone(),
+                textures,
+            });
+        }
+
         // A layer's particles can be spawned by its parents until their
         // particles die, so its linger includes the whole parent chain.
         let mut auto_finish = (!particle_layers.is_empty()).then_some(0.0f32);
@@ -365,19 +417,59 @@ impl VfxPackage {
             };
         }
 
+        // Surface layers play until the instance is stopped.
+        if !surface_layers.is_empty() {
+            auto_finish = None;
+        }
+
         VfxPackage {
             project,
             particle_layers,
+            surface_layers,
             auto_finish,
         }
     }
 
-    /// Seconds from `stop` until no particle of the package can be alive.
+    /// Seconds from `stop` until no particle of the package can be alive
+    /// and every surface layer has faded out.
     pub fn stop_duration(&self) -> f32 {
         self.particle_layers
             .iter()
             .map(|l| l.linger)
+            .chain(self.surface_layers.iter().map(|l| l.def.linger()))
             .fold(0.0, f32::max)
+    }
+
+    /// Every texture the package's layers use (particle textures and
+    /// surface texture slots).
+    pub fn textures(&self) -> impl Iterator<Item = &Handle<Image>> {
+        self.particle_layers
+            .iter()
+            .filter_map(|l| l.texture.as_ref())
+            .chain(self.surface_layers.iter().flat_map(|l| l.textures.iter().flatten()))
+    }
+}
+
+/// Warnings for a surface layer's parameter reads: unknown names, and
+/// Color parameters where a number is needed.
+fn check_surface_params(project: &ProjectV2, layer: &SurfaceLayerDef, warnings: &mut Vec<String>) {
+    let reads = layer
+        .material
+        .binding_params()
+        .into_iter()
+        .chain(layer.visible.as_ref().map(|v| ("visible", v.param.as_str())));
+    for (what, param) in reads {
+        match project.param(param).map(|p| p.kind()) {
+            None => warnings.push(format!(
+                "[{}] {} reads \"{}\", which is not a parameter of this package",
+                layer.name, what, param
+            )),
+            Some(ParamKind::Color) if !EffectMaterialDef::is_color_binding(what) => warnings.push(format!(
+                "[{}] {} reads \"{}\", a Color parameter; it needs a Float one",
+                layer.name, what, param
+            )),
+            _ => {}
+        }
     }
 }
 
