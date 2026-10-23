@@ -99,14 +99,17 @@ OK: no errors.
 
 | Tool | What it does |
 | :-- | :-- |
-| `guide` | The authoring guide ([`CLAUDE_VFX_GUIDE.md`](CLAUDE_VFX_GUIDE.md)), whole or one section: file format, layers and simulation space, attach (sockets, segments, size fit, lifecycle), spawner, modifiers, expressions, attributes, render settings, textures, parent/child layers, tested recipes, design tips, game use. |
+| `guide` | The authoring guide ([`CLAUDE_VFX_GUIDE.md`](CLAUDE_VFX_GUIDE.md)), whole or one section: file format, layers and simulation space, attach (sockets, segments, size fit, lifecycle), spawner, modifiers, expressions, attributes, render settings, textures, assets (import, purposes, channels), parent/child layers, tested recipes, design tips, game use. |
 | `list_projects` | Saved projects, bundled examples, the game assets folder and exported packages. |
 | `read_project` | Returns a project's RON (`fireball`, or `examples/fireworks`); v1 projects come back migrated to v2. |
 | `write_project` | Checks and saves `saved_effects/<name>.omagari.ron` (v1 input is migrated, everything is saved as v2). Refuses to save a project with errors unless `force` is set. Returns the analysis. |
-| `check_project` | Validation only (v1 or v2 input). Also checks sockets, attach (socket names that are not package sockets are listed as NOTES: they must exist as node names in the game's model), segment property use and fit. |
+| `check_project` | Validation only (v1 or v2 input). Also checks textures (missing files, paths outside the game assets folder, sprite-sheet grids, settings that fight the purpose such as Noise with Clamp, 16-bit grayscale PNGs, JPG needing Bevy's `jpeg` feature), sockets, attach (socket names that are not package sockets are listed as NOTES: they must exist as node names in the game's model), segment property use and fit. |
 | `analyze_project` | Validation plus the CPU simulation and text description. `effect` limits it to one layer, `samples` sets the accuracy. |
 | `export_project` | Writes the package `<name>.vfx.ron` to `<game assets>/vfx/` (or `exported_effects/`), and with `copy_to` also a copy elsewhere. |
-| `preview_in_editor` | Asks the running editor to load and play a saved project, optionally in a given stage (`air`, `floor`, `object`) and with a target `motion` (`{"type": "circle", "radius": 3, "speed": 3.6}`, `{"type": "back_and_forth", "distance": 4, "speed": 3.6}` or `{"type": "none"}`). The request is a small JSON file (`saved_effects/.preview_request`); the old two-line form still works. Returns only whether the editor picked it up. |
+| `import_asset` | Imports a texture file (PNG, JPG; KTX2 copied only) into the game assets folder like the editor: copied into `vfx/textures/` when outside it (name collision → `_2`, identical file → reused), used in place when inside. `purpose` defaults to a guess from the file name; with `project` the asset is added to that saved project. Reports size and layout (16-bit grayscale PNGs and JPG are flagged). |
+| `list_assets` | The built-in textures and every texture in the game assets folder, with size, layout and which saved projects use them. |
+| `extract_channel` | Writes one channel (`R`, `G`, `B`, `A`, `Luminance`) of a project's texture as an 8-bit grayscale PNG next to it and adds it to the project with the same settings. Needed because particle layers cannot pick a channel. |
+| `preview_in_editor` | Asks the running editor to load and play a saved project, optionally in a given stage (`air`, `floor`, `object`), with a `camera` (`orbit`, `game`) and with a target `motion` (`{"type": "circle", "radius": 3, "speed": 3.6}`, `{"type": "back_and_forth", "distance": 4, "speed": 3.6}` or `{"type": "none"}`). The request is a small JSON file (`saved_effects/.preview_request`); the old two-line form still works. Returns only whether the editor picked it up. |
 
 ## Token use
 
@@ -118,7 +121,7 @@ OK: no errors.
 
 - The simulation is approximate: it assumes 60 updates per second, uses CPU random numbers, and `ConformToSphereModifier` is simplified. It is reliable for scale, timing, counts and colors, not for exact looks.
 - The analysis can't judge taste. You still decide whether it looks good.
-- Claude can only use what the editor supports: the modifiers, expressions, render settings and the seven built-in textures listed in the guide (other textures can be referenced by path under the game assets folder, but importing them comes later). The simulation assumes a still target; the trail a moving target leaves in Global space is estimated at 3.6 m/s (or the preview motion's speed). Sockets on model nodes are simulated at the target's origin (plus their offset), since there is no model preview yet.
+- Claude can only use what the editor supports: the modifiers, expressions, render settings, the seven built-in textures and textures in the game assets folder (`import_asset` brings files in, `list_assets` lists them). Claude never sees a texture; it gets its size, layout and purpose. The simulation assumes a still target; the trail a moving target leaves in Global space is estimated at 3.6 m/s (or the preview motion's speed). Sockets on model nodes are simulated at the target's origin (plus their offset), since there is no model preview yet.
 
 ## Troubleshooting
 

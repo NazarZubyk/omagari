@@ -36,11 +36,19 @@ On Windows you can also double-click `start.bat`, which builds the editor (and t
 
 - **Top toolbar**: the open project's name (`• unsaved` when it has changes), **NEW** (empty, or from one of the guide's recipes), **OPEN**, **SAVE**, **SAVE AS…**, **EXPORT**, undo / redo, **STAGE** (air, floor, around a rock), **CAMERA** (Orbit or Game, see below), the backdrop and **⚙ SETTINGS**.
 - **Left: LAYERS**. Click a layer to edit it. ➕ ADD, ⬆ / ⬇ to reorder, DUPLICATE, DELETE (asks first); right-click a layer for the same commands. 👁 hides a layer and **S** solos it in the preview only (hidden layers still spawn their child layers; nothing about this is saved). A `⛔` / `⚠` badge shows the layer's problems.
-- **Right: tabs**. **LAYER** is the inspector of the selected layer: its problems, name, capacity, texture, parent, simulation space (**Local**: particles follow the target; **Global**: they stay where they were emitted and trail behind a moving target), attach, play mode, blending, the spawner and the init / update / render modifiers. **SOCKETS & FIT**: named points on the target and size fit. **PREVIEW**: stage, camera, backdrop and target motion. **PARAMETERS**, **TRIGGERS** (P2) and **ASSETS** (texture import comes next) show what the project declares. Hover any label for a short explanation with units.
+- **Right: tabs**. **LAYER** is the inspector of the selected layer: its problems, name, capacity, texture, parent, simulation space (**Local**: particles follow the target; **Global**: they stay where they were emitted and trail behind a moving target), attach, play mode, blending, the spawner and the init / update / render modifiers. **SOCKETS & FIT**: named points on the target and size fit. **PREVIEW**: stage, camera, backdrop and target motion. **PARAMETERS** and **TRIGGERS** (P2) show what the project declares. **ASSETS** is the project's texture library (see below). Hover any label for a short explanation with units.
 - **Bottom bar**: **RENDER** rebuilds the effect and plays it through the same runtime a game uses; **STOP** stops it the way a game does (no new particles, live ones finish); **RESTART** clears every particle and plays again. **Live** rebuilds the preview a moment after each edit. **⏸** pauses and **Speed** slows the preview down. The problems counter (the same checks as the MCP `check_project`) opens the Problems list; `⚠ n build` lists warnings of the last preview build.
 - **Undo / redo** cover every project edit (layers, sockets, fit, the preview block); a drag or a typed word is one step. NEW, OPEN, an MCP preview and closing the window ask before throwing away unsaved changes.
 - **Shortcuts**: Ctrl+S save, Ctrl+E export, Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo, Delete delete layer, Ctrl+D duplicate layer, F focus the camera on the target, Space render. While a text field has focus only Ctrl+S and Ctrl+E work.
 - **Cameras**: **Orbit** is the free camera (drag to orbit, right-drag to pan, wheel to zoom). **Game** matches the game's camera: orthographic true isometric (yaw 45°, pitch 35.26°), 16 m visible height, HDR + bloom, following the preview target. Both are render profiles in `omagari_settings.ron` (projection, height or field of view, yaw, pitch, distance, tonemapping, bloom, exposure, background), edited live in ⚙ SETTINGS.
+
+### Textures (ASSETS tab)
+
+- **Import** with **📥 IMPORT…** (a file dialog) or by **dropping PNG / JPG files onto the window**. A file outside the game assets folder is copied into `<game assets>/vfx/textures/` (a name already taken by a different file gets `_2`, `_3`, …; the same file again is reused); a file already inside the game assets folder is used where it is. **➕ BUILT-IN** adds one of the 7 textures built into Omagari.
+- Each texture has an **id** (what layers pick), a **purpose** (Sprite, Noise, Mask, Gradient; guessed from the file name: noise / perlin / voronoi / cellular, mask, gradient / ramp) and settings that default from it: **wrap** (Repeat tiles, Clamp stretches the edge), **colour space** (colour or data), **filter** (smooth or pixelated) and a **sprite sheet** grid (rows × columns).
+- Click a texture for a large preview with **RGB / R / G / B / A** buttons (one channel shown as gray), its size and layout, the layers that use it, **RENAME** (updates those layers), **DELETE** (only while no layer uses it) and **EXTRACT CHANNEL**: writes one channel (R, G, B, A or luminance) as a grayscale PNG next to the file (`<name>_g.png`) and adds it as a new texture. Particle layers can only read a texture's colour or its red channel, so a texture with different masks packed into R, G, B and A needs this for G, B and A.
+- Missing files, paths outside the game assets folder and settings that fight the purpose (e.g. Noise with Clamp) show as warnings on the texture. All of it is part of the project: undo, the unsaved marker and the live preview cover it.
+- Formats: PNG everywhere; JPG needs Bevy's `jpeg` feature in the game (the editor has it); KTX2 files can be referenced but have no preview.
 
 - **EXPORT** writes a VFX package `{project_name}.vfx.ron`: into the game assets folder's `vfx/` when one is set (see below), else into `exported_effects/`. The editor no longer writes `{project_name}.hanabi.ron` files; existing ones still load in games (legacy).
 
@@ -103,9 +111,32 @@ fn finished(mut done: MessageReader<VfxFinished>) {
 - **Own model.** Mesh searches under a target (fit now, surface layers later) stop at nested glTF scenes (`WorldAssetRoot`, e.g. a weapon in a hand bone) and at entities marked `omagari::VfxSeparateModel`.
 - **Hot reload.** When a package asset changes (Bevy's file watcher, `AssetPlugin { watch_for_changes_override: Some(true), .. }` with the `file_watcher` feature), running instances rebuild their layers in place: old particles finish, new layers start, the instance entity and its state stay. `VfxControl::replace_package` does the same with another package (the editor's RENDER uses it).
 
-Texture paths in a package are relative to the game's `assets/` folder (`vfx/textures/smoke.png`); built-ins are `omagari://textures/<file>`. The editor previews packages through this same API. See `docs/VFX_SYSTEM_PLAN.md` for what comes next (parameters, triggers, more layer kinds).
+Texture paths in a package are relative to the game's `assets/` folder (`vfx/textures/smoke.png`); built-ins are `omagari://textures/<file>`. Each texture loads with its settings (wrap, colour space, filter) as loader settings, so the game passes nothing. PNG works with Bevy's default features; for JPG textures enable Bevy's `jpeg` feature (`bevy = { version = "0.19", features = ["jpeg"] }`). The editor previews packages through this same API. See `docs/VFX_SYSTEM_PLAN.md` for what comes next (parameters, triggers, more layer kinds).
 
 Legacy: `EffectComplex::spawn` returns the spawned entities, and its `despawn_in` timer now stops the spawners and despawns each effect once its last particle has died.
+
+## Development
+
+- Build: `cargo build --release --features editor`; test: `cargo test --release --features editor`.
+- **Screenshots without looking at the screen** (for agents checking the UI): the editor takes developer flags, then saves the window and quits:
+
+  ```
+  omagari --open fire --tab assets --asset smoke --channel a --camera game \
+          --window-size 1600x900 --screenshot shot.png --screenshot-after 90
+  ```
+
+  | Flag | Effect |
+  | :-- | :-- |
+  | `--open <project>` | opens `saved_effects/<project>.omagari.ron` at startup |
+  | `--camera orbit\|game` | the preview camera of the opened project |
+  | `--tab layer\|sockets\|preview\|parameters\|triggers\|assets` | the right panel's tab |
+  | `--asset <id>` | shows that texture in the ASSETS tab |
+  | `--channel rgb\|r\|g\|b\|a` | the texture preview's channel view |
+  | `--import <file>` | imports a file at startup like a drop (repeatable) |
+  | `--screenshot <out.png>` | saves the window after `--screenshot-after <frames>` (default 90) and quits |
+  | `--window-size <w>x<h>` | window size in pixels (scale factor 1) |
+
+  Combine with `--game-assets <temp dir>` so imports don't land in the real game folder.
 
 ## Compatibility
 
