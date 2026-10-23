@@ -5,7 +5,7 @@ Omagari includes an [MCP](https://modelcontextprotocol.io) server, so Claude Cod
 **Claude never sees the effect, and no images are sent to it.** That keeps token use low. Instead:
 
 - Claude writes the project file (format v2: texture assets + particle layers) and the server **checks it**: RON syntax, structure (parents, child indices, modifier lists), assets and texture files, expression types, bevy_hanabi's own shader generation, and a package round trip. Mistakes that would otherwise show up as a blank viewport or a GPU error come back as text.
-- The server **simulates the effect on the CPU** and describes it in a few lines per layer: spawn pattern, particle counts vs capacity, lifetimes, how far and in which direction particles travel, size in world units, colors and when they are visible, blending, simulation space (with the trail a moving character would leave in Global space), and an alive-over-time timeline.
+- The server **simulates the effect on the CPU** and describes it in a few lines per layer: spawn pattern, particle counts vs capacity, lifetimes, how far and in which direction particles travel, size in world units, colors and when they are visible, blending, simulation space (with the trail a moving character would leave in Global space), where the layer is attached (target, socket, segment), the size fit, and an alive-over-time timeline.
 - **You** watch the real effect in the editor. Claude asks the running editor to load and play a project (`preview_in_editor`), and you describe what to change ("too fast", "more orange", "spread wider").
 
 ```
@@ -46,6 +46,8 @@ Claude ──MCP (stdio)──▶ omagari --mcp ──writes──▶ saved_effe
 
    - **STAGE** sets where the effect plays: **AIR** (middle of the room, nothing nearby; you see everything, including particles that fall), **FLOOR** (the floor is right at the spawn point, like ground in a game; particles below it are hidden) and **OBJECT** (a rock about 2 units wide sits on the spawn point, for shields, barriers and auras). Claude can also choose the stage when it asks for a preview.
    - **BG** cycles through a light room, a dark room and black. Glow is easier to judge on dark or black.
+   - **⟳ MOTION** moves the effect's target: off, in a circle (radius) or back and forth (distance), at a speed in m/s (3.6 = a running character). `Local` layers stay on the moving target, `Global` layers leave a trail. The setting is saved in the project (its `preview` block); Claude can also set it when it asks for a preview.
+   - **⚓ SOCKETS & FIT** edits the project's sockets (named points on the target: a node/bone name of the game's model, or none = the target's origin, plus an offset) and its size fit (none, target scale, or target height for a reference height). A layer's **Attach** setting picks the target, a socket, or a segment between two sockets. The editor's target has no model, so sockets on a node show at the target's origin.
 
 ## Using it
 
@@ -94,18 +96,18 @@ OK: no errors.
 
 | Tool | What it does |
 | :-- | :-- |
-| `guide` | The authoring guide ([`CLAUDE_VFX_GUIDE.md`](CLAUDE_VFX_GUIDE.md)), whole or one section: file format, layers and simulation space, spawner, modifiers, expressions, attributes, render settings, textures, parent/child layers, tested recipes, design tips, game use. |
+| `guide` | The authoring guide ([`CLAUDE_VFX_GUIDE.md`](CLAUDE_VFX_GUIDE.md)), whole or one section: file format, layers and simulation space, attach (sockets, segments, size fit, lifecycle), spawner, modifiers, expressions, attributes, render settings, textures, parent/child layers, tested recipes, design tips, game use. |
 | `list_projects` | Saved projects, bundled examples, the game assets folder and exported packages. |
 | `read_project` | Returns a project's RON (`fireball`, or `examples/fireworks`); v1 projects come back migrated to v2. |
 | `write_project` | Checks and saves `saved_effects/<name>.omagari.ron` (v1 input is migrated, everything is saved as v2). Refuses to save a project with errors unless `force` is set. Returns the analysis. |
-| `check_project` | Validation only (v1 or v2 input). |
+| `check_project` | Validation only (v1 or v2 input). Also checks sockets, attach (socket names that are not package sockets are listed as NOTES: they must exist as node names in the game's model), segment property use and fit. |
 | `analyze_project` | Validation plus the CPU simulation and text description. `effect` limits it to one layer, `samples` sets the accuracy. |
 | `export_project` | Writes the package `<name>.vfx.ron` to `<game assets>/vfx/` (or `exported_effects/`), and with `copy_to` also a copy elsewhere. |
-| `preview_in_editor` | Asks the running editor to load and play a saved project, optionally in a given stage (`air`, `floor`, `object`). Returns only whether the editor picked it up. |
+| `preview_in_editor` | Asks the running editor to load and play a saved project, optionally in a given stage (`air`, `floor`, `object`) and with a target `motion` (`{"type": "circle", "radius": 3, "speed": 3.6}`, `{"type": "back_and_forth", "distance": 4, "speed": 3.6}` or `{"type": "none"}`). The request is a small JSON file (`saved_effects/.preview_request`); the old two-line form still works. Returns only whether the editor picked it up. |
 
 ## Token use
 
-- The full guide is about 9k tokens. One section is 250–900 tokens, except the recipes (about 3.5k). Claude normally reads the workflow section and then the sections it needs.
+- The full guide is about 11k tokens. One section is 250–1000 tokens, except the recipes (about 4.5k). Claude normally reads the workflow section and then the sections it needs.
 - An analysis is roughly 350–450 tokens per layer.
 - For small changes Claude edits the saved file directly and re-runs `check_project` or `analyze_project` by name, instead of resending the whole project.
 
@@ -113,7 +115,7 @@ OK: no errors.
 
 - The simulation is approximate: it assumes 60 updates per second, uses CPU random numbers, and `ConformToSphereModifier` is simplified. It is reliable for scale, timing, counts and colors, not for exact looks.
 - The analysis can't judge taste. You still decide whether it looks good.
-- Claude can only use what the editor supports: the modifiers, expressions, render settings and the seven built-in textures listed in the guide (other textures can be referenced by path under the game assets folder, but importing them comes later). The simulation assumes a still target; the trail a moving target leaves in Global space is estimated at 3.6 m/s.
+- Claude can only use what the editor supports: the modifiers, expressions, render settings and the seven built-in textures listed in the guide (other textures can be referenced by path under the game assets folder, but importing them comes later). The simulation assumes a still target; the trail a moving target leaves in Global space is estimated at 3.6 m/s (or the preview motion's speed). Sockets on model nodes are simulated at the target's origin (plus their offset), since there is no model preview yet.
 
 ## Troubleshooting
 
