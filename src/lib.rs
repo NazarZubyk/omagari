@@ -20,8 +20,10 @@ use std::{
 pub mod format;
 pub mod runtime;
 
+pub use format::ParamValue;
 pub use runtime::{
-    VfxCommandsExt, VfxControl, VfxFinished, VfxInstance, VfxPackage, VfxSeparateModel, VfxState,
+    TriggerArgs, VfxCommandsExt, VfxControl, VfxFinished, VfxInstance, VfxPackage, VfxSeparateModel, VfxSpawn,
+    VfxState,
 };
 
 /// The Omagari runtime plugin. Add it after `DefaultPlugins` and `HanabiPlugin`.
