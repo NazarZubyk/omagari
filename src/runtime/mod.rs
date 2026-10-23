@@ -6,6 +6,7 @@ mod attach;
 mod builtin;
 mod instance;
 mod package;
+mod render_fix;
 
 pub use attach::*;
 pub use builtin::{resolve_asset_path, resolve_asset_path_in, BUILTIN_TEXTURES};
@@ -22,6 +23,7 @@ pub struct VfxSystems;
 
 pub(crate) fn build(app: &mut App) {
     builtin::register_builtin_textures(app);
+    render_fix::build(app);
     app.init_asset::<VfxPackage>()
         .init_asset_loader::<VfxPackageLoader>()
         .add_message::<VfxFinished>()
