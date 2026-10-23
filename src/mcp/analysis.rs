@@ -9,13 +9,14 @@
 //! second and samples random values on the CPU.
 
 use std::fmt::Write;
+use std::path::Path;
 
 use bevy::prelude::*;
 use bevy_hanabi::prelude::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use omagari::format::*;
-use omagari::{register_missing_hanabi_modifiers, ExportedProject};
+use omagari::runtime::BUILTIN_TEXTURES;
 
 const DT: f32 = 1.0 / 60.0;
 /// Longest time a single particle is simulated.
@@ -712,121 +713,232 @@ fn modifier_exprs(m: &ModifierEditor) -> Vec<&ExprWriterEditor> {
     }
 }
 
-fn emit_modifiers(effect: &EffectEditor) -> impl Iterator<Item = &EmitSpawnEventModifierEditor> {
-    effect.update_modifiers.iter().filter_map(|m| match m {
+fn emit_modifiers<'a>(layer: &'a ParticlesLayerDef) -> impl Iterator<Item = &'a EmitSpawnEventModifierEditor> {
+    layer.effect.update_modifiers.iter().filter_map(|m| match m {
         ModifierEditor::EmitSpawnEventModifier(m) => Some(m),
         _ => None,
     })
 }
 
-/// Indices of the effects whose `parent` names `effects[index]`, in list order.
+/// The project's particle layers, in layer order.
+fn particle_layers(project: &ProjectV2) -> Vec<&ParticlesLayerDef> {
+    project.particle_layers().map(|(_, l)| l).collect()
+}
+
+/// Indices of the layers whose `parent` names `layers[index]`, in list order.
 /// This order is the `child_index` used by `EmitSpawnEventModifier`.
-fn children_of(effects: &[EffectEditor], index: usize) -> Vec<usize> {
-    let name = &effects[index].name;
-    effects
+fn children_of(layers: &[&ParticlesLayerDef], index: usize) -> Vec<usize> {
+    let name = &layers[index].name;
+    layers
         .iter()
         .enumerate()
-        .filter(|(i, e)| *i != index && e.parent.as_deref() == Some(name.as_str()))
+        .filter(|(i, l)| *i != index && l.parent.as_deref() == Some(name.as_str()))
         .map(|(i, _)| i)
         .collect()
 }
 
-/// Index of the parent effect, if it exists and is listed before the child.
-fn parent_index(effects: &[EffectEditor], index: usize) -> Option<usize> {
-    let parent = effects[index].parent.as_deref()?;
-    effects[..index].iter().position(|e| e.name == parent)
+/// Index of the parent layer, if it exists and is listed before the child.
+fn parent_index(layers: &[&ParticlesLayerDef], index: usize) -> Option<usize> {
+    let parent = layers[index].parent.as_deref()?;
+    layers[..index].iter().position(|l| l.name == parent)
 }
 
-/// Builds the type registry the editor uses for exporting.
-pub fn type_registry() -> AppTypeRegistry {
-    let registry = AppTypeRegistry::new_with_derived_types();
-    bevy_hanabi::register_modifiers(&registry);
-    register_missing_hanabi_modifiers(&registry);
-    registry
+/// The root of a layer's parent chain (the layer itself when it has none).
+fn root_index(layers: &[&ParticlesLayerDef], mut index: usize) -> usize {
+    for _ in 0..layers.len() {
+        match parent_index(layers, index) {
+            Some(p) => index = p,
+            None => break,
+        }
+    }
+    index
 }
 
-/// Builds the `*.hanabi.ron` export of a project.
-pub fn export_string(project: &OmagariProject, registry: &AppTypeRegistry) -> Result<String, String> {
+fn has_texture_sampling(effect: &ParticleEffectDef) -> bool {
+    effect
+        .render_modifiers
+        .iter()
+        .any(|m| matches!(m, RenderModifierEditor::ParticleTexture(_)))
+}
+
+/// Whether particles are oriented along their velocity (then motionless ones
+/// have no orientation and may render invisible).
+fn orients_along_velocity(effect: &ParticleEffectDef) -> bool {
+    effect.render_modifiers.iter().any(|m| {
+        matches!(m, RenderModifierEditor::Orient(o) if o.mode == OrientModeDef::AlongVelocity)
+    })
+}
+
+/// Speed of the target used for the trail estimate of `Global` layers: the
+/// preview motion's speed, else a running character (3.6 m/s).
+pub fn target_speed(project: &ProjectV2) -> f32 {
+    match project.preview.as_ref().and_then(|p| p.motion) {
+        Some(PreviewMotion::Circle { speed, .. } | PreviewMotion::BackAndForth { speed, .. }) => speed,
+        None => DEFAULT_TARGET_SPEED,
+    }
+}
+
+/// Lifetime from which a looping `Global` layer gets a trail warning.
+const TRAIL_WARN_LIFETIME: f32 = 1.0;
+/// Speed of a moving target for trail estimates, in m/s.
+const DEFAULT_TARGET_SPEED: f32 = 3.6;
+
+/// The package text written by export (`*.vfx.ron`).
+pub fn package_string(project: &ProjectV2) -> Result<String, String> {
     project
-        .to_exported()
-        .to_ron_string(&registry.read())
+        .to_package()
+        .to_ron_string()
         .map_err(|e| format!("export failed: {}", e))
 }
 
-/// Runs every static check on a project: structure, expression types, the
-/// bevy_hanabi shader generation and an export round trip.
-pub fn check_project(project: &OmagariProject, registry: &AppTypeRegistry) -> Diagnostics {
-    let mut d = Diagnostics::default();
-    let effects = &project.effects;
+fn texture_label(project: &ProjectV2, layer: &ParticlesLayerDef) -> String {
+    match &layer.texture {
+        None => "none".to_string(),
+        Some(id) => match project.texture(id) {
+            Some(t) => format!("\"{}\" ({})", id, t.path),
+            None => format!("\"{}\" (missing)", id),
+        },
+    }
+}
 
-    if effects.is_empty() {
-        d.errors.push("project has no effects".into());
+/// Runs every static check on a project: structure, assets, expression types,
+/// the bevy_hanabi shader generation and a package round trip. Relative
+/// texture paths are looked up in `assets_root` (the game assets folder).
+pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
+    let mut d = Diagnostics::default();
+    let layers = particle_layers(project);
+
+    if layers.is_empty() {
+        d.errors.push("project has no layers".into());
         return d;
     }
 
-    for (i, effect) in effects.iter().enumerate() {
-        let name = effect.name.as_str();
+    for (i, asset) in project.assets.iter().enumerate() {
+        let label = format!("asset \"{}\"", asset.id);
+        if asset.id.is_empty() {
+            d.errors.push("an asset has an empty id".into());
+        }
+        if project.assets[..i].iter().any(|a| a.id == asset.id) {
+            d.error(&label, "duplicate asset id; layers find assets by id");
+        }
+        let AssetKind::Texture(t) = &asset.kind;
+        if let Some(file) = t.path.strip_prefix(BUILTIN_TEXTURES_PREFIX) {
+            if !BUILTIN_TEXTURES.iter().any(|(f, _)| *f == file) {
+                let files: Vec<&str> = BUILTIN_TEXTURES.iter().map(|(f, _)| *f).collect();
+                d.error(&label, format!("{} is not a built-in texture ({})", t.path, files.join(", ")));
+            }
+        } else if t.path.is_empty() {
+            d.error(&label, "texture path is empty");
+        } else if !assets_root.join(&t.path).is_file() {
+            d.warn(
+                &label,
+                format!("{} is not in the game assets folder ({}); it will not load", t.path, assets_root.display()),
+            );
+        }
+        if !layers.iter().any(|l| l.texture.as_deref() == Some(asset.id.as_str())) {
+            d.warn(&label, "not used by any layer");
+        }
+    }
 
-        if effects[..i].iter().any(|e| e.name == effect.name) {
-            d.error(name, "duplicate effect name; names must be unique (parents are found by name)");
+    for (what, used) in [
+        ("parameters", !project.parameters.is_empty()),
+        ("triggers", !project.triggers.is_empty()),
+        ("sockets", !project.sockets.is_empty()),
+        ("fit", project.fit.is_some()),
+    ] {
+        if used {
+            d.warnings.push(format!("{} are stored but not used by the runtime yet", what));
+        }
+    }
+
+    for (i, layer) in layers.iter().enumerate() {
+        let name = layer.name.as_str();
+        let effect = &layer.effect;
+
+        if layers[..i].iter().any(|l| l.name == layer.name) {
+            d.error(name, "duplicate layer name; names must be unique (parents are found by name)");
         }
         if effect.capacity == 0 {
             d.error(name, "capacity is 0, nothing can spawn");
         }
-        match effect.texture_index {
-            Some(t) if t >= PARTICLE_TEXTURES.len() => d.error(
-                name,
-                format!("texture_index {} is out of range (0..={})", t, PARTICLE_TEXTURES.len() - 1),
-            ),
-            None => d.warn(name, "texture_index is None; the editor previews it with texture 0 but exported games spawn it untextured"),
-            _ => {}
+
+        let samples_texture = has_texture_sampling(effect);
+        match &layer.texture {
+            Some(id) => {
+                if project.texture(id).is_none() {
+                    d.error(name, format!("texture \"{}\" is not in the assets list", id));
+                } else if !samples_texture {
+                    d.warn(name, format!("texture \"{}\" is set, but no ParticleTexture render modifier samples it", id));
+                }
+            }
+            None if samples_texture => {
+                d.warn(name, "ParticleTexture samples the layer's texture, but the layer has none")
+            }
+            None => {}
         }
 
-        if let Some(parent) = &effect.parent {
+        if layer.attach != AttachDef::Target {
+            d.warn(name, format!("attach {:?} is not supported yet; the layer is attached to the target", layer.attach));
+        }
+        if matches!(layer.play, PlayDef::OnTrigger(_) | PlayDef::While(..)) {
+            d.warn(name, format!("play {:?} is not supported yet; the layer plays as authored", layer.play));
+        }
+        if layer.rate.is_some() {
+            d.warn(name, "rate is not used by the runtime yet; the spawner's count applies");
+        }
+        if layer.visible.is_some() {
+            d.warn(name, "visible is not used by the runtime yet; the layer is always visible");
+        }
+
+        if let Some(parent) = &layer.parent {
             if parent == name {
-                d.error(name, "effect is its own parent");
-            } else if parent_index(effects, i).is_none() {
-                if effects.iter().any(|e| &e.name == parent) {
-                    d.error(name, format!("parent \"{}\" must be listed before this effect", parent));
-                } else {
-                    d.error(name, format!("parent \"{}\" does not exist", parent));
-                }
-            } else {
-                let pi = parent_index(effects, i).unwrap();
-                let child_index = children_of(effects, pi).iter().position(|c| *c == i).unwrap() as u32;
-                if !emit_modifiers(&effects[pi]).any(|m| m.child_index == child_index) {
+                d.error(name, "layer is its own parent");
+            } else if let Some(pi) = parent_index(&layers, i) {
+                let child_index = children_of(&layers, pi).iter().position(|c| *c == i).unwrap() as u32;
+                if !emit_modifiers(layers[pi]).any(|m| m.child_index == child_index) {
                     d.error(
                         name,
                         format!(
-                            "parent \"{}\" has no EmitSpawnEventModifier with child_index {}, so this effect never spawns",
+                            "parent \"{}\" has no EmitSpawnEventModifier with child_index {}, so this layer never spawns",
                             parent, child_index
                         ),
                     );
                 }
+            } else if layers.iter().any(|l| &l.name == parent) {
+                d.error(name, format!("parent \"{}\" must be listed before this layer", parent));
+            } else {
+                d.error(name, format!("parent \"{}\" is not a particle layer of this project", parent));
             }
         } else {
-            let range = effect.spawner_settings.count().range();
-            if range[1] <= 0.0 {
+            let s = &effect.spawner;
+            if s.count.range()[1] <= 0.0 {
                 d.warn(name, "spawner count is 0, nothing spawns");
             }
-            if !effect.spawner_settings.starts_active() {
+            if !s.starts_active {
                 d.warn(name, "spawner starts_active is false; game code must activate it");
             }
-            if effect.spawner_settings.cycle_count() == 0
-                && effect.spawner_settings.period().range()[1] <= 0.0
-                && effect.spawner_settings.spawn_duration().range()[1] <= 0.0
-            {
+            if s.cycle_count == 0 && s.period.range()[1] <= 0.0 && s.spawn_duration.range()[1] <= 0.0 {
                 d.warn(name, "spawner repeats forever with period 0 and duration 0: it bursts `count` particles every frame");
+            }
+            match layer.play {
+                PlayDef::Loop if s.cycle_count != 0 => d.warn(
+                    name,
+                    format!("play is Loop, but the spawner stops after {} cycle(s); use cycle_count 0 or play OnStart", s.cycle_count),
+                ),
+                PlayDef::OnStart if s.cycle_count == 0 => {
+                    d.warn(name, "play is OnStart, but the spawner repeats forever (cycle_count 0); use play Loop")
+                }
+                _ => {}
             }
         }
 
-        let n_children = children_of(effects, i).len() as u32;
-        for m in emit_modifiers(effect) {
+        let n_children = children_of(&layers, i).len() as u32;
+        for m in emit_modifiers(layer) {
             if m.child_index >= n_children {
                 d.error(
                     name,
                     format!(
-                        "EmitSpawnEventModifier child_index {} but this effect has {} child effect(s)",
+                        "EmitSpawnEventModifier child_index {} but this layer has {} child layer(s)",
                         m.child_index, n_children
                     ),
                 );
@@ -835,12 +947,12 @@ pub fn check_project(project: &OmagariProject, registry: &AppTypeRegistry) -> Di
 
         for m in effect.init_modifiers.iter() {
             if !is_init_modifier(m) {
-                d.error(name, format!("{} is an update modifier but is listed in init_modifiers; the editor drops it", modifier_name(m)));
+                d.error(name, format!("{} is an update modifier but is listed in init_modifiers; it is ignored", modifier_name(m)));
             }
         }
         for m in effect.update_modifiers.iter() {
             if is_init_modifier(m) {
-                d.error(name, format!("{} is an init modifier but is listed in update_modifiers; the editor drops it", modifier_name(m)));
+                d.error(name, format!("{} is an init modifier but is listed in update_modifiers; it is ignored", modifier_name(m)));
             }
         }
         for m in effect.init_modifiers.iter().chain(effect.update_modifiers.iter()) {
@@ -854,7 +966,7 @@ pub fn check_project(project: &OmagariProject, registry: &AppTypeRegistry) -> Di
         // Type check with one dry-run particle. Expressions have no branches, so
         // one evaluation visits every node.
         let mut rng = StdRng::seed_from_u64(0);
-        let parent_attrs = effect.parent.as_ref().map(|_| Attrs::default());
+        let parent_attrs = layer.parent.as_ref().map(|_| Attrs::default());
         let mut p = Attrs::default();
         for m in effect.init_modifiers.iter() {
             if let Err(e) = apply_init(m, &mut p, parent_attrs.as_ref(), &mut rng, 0.0) {
@@ -871,9 +983,12 @@ pub fn check_project(project: &OmagariProject, registry: &AppTypeRegistry) -> Di
         // Let bevy_hanabi generate the shaders, which catches missing attributes
         // and expression errors that would otherwise only show up at runtime.
         // Skipped when the checks above already failed, to avoid duplicates.
-        let asset = effect.produce();
+        // Wrong-list modifiers were reported above, so produce()'s own
+        // warnings are not repeated.
+        let asset = layer.produce(&mut Vec::new());
         if d.errors.len() == errors_before {
-            let parent_layout = parent_index(effects, i).map(|pi| effects[pi].produce().particle_layout());
+            let parent_layout =
+                parent_index(&layers, i).map(|pi| layers[pi].produce(&mut Vec::new()).particle_layout());
             if let Err(e) = EffectShaderSources::generate(&asset, parent_layout.as_ref(), n_children) {
                 d.error(name, format!("bevy_hanabi shader generation failed: {}", e));
             }
@@ -890,21 +1005,49 @@ pub fn check_project(project: &OmagariProject, registry: &AppTypeRegistry) -> Di
             .update_modifiers
             .iter()
             .any(|m| matches!(m, ModifierEditor::AccelModifier(_) | ModifierEditor::ConformToSphereModifier(_)));
-        if !sets_velocity && !accelerates {
-            d.warn(name, "nothing sets a velocity; the editor orients particles along velocity, so motionless particles may render invisible");
+        if !effect
+            .render_modifiers
+            .iter()
+            .any(|m| matches!(m, RenderModifierEditor::Orient(_)))
+        {
+            d.warn(name, "no Orient render modifier: particles are flat quads in the XY plane and vanish when seen from the side; add Orient((mode: ParallelCameraDepthPlane)) or AlongVelocity");
+        }
+        if !sets_velocity && !accelerates && orients_along_velocity(effect) {
+            d.warn(name, "nothing sets a velocity, but Orient(AlongVelocity) orients particles along it, so motionless particles may render invisible (use another orient mode)");
         }
         let layout = asset.particle_layout();
         if !layout.contains(Attribute::AGE) {
             d.warn(name, "particles never die: nothing uses the age attribute (set age to 0.0 in init, or add ColorOverLifetime/SizeOverLifetime)");
         }
-    }
 
-    match export_string(project, registry) {
-        Ok(s) => {
-            if let Err(e) = ExportedProject::from_ron_bytes(s.as_bytes(), &registry.read()) {
-                d.errors.push(format!("exported file does not load back: {}", e));
+        if layer.simulation_space == SimulationSpaceDef::Global {
+            let root = layers[root_index(&layers, i)];
+            let lifetime = effect.max_lifetime();
+            if root.effect.spawner.cycle_count == 0 && lifetime.is_some_and(|l| l >= TRAIL_WARN_LIFETIME) {
+                let lifetime = lifetime.unwrap();
+                let speed = target_speed(project);
+                d.warn(
+                    name,
+                    format!(
+                        "Global simulation space, looping, particles live up to {}s: on a target moving at {} m/s they leave a trail ~{} m long; use Local to keep them on the target",
+                        fmt_num(lifetime),
+                        fmt_num(speed),
+                        fmt_num(speed * lifetime)
+                    ),
+                );
             }
         }
+    }
+
+    match package_string(project) {
+        Ok(text) => match ProjectV2::from_ron_str_with_warnings(&text) {
+            Ok((reloaded, _)) => {
+                if reloaded.to_ron_string().ok().as_deref() != Some(text.as_str()) {
+                    d.errors.push("exported package does not load back unchanged".into());
+                }
+            }
+            Err(e) => d.errors.push(format!("exported package does not load back: {}", e)),
+        },
         Err(e) => d.errors.push(e),
     }
 
@@ -1022,7 +1165,7 @@ fn spawner_schedule(settings: &SpawnerSettings, horizon: f32) -> (Vec<f32>, Stri
 }
 
 fn simulate_particle(
-    effect: &EffectEditor,
+    effect: &ParticleEffectDef,
     mortal: bool,
     parent: Option<&Attrs>,
     birth: f32,
@@ -1156,15 +1299,15 @@ fn alive_from_births(births: &[f32], samples: &[Sample]) -> Vec<f32> {
 
 /// Longest lifetime of an effect's particles, from a few dry runs of its init
 /// modifiers. Immortal particles count as `MAX_PARTICLE_TIME`.
-fn max_lifetime(effect: &EffectEditor, mortal: bool, rng: &mut StdRng) -> f32 {
+fn max_lifetime(layer: &ParticlesLayerDef, mortal: bool, rng: &mut StdRng) -> f32 {
     if !mortal {
         return MAX_PARTICLE_TIME;
     }
-    let parent = effect.parent.as_ref().map(|_| Attrs::default());
+    let parent = layer.parent.as_ref().map(|_| Attrs::default());
     let mut max: f32 = 0.0;
     for _ in 0..64 {
         let mut p = Attrs::default();
-        for m in effect.init_modifiers.iter() {
+        for m in layer.effect.init_modifiers.iter() {
             if apply_init(m, &mut p, parent.as_ref(), rng, 0.0).is_err() {
                 return 1.0;
             }
@@ -1174,14 +1317,14 @@ fn max_lifetime(effect: &EffectEditor, mortal: bool, rng: &mut StdRng) -> f32 {
     max.clamp(DT, MAX_PARTICLE_TIME)
 }
 
-fn simulate_project(project: &OmagariProject, n_samples: usize, seed: u64) -> (Vec<EffectSim>, f32) {
-    let effects = &project.effects;
+fn simulate_project(project: &ProjectV2, n_samples: usize, seed: u64) -> (Vec<EffectSim>, f32) {
+    let effects = &particle_layers(project)[..];
     let mut rng = StdRng::seed_from_u64(seed);
 
     let mortal: Vec<bool> = effects
         .iter()
         .map(|e| {
-            let layout = e.produce().particle_layout();
+            let layout = e.produce(&mut Vec::new()).particle_layout();
             layout.contains(Attribute::AGE) && layout.contains(Attribute::LIFETIME)
         })
         .collect();
@@ -1189,7 +1332,7 @@ fn simulate_project(project: &OmagariProject, n_samples: usize, seed: u64) -> (V
     // Longest chain of lifetimes (a child lives on after its parent particle).
     let mut chain_life = vec![0.0f32; effects.len()];
     for i in 0..effects.len() {
-        let own = max_lifetime(&effects[i], mortal[i], &mut rng);
+        let own = max_lifetime(effects[i], mortal[i], &mut rng);
         chain_life[i] = own + parent_index(effects, i).map(|pi| chain_life[pi]).unwrap_or(0.0);
     }
     let longest_chain = chain_life.iter().cloned().fold(0.0, f32::max);
@@ -1198,10 +1341,10 @@ fn simulate_project(project: &OmagariProject, n_samples: usize, seed: u64) -> (V
     // Spawners that repeat forever are shown long enough to reach a steady state.
     let mut emission_end: f32 = 0.0;
     for e in effects.iter().filter(|e| e.parent.is_none()) {
-        let s = &e.spawner_settings;
-        let duration = s.spawn_duration().range()[1].max(0.0);
-        let period = s.period().range()[1].max(duration);
-        let emission = match s.cycle_count() {
+        let s = &e.effect.spawner;
+        let duration = s.spawn_duration.range()[1].max(0.0);
+        let period = s.period.range()[1].max(duration);
+        let emission = match s.cycle_count {
             0 => (period * 2.0).max(longest_chain * 2.0).max(2.0),
             1 => duration,
             n => period * (n - 1) as f32 + duration,
@@ -1232,12 +1375,12 @@ fn simulate_project(project: &OmagariProject, n_samples: usize, seed: u64) -> (V
         // Birth candidates: (time, parent state, weight).
         let result: Result<(), String> = (|| {
             if effect.parent.is_none() {
-                let (births, text, forever) = spawner_schedule(&effect.spawner_settings, horizon);
+                let (births, text, forever) = spawner_schedule(&effect.effect.spawner.to_settings(), horizon);
                 sim.spawn_text = text;
                 sim.forever = forever;
                 for b in weighted_picks(&births, n_samples, &mut rng) {
                     let t = (b as f32 + rng.random::<f32>()) * DT;
-                    sim.samples.push(simulate_particle(effect, mortal, None, t, particle_time(mortal, t), &mut rng)?);
+                    sim.samples.push(simulate_particle(&effect.effect, mortal, None, t, particle_time(mortal, t), &mut rng)?);
                 }
                 sim.alive = alive_from_births(&births, &sim.samples);
                 sim.births = births;
@@ -1275,7 +1418,7 @@ fn simulate_project(project: &OmagariProject, n_samples: usize, seed: u64) -> (V
                 }
                 let mut always = 0u32;
                 let mut on_die = 0u32;
-                for m in emit_modifiers(&effects[pi]).filter(|m| m.child_index == child_index) {
+                for m in emit_modifiers(effects[pi]).filter(|m| m.child_index == child_index) {
                     let count = match &m.count_expr {
                         ExprWriterEditor::U32(c) => *c,
                         _ => 0,
@@ -1306,7 +1449,7 @@ fn simulate_project(project: &OmagariProject, n_samples: usize, seed: u64) -> (V
                 for c in weighted_picks(&weights, n_samples, &mut rng) {
                     let (t, state) = candidates[c];
                     let state = state.clone();
-                    sim.samples.push(simulate_particle(effect, mortal, Some(&state), t, particle_time(mortal, t), &mut rng)?);
+                    sim.samples.push(simulate_particle(&effect.effect, mortal, Some(&state), t, particle_time(mortal, t), &mut rng)?);
                 }
                 sim.alive = alive_from_births(&births, &sim.samples);
                 sim.births = births;
@@ -1447,7 +1590,7 @@ fn base_color(init: &Attrs) -> Vec4 {
     }
 }
 
-fn describe_color(effect: &EffectEditor, samples: &[Sample], out: &mut String) {
+fn describe_color(effect: &ParticleEffectDef, samples: &[Sample], out: &mut String) {
     let color_mod = effect.render_modifiers.iter().find_map(|m| match m {
         RenderModifierEditor::ColorOverLifetime(c) => Some(c),
         _ => None,
@@ -1546,7 +1689,7 @@ fn describe_color(effect: &EffectEditor, samples: &[Sample], out: &mut String) {
     }
 }
 
-fn describe_size(effect: &EffectEditor, samples: &[Sample], out: &mut String) {
+fn describe_size(effect: &ParticleEffectDef, samples: &[Sample], out: &mut String) {
     let size_mod = effect.render_modifiers.iter().find_map(|m| match m {
         RenderModifierEditor::SizeOverLifetime(s) => Some(s),
         _ => None,
@@ -1609,14 +1752,65 @@ fn timeline_text(alive: &[f32], horizon: f32) -> String {
         .join(" ")
 }
 
-/// Simulates a project and describes every effect in a compact text form.
+/// Blending, texture sampling and orientation of a layer.
+fn render_text(effect: &ParticleEffectDef) -> String {
+    let blend = match effect.alpha_mode {
+        AlphaModeDef::Blend => "Blend".to_string(),
+        AlphaModeDef::Premultiply => "Premultiply".to_string(),
+        AlphaModeDef::Add => "Add (additive glow)".to_string(),
+        AlphaModeDef::Multiply => "Multiply".to_string(),
+        AlphaModeDef::Mask(c) => format!("Mask (cutoff {})", fmt_num(c)),
+        AlphaModeDef::Opaque => "Opaque".to_string(),
+    };
+    let sampling = effect.render_modifiers.iter().find_map(|m| match m {
+        RenderModifierEditor::ParticleTexture(t) => Some(format!("{:?}", t.sample_mapping)),
+        _ => None,
+    });
+    let orient = effect.render_modifiers.iter().find_map(|m| match m {
+        RenderModifierEditor::Orient(o) => Some(format!("{:?}", o.mode)),
+        _ => None,
+    });
+    format!(
+        "render: blend {}; texture sampling {}; orient {}",
+        blend,
+        sampling.unwrap_or_else(|| "none (untextured quads)".into()),
+        orient.unwrap_or_else(|| "default (no Orient modifier)".into())
+    )
+}
+
+/// Simulation space, with the trail a moving target leaves in `Global`.
+fn space_text(project: &ProjectV2, layer: &ParticlesLayerDef, layers: &[&ParticlesLayerDef], index: usize) -> String {
+    match layer.simulation_space {
+        SimulationSpaceDef::Local => "Local — particles move with the target".into(),
+        SimulationSpaceDef::Global => {
+            let speed = target_speed(project);
+            let looping = layers[root_index(layers, index)].effect.spawner.cycle_count == 0;
+            let trail = match layer.effect.max_lifetime() {
+                Some(l) => format!(
+                    "on a target moving at {} m/s particles trail ~{} m behind (lifetime up to {}s)",
+                    fmt_num(speed),
+                    fmt_num(speed * l),
+                    fmt_num(l)
+                ),
+                None => "on a moving target particles trail behind".into(),
+            };
+            format!(
+                "Global — particles stay where they were emitted; {}{}",
+                trail,
+                if looping { ", for as long as it loops" } else { "" }
+            )
+        }
+    }
+}
+
+/// Simulates a project and describes every layer in a compact text form.
 pub fn analyze_project(
-    project: &OmagariProject,
-    registry: &AppTypeRegistry,
+    project: &ProjectV2,
+    assets_root: &Path,
     n_samples: usize,
     only_effect: Option<&str>,
 ) -> String {
-    let diagnostics = check_project(project, registry);
+    let diagnostics = check_project(project, assets_root);
     let mut out = diagnostics.render();
     if !diagnostics.errors.is_empty() {
         out.push_str("\n(simulation still runs, but results for broken effects are unreliable)\n");
@@ -1624,7 +1818,7 @@ pub fn analyze_project(
 
     let (sims, horizon) = simulate_project(project, n_samples.clamp(20, 2000), 42);
     let truncated = horizon >= MAX_TIMELINE - DT;
-    let effects = &project.effects;
+    let effects = particle_layers(project);
     let mut total_alive = vec![0.0f32; bins(horizon)];
     let mut overall_extent: f32 = 0.0;
     let mut any_forever = false;
@@ -1640,11 +1834,6 @@ pub fn analyze_project(
             }
         }
 
-        let texture = effect
-            .texture_index
-            .and_then(|t| PARTICLE_TEXTURES.get(t))
-            .map(|t| t.ui_label)
-            .unwrap_or("none");
         let role = match &effect.parent {
             Some(p) => format!("child of \"{}\"", p),
             None => "root".into(),
@@ -1652,9 +1841,15 @@ pub fn analyze_project(
         let _ = writeln!(
             out,
             "\n## [{}] \"{}\" — {}, texture {}, capacity {}",
-            i, effect.name, role, texture, effect.capacity
+            i,
+            effect.name,
+            role,
+            texture_label(project, effect),
+            effect.effect.capacity
         );
         let _ = writeln!(out, "  spawn: {}", sim.spawn_text);
+        let _ = writeln!(out, "  {}", render_text(&effect.effect));
+        let _ = writeln!(out, "  space: {}", space_text(project, effect, &effects, i));
         if let Some(e) = &sim.error {
             let _ = writeln!(out, "  simulation failed: {}", e);
             continue;
@@ -1667,8 +1862,8 @@ pub fn analyze_project(
 
         let total_births: f32 = sim.births.iter().sum();
         let peak = sim.alive.iter().cloned().fold(0.0, f32::max);
-        let capacity_note = if peak > effect.capacity as f32 {
-            format!(" — EXCEEDS capacity {}, spawning will be capped", effect.capacity)
+        let capacity_note = if peak > effect.effect.capacity as f32 {
+            format!(" — EXCEEDS capacity {}, spawning will be capped", effect.effect.capacity)
         } else {
             String::new()
         };
@@ -1784,17 +1979,17 @@ pub fn analyze_project(
             let _ = writeln!(out, "  editor stages: {}; AIR shows all", hidden.join(", "));
         }
 
-        describe_size(effect, samples, &mut out);
-        describe_color(effect, samples, &mut out);
+        describe_size(&effect.effect, samples, &mut out);
+        describe_color(&effect.effect, samples, &mut out);
 
         if samples.iter().any(|s| s.nan) {
             let _ = writeln!(out, "  WARNING: some positions become NaN (e.g. Normalized of a zero vector)");
         }
         let zero_v = samples.iter().filter(|s| s.zero_velocity).count();
-        if zero_v > 0 {
+        if zero_v > 0 && orients_along_velocity(&effect.effect) {
             let _ = writeln!(
                 out,
-                "  WARNING: {}% of particles have zero velocity at some point; the editor orients particles along velocity, so they may render invisible then",
+                "  WARNING: {}% of particles have zero velocity at some point; Orient(AlongVelocity) orients particles along it, so they may render invisible then",
                 (zero_v * 100 / samples.len())
             );
         }
@@ -1836,93 +2031,264 @@ pub fn analyze_project(
     }
     let _ = writeln!(
         out,
-        "\n(CPU approximation, {} samples per effect, 60 updates/s. Spawned at the origin, Y is up.)",
+        "\n(CPU approximation, {} samples per layer, 60 updates/s. Spawned at the origin of a still target, Y is up.)",
         n_samples.clamp(20, 2000)
     );
     out
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse(text: &str) -> OmagariProject {
-        ron::from_str(text).unwrap_or_else(|e| panic!("{}\n{}", e, text))
+    fn assets_root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets")
     }
 
-    /// Every recipe in the agent guide must pass the checks it tells agents to run.
+    fn parse(text: &str) -> ProjectV2 {
+        ProjectV2::from_ron_str(text).unwrap_or_else(|e| panic!("{}\n{}", e, text))
+    }
+
+    /// A one-layer v2 project around the given init/update/render modifiers.
+    fn layer_project(extra_layer_fields: &str, effect_fields: &str) -> ProjectV2 {
+        parse(&format!(
+            r#"(
+                version: 2,
+                assets: [(id: "spark1", kind: Texture((path: "omagari://textures/spark1.png")))],
+                layers: [Particles((
+                    name: "a",
+                    texture: Some("spark1"),
+                    {}
+                    effect: (
+                        capacity: 10,
+                        spawner: (count: Single(1.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                        {}
+                    ),
+                ))],
+            )"#,
+            extra_layer_fields, effect_fields
+        ))
+    }
+
+    /// Every recipe in the agent guide is a v2 project and passes the checks
+    /// it tells agents to run, with no warning at all.
     #[test]
     fn guide_recipes_pass_checks() {
-        let registry = type_registry();
         let recipes = crate::mcp::GUIDE.split("## Recipes").nth(1).unwrap();
         let recipes = recipes.split("\n## ").next().unwrap();
         let mut checked = 0;
         for block in recipes.split("```ron\n").skip(1) {
             let text = block.split("```").next().unwrap();
-            let project = parse(text);
-            let d = check_project(&project, &registry);
+            let (project, migration) = ProjectV2::from_ron_str_with_warnings(text)
+                .unwrap_or_else(|e| panic!("{}\n{}", e, text));
+            assert!(text.contains("version: 2"), "recipes must be v2:\n{}", text);
+            assert!(migration.is_empty(), "{:?}\n{}", migration, text);
+            let d = check_project(&project, &assets_root());
             assert!(d.errors.is_empty() && d.warnings.is_empty(), "{}\n{}", d.render(), text);
-            analyze_project(&project, &registry, 50, None);
+            let mut produce_warnings = Vec::new();
+            for (_, layer) in project.particle_layers() {
+                layer.produce(&mut produce_warnings);
+            }
+            assert!(produce_warnings.is_empty(), "{:?}", produce_warnings);
+            let report = analyze_project(&project, &assets_root(), 50, None);
+            assert!(report.contains("## Whole project"), "{}", report);
             checked += 1;
         }
-        assert!(checked >= 5, "only {} recipes found", checked);
+        assert!(checked >= 6, "only {} recipes found", checked);
+    }
+
+    /// The format example in the guide parses as v2.
+    #[test]
+    fn guide_format_example_parses() {
+        let format = crate::mcp::GUIDE.split("## Format").nth(1).unwrap();
+        let text = format.split("```ron\n").nth(1).unwrap().split("```").next().unwrap();
+        let (project, warnings) = ProjectV2::from_ron_str_with_warnings(text).unwrap_or_else(|e| panic!("{}\n{}", e, text));
+        assert!(warnings.is_empty(), "{:?}", warnings);
+        assert_eq!(project.layers.len(), 1);
     }
 
     #[test]
     fn examples_analyze() {
-        let registry = type_registry();
         let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/examples");
         for entry in std::fs::read_dir(examples).unwrap() {
             let path = entry.unwrap().path();
             if path.to_string_lossy().ends_with(".omagari.ron") {
                 let project = parse(&std::fs::read_to_string(&path).unwrap());
-                let report = analyze_project(&project, &registry, 50, None);
+                let d = check_project(&project, &assets_root());
+                assert!(d.errors.is_empty(), "{}: {}", path.display(), d.render());
+                let report = analyze_project(&project, &assets_root(), 50, None);
                 assert!(report.contains("## Whole project"), "{}", report);
             }
         }
     }
 
+    /// v1 text is migrated and checked like v2.
     #[test]
-    fn reports_type_and_structure_errors() {
-        let registry = type_registry();
+    fn v1_projects_are_checked_after_migration() {
         let project = parse(
             r#"(effects: [
                 (name: "a", parent: None, capacity: 10,
                  spawner_settings: (count: Single(1.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
-                 texture_index: Some(0),
-                 init_modifiers: [SetAttribute((attr: "size", attr_expr: Vec3((1.0, 1.0, 1.0))))],
-                 update_modifiers: [], render_modifiers: []),
-                (name: "b", parent: Some("a"), capacity: 10,
-                 spawner_settings: (count: Single(1.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
-                 texture_index: Some(0),
-                 init_modifiers: [SetAttribute((attr: "position", attr_expr: Float(1.0)))],
+                 texture_index: Some(2),
+                 init_modifiers: [SetAttribute((attr: "lifetime", attr_expr: Float(1.0))), SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 1.0, 0.0))))],
                  update_modifiers: [], render_modifiers: []),
             ])"#,
         );
-        let errors = check_project(&project, &registry).errors.join("\n");
-        assert!(errors.contains("[a] init SetAttribute: SetAttribute(\"size\") needs f32, got vec3"), "{}", errors);
-        assert!(errors.contains("[a] bevy_hanabi") == false, "{}", errors);
-        assert!(errors.contains("[b] parent \"a\" has no EmitSpawnEventModifier with child_index 0"), "{}", errors);
-        assert!(errors.contains("[b] init SetAttribute: SetAttribute(\"position\") needs vec3, got f32"), "{}", errors);
+        assert_eq!(project.version, 2);
+        let d = check_project(&project, &assets_root());
+        assert!(d.errors.is_empty(), "{}", d.render());
+        let report = analyze_project(&project, &assets_root(), 20, None);
+        assert!(report.contains("texture \"spark1\" (omagari://textures/spark1.png)"), "{}", report);
+        assert!(report.contains("space: Global"), "{}", report);
+        assert!(report.contains("orient AlongVelocity"), "{}", report);
     }
 
     #[test]
-    fn motionless_particles_are_reported() {
-        let registry = type_registry();
+    fn reports_type_and_structure_errors() {
         let project = parse(
-            r#"(effects: [
-                (name: "a", parent: None, capacity: 10,
-                 spawner_settings: (count: Single(1.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
-                 texture_index: Some(0),
-                 init_modifiers: [SetAttribute((attr: "lifetime", attr_expr: Float(1.0)))],
-                 update_modifiers: [], render_modifiers: []),
+            r#"(version: 2, layers: [
+                Particles((name: "a", effect: (capacity: 10,
+                    spawner: (count: Single(1.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1),
+                    init_modifiers: [SetAttribute((attr: "size", attr_expr: Vec3((1.0, 1.0, 1.0))))],
+                    update_modifiers: [SetAttribute((attr: "age", attr_expr: Float(0.0)))],
+                    render_modifiers: []))),
+                Particles((name: "b", parent: Some("a"), effect: (capacity: 10,
+                    init_modifiers: [SetAttribute((attr: "position", attr_expr: Float(1.0)))],
+                    render_modifiers: []))),
+                Particles((name: "c", parent: Some("nope"), effect: (render_modifiers: []))),
             ])"#,
         );
-        let d = check_project(&project, &registry);
+        let errors = check_project(&project, &assets_root()).errors.join("\n");
+        assert!(errors.contains("[a] init SetAttribute: SetAttribute(\"size\") needs f32, got vec3"), "{}", errors);
+        assert!(errors.contains("[a] SetAttribute is an init modifier but is listed in update_modifiers"), "{}", errors);
+        assert!(!errors.contains("[a] bevy_hanabi"), "{}", errors);
+        assert!(errors.contains("[b] parent \"a\" has no EmitSpawnEventModifier with child_index 0"), "{}", errors);
+        assert!(errors.contains("[b] init SetAttribute: SetAttribute(\"position\") needs vec3, got f32"), "{}", errors);
+        assert!(errors.contains("[c] parent \"nope\" is not a particle layer"), "{}", errors);
+    }
+
+    #[test]
+    fn textures_are_checked_by_asset_id() {
+        let project = parse(
+            r#"(version: 2,
+                assets: [
+                    (id: "bad", kind: Texture((path: "omagari://textures/nope.png"))),
+                    (id: "file", kind: Texture((path: "vfx/textures/missing.png"))),
+                    (id: "spare", kind: Texture((path: "omagari://textures/glow1.png"))),
+                ],
+                layers: [
+                    Particles((name: "a", texture: Some("ghost"), effect: (render_modifiers: [ParticleTexture(())]))),
+                    Particles((name: "b", texture: Some("bad"), effect: (render_modifiers: [ParticleTexture(())]))),
+                    Particles((name: "c", texture: Some("file"), effect: (render_modifiers: []))),
+                    Particles((name: "d", effect: (render_modifiers: [ParticleTexture(())]))),
+                ])"#,
+        );
+        let d = check_project(&project, &assets_root());
+        let all = d.render();
+        assert!(all.contains("[a] texture \"ghost\" is not in the assets list"), "{}", all);
+        assert!(all.contains("[asset \"bad\"] omagari://textures/nope.png is not a built-in texture"), "{}", all);
+        assert!(all.contains("[asset \"file\"] vfx/textures/missing.png is not in the game assets folder"), "{}", all);
+        assert!(all.contains("[asset \"spare\"] not used by any layer"), "{}", all);
+        assert!(all.contains("[c] texture \"file\" is set, but no ParticleTexture render modifier samples it"), "{}", all);
+        assert!(all.contains("[d] ParticleTexture samples the layer's texture, but the layer has none"), "{}", all);
+    }
+
+    #[test]
+    fn relative_textures_are_found_in_the_game_folder() {
+        let project = parse(
+            r#"(version: 2,
+                assets: [(id: "glow", kind: Texture((path: "glow1.png")))],
+                layers: [Particles((name: "a", texture: Some("glow"), effect: (render_modifiers: [ParticleTexture(())])))])"#,
+        );
+        let d = check_project(&project, &assets_root());
+        assert!(!d.render().contains("game assets folder"), "{}", d.render());
+    }
+
+    #[test]
+    fn motionless_particles_are_reported_only_when_oriented_along_velocity() {
+        let init = r#"init_modifiers: [SetAttribute((attr: "lifetime", attr_expr: Float(1.0)))],"#;
+        let project = layer_project(
+            "",
+            &format!("{} render_modifiers: [ParticleTexture(()), Orient((mode: AlongVelocity))],", init),
+        );
+        let d = check_project(&project, &assets_root());
         assert!(d.errors.is_empty(), "{}", d.render());
         assert!(d.warnings.iter().any(|w| w.contains("nothing sets a velocity")), "{}", d.render());
         assert!(d.warnings.iter().any(|w| w.contains("never die")), "{}", d.render());
-        let report = analyze_project(&project, &registry, 20, None);
+        let report = analyze_project(&project, &assets_root(), 20, None);
         assert!(report.contains("zero velocity"), "{}", report);
+
+        let billboard = layer_project(
+            "",
+            &format!("{} render_modifiers: [ParticleTexture(()), Orient((mode: ParallelCameraDepthPlane))],", init),
+        );
+        let d = check_project(&billboard, &assets_root());
+        assert!(!d.warnings.iter().any(|w| w.contains("nothing sets a velocity")), "{}", d.render());
+        let report = analyze_project(&billboard, &assets_root(), 20, None);
+        assert!(!report.contains("zero velocity"), "{}", report);
+    }
+
+    #[test]
+    fn global_looping_layers_warn_about_trails() {
+        let effect = r#"init_modifiers: [
+                SetAttribute((attr: "position", attr_expr: Vec3((0.0, 0.0, 0.0)))),
+                SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                SetAttribute((attr: "lifetime", attr_expr: Float(2.0))),
+                SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 1.0, 0.0)))),
+            ],
+            render_modifiers: [ParticleTexture(())],"#;
+        let looping = |space: &str| {
+            let mut p = layer_project(&format!("simulation_space: {}, play: Loop,", space), effect);
+            let LayerDef::Particles(l) = &mut p.layers[0];
+            l.effect.spawner.cycle_count = 0;
+            p
+        };
+
+        let global = looping("Global");
+        let d = check_project(&global, &assets_root());
+        let trail = d.warnings.iter().find(|w| w.contains("Global simulation space")).cloned();
+        assert!(trail.as_deref().is_some_and(|w| w.contains("3.60 m/s") && w.contains("~7.20 m")), "{}", d.render());
+        let report = analyze_project(&global, &assets_root(), 20, None);
+        assert!(report.contains("space: Global"), "{}", report);
+        assert!(report.contains("trail ~7.20 m"), "{}", report);
+
+        let local = looping("Local");
+        let d = check_project(&local, &assets_root());
+        assert!(!d.render().contains("Global simulation space"), "{}", d.render());
+        assert!(analyze_project(&local, &assets_root(), 20, None).contains("space: Local"));
+
+        // The preview motion's speed is used when set.
+        let mut moving = looping("Global");
+        moving.preview = Some(PreviewDef {
+            motion: Some(PreviewMotion::Circle { radius: 3.0, speed: 7.0 }),
+            ..default()
+        });
+        let d = check_project(&moving, &assets_root());
+        assert!(d.render().contains("~14 m"), "{}", d.render());
+
+        // One-shot layers leave no lasting trail.
+        let once = layer_project("simulation_space: Global, play: OnStart,", effect);
+        assert!(!check_project(&once, &assets_root()).render().contains("Global simulation space"));
+    }
+
+    #[test]
+    fn play_mode_must_match_the_spawner() {
+        let effect = r#"init_modifiers: [SetAttribute((attr: "position", attr_expr: Vec3((0.0, 0.0, 0.0)))), SetAttribute((attr: "age", attr_expr: Float(0.0))), SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 1.0, 0.0))))], render_modifiers: [ParticleTexture(())],"#;
+        let project = layer_project("play: Loop,", effect);
+        let d = check_project(&project, &assets_root());
+        assert!(d.render().contains("play is Loop, but the spawner stops after 1 cycle(s)"), "{}", d.render());
+    }
+
+    #[test]
+    fn package_round_trip_is_checked() {
+        let project = layer_project(
+            "play: OnStart,",
+            r#"init_modifiers: [SetAttribute((attr: "position", attr_expr: Vec3((0.0, 0.0, 0.0)))), SetAttribute((attr: "age", attr_expr: Float(0.0))), SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 1.0, 0.0))))], render_modifiers: [ParticleTexture(()), Orient((mode: AlongVelocity))],"#,
+        );
+        let d = check_project(&project, &assets_root());
+        assert!(d.errors.is_empty() && d.warnings.is_empty(), "{}", d.render());
+        let text = package_string(&project).unwrap();
+        assert!(text.contains("version: 2") && !text.contains("preview"), "{}", text);
     }
 }

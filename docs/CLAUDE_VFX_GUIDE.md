@@ -1,76 +1,103 @@
 # Omagari VFX guide for AI agents
 
-You build bevy_hanabi particle effects as Omagari project files (`*.omagari.ron`) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
+You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design, game.
 
 ## Workflow
 
-1. **Ask before building** (skip what the user already said): what the effect is, one-shot or looping, how long, main colors, and the game's scale (how big is a character in world units, how far is the camera). Default assumption: 1 unit = 1 meter, the effect is seen from about 5 to 10 units away.
+1. **Ask before building** (skip what the user already said): what the effect is, one-shot or looping, how long, main colors, whether it sits on a moving character, and the game's scale (how big is a character in world units, how far is the camera). Default assumption: 1 unit = 1 meter, the effect is seen from about 5 to 10 units away.
 2. **Start from something that works.** Copy a recipe (section "recipes") or a bundled example (`read_project("examples/fireworks")`, also `explode`, `greenvapor`, `magicburst`). Writing from scratch is how type errors happen.
 3. **Save with `write_project(name, ron)`.** It refuses to save on errors and returns the analysis. Fix every ERROR. Read every WARNING; most are real problems.
-4. **Tune with `analyze_project(name)` until the numbers match the intent.** Check: spawn pattern, peak count vs capacity, lifetime, motion extents (is it the right size? does it go up/down/outward?), size in world units, colors and the alpha window. Use `effect: "<name>"` to describe a single effect and save tokens.
+4. **Tune with `analyze_project(name)` until the numbers match the intent.** Check: spawn pattern, peak count vs capacity, lifetime, motion extents (is it the right size? does it go up/down/outward?), size in world units, colors and the alpha window, simulation space. Use `effect: "<layer name>"` to describe a single layer and save tokens.
 5. **For small changes, edit the saved file directly** (`saved_effects/<name>.omagari.ron`) with your file-edit tool, then call `check_project(name)` or `analyze_project(name)`. This is far cheaper than resending the whole RON.
 6. **Show it to the user with `preview_in_editor(name, stage)`**, with stage `air`, `floor` or `object` (see section "design"). Ask what they see and what to change, in words ("too fast", "too dim", "should spread wider"). Section "design" maps common feedback to parameters. This replaces any unsaved edits the user had open in the editor, so say so if they were editing.
-7. **Export with `export_project(name, copy_to?)`** when the user is happy. `copy_to` can be the game's asset folder. Remind the user how textures are passed (section "textures").
+7. **Export with `export_project(name, copy_to?)`** when the user is happy. It writes `<name>.vfx.ron` into the game assets folder's `vfx/` (or `exported_effects/` when none is configured). Section "game" says how the game plays it.
 
-The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSphere is approximate). Trust it for scale, timing, counts and colors, not for exact looks.
+The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSphere is approximate, the target stands still). Trust it for scale, timing, counts and colors, not for exact looks.
 
 ## Format
 
-A project is a list of effects. Every effect is spawned at the same point (the origin in the editor); Y is up.
+A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect. All layers play at the same point, the target (the origin in the editor); Y is up.
 
 ```ron
 (
-    effects: [
-        (
+    version: 2,                          // always 2; files without it are old v1 projects
+    assets: [
+        (id: "spark1", kind: Texture((path: "omagari://textures/spark1.png"))),
+    ],
+    layers: [
+        Particles((
             name: "sparks",              // unique; children refer to parents by name
             parent: None,                // or Some("rocket"); see section "hierarchy"
-            capacity: 512,               // max particles alive at once; keep it near the peak count
-            spawner_settings: (
-                count: Single(200.0),
-                spawn_duration: Single(0.0),
-                period: Single(1.0),
-                cycle_count: 1,
-                starts_active: true,
-                emit_on_start: true,
+            simulation_space: Local,     // Local | Global; see section "layers"
+            play: OnStart,               // Loop | OnStart; must match the spawner
+            texture: Some("spark1"),     // asset id; see section "textures"
+            effect: (
+                capacity: 512,           // max particles alive at once; keep it near the peak count
+                spawner: (count: Single(200.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Blend,       // see section "render"
+                init_modifiers: [ /* run once when a particle is born */ ],
+                update_modifiers: [ /* run every frame */ ],
+                render_modifiers: [
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
             ),
-            texture_index: Some(2),      // see section "textures"
-            init_modifiers: [ /* run once when a particle is born */ ],
-            update_modifiers: [ /* run every frame */ ],
-            render_modifiers: [ /* ColorOverLifetime, SizeOverLifetime */ ],
-        ),
+        )),
     ],
 )
 ```
 
 RON rules that trip people up:
-- Modifiers are an enum variant wrapping a struct, so they take **double parentheses**: `SetAttribute((attr: "size", attr_expr: Float(0.05)))`.
+- Enum variants wrapping a struct take **double parentheses**: `Particles((...))`, `SetAttribute((attr: "size", attr_expr: Float(0.05)))`, `Texture((path: "..."))`.
 - Vector literals also take double parentheses: `Vec3((0.0, 1.0, 0.0))`, `Vec4((1.0, 0.5, 0.0, 1.0))`.
 - Floats need a decimal point: `Float(1.0)`, not `Float(1)`. `U32(5)` is an integer.
 - Attribute names are lowercase strings: `"position"`, `"hdr_color"`.
-- Comments (`//`) are allowed in RON, and the editor drops them when it saves the file again.
+- Missing fields take defaults, but write the ones shown above: defaults are not always what you want (a layer's default is `Local`, `Loop`, no texture).
+- Comments (`//`) are allowed in RON; `write_project` keeps them, the editor drops them when the user saves.
 
-The editor always adds these to every effect, and you cannot change them: alpha blending, the texture modulating opacity from its red channel, particles oriented along their velocity, and global simulation space.
+Nothing is hard-coded any more: texture sampling and orientation are render modifiers, blending is `alpha_mode`. A v1 project (`effects: [...]`) still loads and is migrated (Global space, the old fixed render settings made explicit); always write v2.
+
+Projects can also hold `parameters`, `triggers`, `sockets` and `fit`; the runtime doesn't use them yet, so leave them out (the check warns).
+
+## Layers
+
+| Field | Values | Meaning |
+| :-- | :-- | :-- |
+| `name` | string | Unique. Used by `parent` and `analyze_project(effect: ...)`. |
+| `parent` | `None` / `Some("name")` | Spawned by the parent's spawn events (section "hierarchy"). |
+| `attach` | `Target` | Where the layer sits. Only `Target` (the entity the game spawns the effect on) works now. |
+| `simulation_space` | `Local` / `Global` | See below. |
+| `play` | `Loop` / `OnStart` | `Loop` = the spawner repeats (`cycle_count: 0`); `OnStart` = one-shot (`cycle_count` ≥ 1). The check warns when they disagree. `OnTrigger`/`While` come later. |
+| `texture` | `None` / `Some("asset id")` | The texture the `ParticleTexture` render modifier samples. |
+| `effect` | struct | Capacity, spawner, blending, modifiers. |
+
+**Simulation space** matters as soon as the target moves (a running character, a swung weapon):
+- `Local`: particles move with the target. Use it for anything that should stay on the character: auras, shields, orbiting sparks, status effects. It is the default.
+- `Global`: particles stay where they were emitted, so a moving target leaves a trail behind. Use it for smoke trails, footstep dust, embers left behind. A looping `Global` layer with long-lived particles leaves a long trail: `analyze_project` estimates it as target speed (3.6 m/s, or the preview motion's speed) × lifetime and warns from 1 s of lifetime.
+
+In the editor and in `analyze_project` the target stands still, so both spaces look the same there.
 
 ## Spawner
 
-Only root effects (no parent) use `spawner_settings`. A child effect is spawned by its parent's spawn events, and its own spawner settings are ignored.
+Only root layers (no parent) use `spawner`. A child layer is spawned by its parent's spawn events, and its own spawner is ignored.
 
 A spawner repeats a cycle: spawn `count` particles spread evenly over `spawn_duration` seconds, then rest until `period` has passed. `cycle_count` is the number of cycles, `0` = forever.
 
-| Pattern | count | spawn_duration | period | cycle_count |
-| :-- | :-- | :-- | :-- | :-- |
-| One burst (explosion, impact) | 200 | 0.0 | 1.0 | 1 |
-| Steady stream forever (fire, smoke, aura) | rate × 1 | 1.0 | 1.0 | 0 |
-| Emit for 2 s then stop | rate × 2 | 2.0 | 2.0 | 1 |
-| Burst every 0.5 s forever (pulses) | 30 | 0.0 | 0.5 | 0 |
+| Pattern | count | spawn_duration | period | cycle_count | play |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| One burst (explosion, impact) | 200 | 0.0 | 1.0 | 1 | OnStart |
+| Steady stream forever (fire, smoke, aura) | rate × 1 | 1.0 | 1.0 | 0 | Loop |
+| Emit for 2 s then stop | rate × 2 | 2.0 | 2.0 | 1 | OnStart |
+| Burst every 0.5 s forever (pulses) | 30 | 0.0 | 0.5 | 0 | Loop |
 
 - `spawn_duration: 0.0` means everything spawns in the same frame.
 - With `cycle_count: 1` the period is ignored.
 - Never combine `cycle_count: 0` with `period: 0.0` and `spawn_duration: 0.0`: that bursts `count` particles every frame.
-- `count` also accepts `Uniform((min, max))`, but the editor turns it back into `Single(min)` when the user opens the spawner panel. Prefer `Single`.
-- `starts_active: false` or `emit_on_start: false` mean game code has to start the effect; leave both `true`.
+- `count`, `spawn_duration` and `period` also accept `Uniform((min, max))`; the analysis uses the mean count.
+- `starts_active: false` or `emit_on_start: false` mean game code has to start the layer; leave both `true`.
+- When the game stops an effect, spawners stop and live particles finish their life, so a looping layer ends smoothly.
 
 ## Modifiers
 
@@ -88,7 +115,7 @@ All expressions (`*_expr`) are expression trees (section "expressions"). Types m
 | `SetVelocityCircle((center_expr: vec3, axis_expr: vec3, speed_expr: f32))` | — | Velocity pointing away from the axis, in the circle's plane. |
 | `SetVelocityTangent((origin_expr: vec3, axis_expr: vec3, speed_expr: f32))` | — | Velocity tangent around the axis (swirls). Needs a position off the axis. |
 
-Order matters: set the position before a velocity modifier that reads it.
+Order matters: set the position before a velocity modifier that reads it. Positions are relative to the target in `Local` space (and to the spawn point in `Global`).
 
 **Update modifiers** (`update_modifiers`, run every frame, then `position += velocity * dt`):
 
@@ -97,9 +124,9 @@ Order matters: set the position before a velocity modifier that reads it.
 | `AccelModifier((accel_expr: vec3))` | — | Adds acceleration, e.g. gravity `Vec3((0.0, -9.8, 0.0))`. A random expression here gives jitter. |
 | `LinearDragModifier((drag_expr: f32))` | 0 = none, 1–5 typical | Slows particles down; velocity × (1 − drag·dt) each frame. |
 | `ConformToSphereModifier((origin_expr: vec3, radius_expr: f32, influence_dist_expr: f32, attraction_accel_expr: f32, max_attraction_speed_expr: f32))` | — | Pulls particles within `influence_dist` toward a sphere surface. |
-| `EmitSpawnEventModifier((condition: OnDie, count_expr: U32(100), child_index: 0))` | `Always` or `OnDie` | Spawns particles in a child effect. `Always` emits `count` **every frame** per alive particle (60 fps → ×60 per second). See section "hierarchy". |
+| `EmitSpawnEventModifier((condition: OnDie, count_expr: U32(100), child_index: 0))` | `Always` or `OnDie` | Spawns particles in a child layer. `Always` emits `count` **every frame** per alive particle (60 fps → ×60 per second). See section "hierarchy". |
 
-Putting an init modifier in `update_modifiers` (or the reverse) is an error: the editor silently drops it.
+Putting an init modifier in `update_modifiers` (or the reverse) is an error: it is ignored.
 
 ## Expressions
 
@@ -139,8 +166,8 @@ Useful building blocks:
 
 | Attribute | Type | Default | Notes |
 | :-- | :-- | :-- | :-- |
-| `"position"` | vec3 | (0,0,0) | Required by every effect; set it (a position modifier or SetAttribute). |
-| `"velocity"` | vec3 | (0,0,0) | Particles with zero velocity have no orientation and may be invisible. |
+| `"position"` | vec3 | (0,0,0) | Required by every layer; set it (a position modifier or SetAttribute). |
+| `"velocity"` | vec3 | (0,0,0) | With `Orient(AlongVelocity)`, particles with zero velocity have no orientation and may be invisible. |
 | `"age"` | f32 | 0.0 | **Set `age` to `Float(0.0)`** (or use a render modifier) or particles never die. |
 | `"lifetime"` | f32 | 1.0 | Seconds. Particle dies when age ≥ lifetime. |
 | `"size"` | f32 | 1.0 | World units. 1.0 is big: set it explicitly or use SizeOverLifetime. |
@@ -154,6 +181,8 @@ Others exist (`"id"`, `"particle_counter"`, `"axis_x"`, `"axis_y"`, `"axis_z"`, 
 
 ## Render
 
+`render_modifiers` run when particles are drawn; `effect.alpha_mode` sets blending.
+
 **`ColorOverLifetime((gradient: (g: [(t, (r, g, b, a)), ...]), blend: Some(Overwrite), mask: Some((15))))`**
 - `t` goes from 0.0 (birth) to 1.0 (death); keys in increasing order.
 - RGB above 1.0 is HDR and glows with bloom (the editor camera has bloom; the game needs bloom on its camera too). 2–6 reads as bright glowing; 10+ blows out to white.
@@ -163,68 +192,94 @@ Others exist (`"id"`, `"particle_counter"`, `"axis_x"`, `"axis_y"`, `"axis_z"`, 
 
 **`SizeOverLifetime((gradient: (g: [(t, (x, y, z)), ...])))`** sets the particle size in world units over its life (replaces `size`). Use equal x, y, z.
 
+**`ParticleTexture((sample_mapping: ModulateOpacityFromR))`** samples the layer's `texture`. Without it particles are plain squares. `sample_mapping`: `ModulateOpacityFromR` (the texture's red channel is opacity, color comes from the color attributes; right for the built-in grayscale sprites), `Modulate` (color × texture RGBA, for colored textures), `ModulateRGB` (RGB only, alpha untouched).
+
+**`Orient((mode: AlongVelocity))`**: `AlongVelocity` (the sprite's X axis follows the velocity: sparks, streaks; motionless particles may vanish), `ParallelCameraDepthPlane` (flat to the screen: puffs, glows), `FaceCameraPosition` (faces the camera). Always add one: without it, particles are flat quads in the effect's XY plane and vanish when seen from the side (the check warns).
+
+**`alpha_mode`**: `Blend` (normal transparency), `Add` (additive: overlapping particles get brighter, good for glow, fire, magic; black adds nothing), `Premultiply`, `Multiply` (darkens), `Mask(0.5)` (opaque cut-out at that alpha), `Opaque`.
+
 ## Textures
 
-`texture_index` picks the particle sprite. The texture's red channel becomes opacity, so the shape comes from the texture and the color from the color attributes.
+Textures are **assets**: an entry in the project's `assets` list with an id, used by a layer's `texture: Some("<id>")`. Every asset should be used by a layer (the check warns otherwise).
 
-| Index | File | Use for |
-| :-- | :-- | :-- |
-| 0 | cloud.png | soft round puff: smoke, dust, fire body |
-| 1 | cloud2.png | another cloud shape: smoke, vapor, mist |
-| 2 | spark1.png | spark / star: sparks, glitter |
-| 3 | spark2.png | spark variant |
-| 4 | spark3.png | spark variant |
-| 5 | glow1.png | soft glowing dot: embers, magic, fireworks, light orbs |
-| 6 | splat1.png | splat: blood, liquid, impacts |
+```ron
+assets: [
+    (id: "glow1", kind: Texture((path: "omagari://textures/glow1.png"))),
+    (id: "smoke", kind: Texture((path: "vfx/textures/smoke.png", purpose: Sprite))),
+],
+```
 
-In a game, `EffectComplex::spawn(&mut commands, &textures, position, despawn_in)` takes the textures as a list in exactly this order, because the exported file only stores the index. The game must load these images (copy them from `assets/`) into a `Vec<Handle<Image>>` in this order.
+Built-in textures (embedded in the omagari library; the game needs no files). Use the file name without `.png` as the id:
+
+| Path | Use for |
+| :-- | :-- |
+| `omagari://textures/cloud.png` | soft round puff: smoke, dust, fire body |
+| `omagari://textures/cloud2.png` | another cloud shape: smoke, vapor, mist |
+| `omagari://textures/spark1.png` | spark / star: sparks, glitter |
+| `omagari://textures/spark2.png` | spark variant |
+| `omagari://textures/spark3.png` | spark variant |
+| `omagari://textures/glow1.png` | soft glowing dot: embers, magic, fireworks, light orbs |
+| `omagari://textures/splat1.png` | splat: blood, liquid, impacts |
+
+They are grayscale; use `ParticleTexture((sample_mapping: ModulateOpacityFromR))` so the shape comes from the texture and the color from the color attributes.
+
+Other textures use a path relative to the game's `assets/` folder (`vfx/textures/smoke.png`). The file must exist there (`check_project` warns when it doesn't); the editor and the check look it up in the configured game assets folder (or this repository's `assets/`). `purpose` (`Sprite`, `Noise`, `Mask`, `Gradient`) picks wrap and color-space defaults; sprites need nothing else.
 
 ## Hierarchy
 
-A child effect (with `parent: Some("name")`) spawns particles at its parent's particles: trails behind a rocket, an explosion when a rocket dies.
+A child layer (with `parent: Some("name")`) spawns particles at its parent's particles: trails behind a rocket, an explosion when a rocket dies.
 
 1. The parent must be **listed before** the child.
 2. The parent gets an `EmitSpawnEventModifier` in `update_modifiers`. `child_index` is the child's position among that parent's children, counted in list order from 0.
-3. The child needs `InheritAttribute((attr: "position"))` in `init_modifiers`, otherwise its particles appear at the origin.
+3. The child needs `InheritAttribute((attr: "position"))` in `init_modifiers`, otherwise its particles appear at the target's origin.
 4. To pass data, the parent stores it in an attribute and the child reads it with `ParentAttr` or copies it with `InheritAttribute`. For example, a random color per rocket: the parent sets `"u32_0"` to a packed random color, and the child sets `"color"` to `Operator(ParentAttr("u32_0"))`.
 5. Child `capacity` must hold everything all parents emit: `OnDie` count × parent particles, or `Always` count × 60 × parent particles × child lifetime.
+6. Give parent and child the same `simulation_space`.
 
 `read_project("examples/fireworks")` is a complete rocket → trail sparkles + explosion example.
 
 ## Recipes
 
-These pass `check_project`. Copy one, then adjust the numbers.
+These pass `check_project` without warnings. Copy one, then adjust the numbers.
 
 ### Spark burst (one-shot impact)
 
 ```ron
 (
-    effects: [
-        (
+    version: 2,
+    assets: [(id: "spark1", kind: Texture((path: "omagari://textures/spark1.png")))],
+    layers: [
+        Particles((
             name: "sparks",
-            parent: None,
-            capacity: 256,
-            spawner_settings: (count: Single(150.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
-            texture_index: Some(2),
-            init_modifiers: [
-                SetAttribute((attr: "age", attr_expr: Float(0.0))),
-                SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.4), Float(0.9))))),
-                SetAttribute((attr: "size", attr_expr: Float(0.04))),
-                SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(0.05), dimension: Volume)),
-                SetVelocitySphere((center_expr: Vec3((0.0, 0.0, 0.0)), speed_expr: Operator(Uniform(Float(2.0), Float(6.0))))),
-            ],
-            update_modifiers: [
-                AccelModifier((accel_expr: Vec3((0.0, -9.8, 0.0)))),
-                LinearDragModifier((drag_expr: Float(2.0))),
-            ],
-            render_modifiers: [
-                ColorOverLifetime((
-                    gradient: (g: [(0.0, (6.0, 5.0, 3.0, 1.0)), (0.4, (5.0, 2.0, 0.4, 1.0)), (1.0, (2.0, 0.3, 0.0, 0.0))]),
-                    blend: Some(Overwrite),
-                    mask: Some((15)),
-                )),
-            ],
-        ),
+            simulation_space: Local,
+            play: OnStart,
+            texture: Some("spark1"),
+            effect: (
+                capacity: 256,
+                spawner: (count: Single(150.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.4), Float(0.9))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.04))),
+                    SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(0.05), dimension: Volume)),
+                    SetVelocitySphere((center_expr: Vec3((0.0, 0.0, 0.0)), speed_expr: Operator(Uniform(Float(2.0), Float(6.0))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel_expr: Vec3((0.0, -9.8, 0.0)))),
+                    LinearDragModifier((drag_expr: Float(2.0))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (6.0, 5.0, 3.0, 1.0)), (0.4, (5.0, 2.0, 0.4, 1.0)), (1.0, (2.0, 0.3, 0.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
     ],
 )
 ```
@@ -233,32 +288,40 @@ These pass `check_project`. Copy one, then adjust the numbers.
 
 ```ron
 (
-    effects: [
-        (
+    version: 2,
+    assets: [(id: "cloud", kind: Texture((path: "omagari://textures/cloud.png")))],
+    layers: [
+        Particles((
             name: "fire",
-            parent: None,
-            capacity: 512,
-            spawner_settings: (count: Single(300.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
-            texture_index: Some(0),
-            init_modifiers: [
-                SetAttribute((attr: "age", attr_expr: Float(0.0))),
-                SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.6), Float(1.1))))),
-                SetPositionCircle((center_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.25), dimension: Volume)),
-                SetAttribute((attr: "velocity", attr_expr: Operator(Vec3(Operator(Uniform(Float(-0.15), Float(0.15))), Operator(Uniform(Float(0.8), Float(1.6))), Operator(Uniform(Float(-0.15), Float(0.15))))))),
-            ],
-            update_modifiers: [
-                AccelModifier((accel_expr: Vec3((0.0, 1.0, 0.0)))),
-                LinearDragModifier((drag_expr: Float(1.0))),
-            ],
-            render_modifiers: [
-                SizeOverLifetime((gradient: (g: [(0.0, (0.35, 0.35, 0.35)), (1.0, (0.08, 0.08, 0.08))]))),
-                ColorOverLifetime((
-                    gradient: (g: [(0.0, (4.0, 2.5, 0.8, 0.0)), (0.15, (4.0, 1.8, 0.4, 0.8)), (0.6, (2.0, 0.4, 0.05, 0.5)), (1.0, (0.4, 0.05, 0.0, 0.0))]),
-                    blend: Some(Overwrite),
-                    mask: Some((15)),
-                )),
-            ],
-        ),
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("cloud"),
+            effect: (
+                capacity: 512,
+                spawner: (count: Single(300.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.6), Float(1.1))))),
+                    SetPositionCircle((center_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.25), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Vec3(Operator(Uniform(Float(-0.15), Float(0.15))), Operator(Uniform(Float(0.8), Float(1.6))), Operator(Uniform(Float(-0.15), Float(0.15))))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel_expr: Vec3((0.0, 1.0, 0.0)))),
+                    LinearDragModifier((drag_expr: Float(1.0))),
+                ],
+                render_modifiers: [
+                    SizeOverLifetime((gradient: (g: [(0.0, (0.35, 0.35, 0.35)), (1.0, (0.08, 0.08, 0.08))]))),
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (4.0, 2.5, 0.8, 0.0)), (0.15, (4.0, 1.8, 0.4, 0.8)), (0.6, (2.0, 0.4, 0.05, 0.5)), (1.0, (0.4, 0.05, 0.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
     ],
 )
 ```
@@ -267,158 +330,204 @@ These pass `check_project`. Copy one, then adjust the numbers.
 
 ```ron
 (
-    effects: [
-        (
+    version: 2,
+    assets: [(id: "cloud2", kind: Texture((path: "omagari://textures/cloud2.png")))],
+    layers: [
+        Particles((
             name: "smoke",
-            parent: None,
-            capacity: 256,
-            spawner_settings: (count: Single(30.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
-            texture_index: Some(1),
-            init_modifiers: [
-                SetAttribute((attr: "age", attr_expr: Float(0.0))),
-                SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(3.0), Float(5.0))))),
-                SetPositionSphere((center_expr: Vec3((0.0, 0.2, 0.0)), radius_expr: Float(0.2), dimension: Volume)),
-                SetAttribute((attr: "velocity", attr_expr: Operator(Vec3(Operator(Uniform(Float(-0.1), Float(0.1))), Operator(Uniform(Float(0.4), Float(0.7))), Operator(Uniform(Float(-0.1), Float(0.1))))))),
-            ],
-            update_modifiers: [
-                AccelModifier((accel_expr: Operator(Subtract(Operator(Multiply(RandVec3, Float(0.4))), Vec3((0.2, 0.2, 0.2)))))),
-                LinearDragModifier((drag_expr: Float(0.5))),
-            ],
-            render_modifiers: [
-                SizeOverLifetime((gradient: (g: [(0.0, (0.3, 0.3, 0.3)), (1.0, (1.6, 1.6, 1.6))]))),
-                ColorOverLifetime((
-                    gradient: (g: [(0.0, (0.5, 0.5, 0.5, 0.0)), (0.2, (0.45, 0.45, 0.45, 0.35)), (1.0, (0.3, 0.3, 0.3, 0.0))]),
-                    blend: Some(Overwrite),
-                    mask: Some((15)),
-                )),
-            ],
-        ),
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("cloud2"),
+            effect: (
+                capacity: 256,
+                spawner: (count: Single(30.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(3.0), Float(5.0))))),
+                    SetPositionSphere((center_expr: Vec3((0.0, 0.2, 0.0)), radius_expr: Float(0.2), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Vec3(Operator(Uniform(Float(-0.1), Float(0.1))), Operator(Uniform(Float(0.4), Float(0.7))), Operator(Uniform(Float(-0.1), Float(0.1))))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel_expr: Operator(Subtract(Operator(Multiply(RandVec3, Float(0.4))), Vec3((0.2, 0.2, 0.2)))))),
+                    LinearDragModifier((drag_expr: Float(0.5))),
+                ],
+                render_modifiers: [
+                    SizeOverLifetime((gradient: (g: [(0.0, (0.3, 0.3, 0.3)), (1.0, (1.6, 1.6, 1.6))]))),
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (0.5, 0.5, 0.5, 0.0)), (0.2, (0.45, 0.45, 0.45, 0.35)), (1.0, (0.3, 0.3, 0.3, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
     ],
 )
 ```
 
-### Magic orbit (looping swirl on a sphere)
+For smoke left behind a moving character, switch to `simulation_space: Global` (expect a trail warning: lifetime 5 s × 3.6 m/s ≈ 18 m; shorten the lifetime if that is too long).
+
+### Magic orbit (looping swirl on a sphere, additive)
 
 ```ron
 (
-    effects: [
-        (
+    version: 2,
+    assets: [(id: "glow1", kind: Texture((path: "omagari://textures/glow1.png")))],
+    layers: [
+        Particles((
             name: "orbit",
-            parent: None,
-            capacity: 512,
-            spawner_settings: (count: Single(120.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
-            texture_index: Some(5),
-            init_modifiers: [
-                SetAttribute((attr: "age", attr_expr: Float(0.0))),
-                SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(1.5), Float(2.5))))),
-                SetAttribute((attr: "size", attr_expr: Float(0.06))),
-                SetPositionCircle((center_expr: Vec3((0.0, 1.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.8), dimension: Surface)),
-                SetVelocityTangent((origin_expr: Vec3((0.0, 1.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), speed_expr: Operator(Uniform(Float(1.5), Float(2.5))))),
-            ],
-            update_modifiers: [
-                ConformToSphereModifier((origin_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.8), influence_dist_expr: Float(3.0), attraction_accel_expr: Float(8.0), max_attraction_speed_expr: Float(3.0))),
-            ],
-            render_modifiers: [
-                ColorOverLifetime((
-                    gradient: (g: [(0.0, (1.0, 2.0, 6.0, 0.0)), (0.2, (2.0, 1.0, 6.0, 1.0)), (1.0, (3.0, 0.5, 4.0, 0.0))]),
-                    blend: Some(Overwrite),
-                    mask: Some((15)),
-                )),
-            ],
-        ),
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 512,
+                spawner: (count: Single(120.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(1.5), Float(2.5))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.06))),
+                    SetPositionCircle((center_expr: Vec3((0.0, 1.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.8), dimension: Surface)),
+                    SetVelocityTangent((origin_expr: Vec3((0.0, 1.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), speed_expr: Operator(Uniform(Float(1.5), Float(2.5))))),
+                ],
+                update_modifiers: [
+                    ConformToSphereModifier((origin_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.8), influence_dist_expr: Float(3.0), attraction_accel_expr: Float(8.0), max_attraction_speed_expr: Float(3.0))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (0.5, 1.0, 3.0, 0.0)), (0.2, (1.0, 0.5, 3.0, 1.0)), (1.0, (1.5, 0.25, 2.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
     ],
 )
 ```
+
+Additive blending adds up where particles overlap, so the colors here are half of what `Blend` would need.
 
 ### Barrier around an object (looping; preview with stage "object")
 
 ```ron
 (
-    effects: [
-        (
+    version: 2,
+    assets: [(id: "glow1", kind: Texture((path: "omagari://textures/glow1.png")))],
+    layers: [
+        Particles((
             name: "barrier",
-            parent: None,
-            capacity: 1024,
-            spawner_settings: (count: Single(500.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
-            texture_index: Some(5),
-            init_modifiers: [
-                SetAttribute((attr: "age", attr_expr: Float(0.0))),
-                SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.8), Float(1.4))))),
-                SetAttribute((attr: "size", attr_expr: Float(0.05))),
-                SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(1.4), dimension: Surface)),
-                SetVelocityTangent((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), speed_expr: Operator(Uniform(Float(0.3), Float(0.8))))),
-            ],
-            update_modifiers: [
-                ConformToSphereModifier((origin_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(1.4), influence_dist_expr: Float(3.0), attraction_accel_expr: Float(6.0), max_attraction_speed_expr: Float(1.0))),
-            ],
-            render_modifiers: [
-                ColorOverLifetime((
-                    gradient: (g: [(0.0, (0.5, 2.0, 4.0, 0.0)), (0.2, (0.5, 2.5, 5.0, 0.8)), (1.0, (0.3, 1.0, 3.0, 0.0))]),
-                    blend: Some(Overwrite),
-                    mask: Some((15)),
-                )),
-            ],
-        ),
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 1024,
+                spawner: (count: Single(500.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.8), Float(1.4))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.05))),
+                    SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(1.4), dimension: Surface)),
+                    SetVelocityTangent((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), speed_expr: Operator(Uniform(Float(0.3), Float(0.8))))),
+                ],
+                update_modifiers: [
+                    ConformToSphereModifier((origin_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(1.4), influence_dist_expr: Float(3.0), attraction_accel_expr: Float(6.0), max_attraction_speed_expr: Float(1.0))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (0.5, 2.0, 4.0, 0.0)), (0.2, (0.5, 2.5, 5.0, 0.8)), (1.0, (0.3, 1.0, 3.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
     ],
 )
 ```
 
-The radius (1.4) is just outside the rock; the lower part of the bubble is under the floor, like a dome. For a body in the game, set the radius to the character's size.
+The radius (1.4) is just outside the rock; the lower part of the bubble is under the floor, like a dome. For a body in the game, set the radius to the character's size; `Local` keeps the barrier on a moving character.
 
 ### Explosion with debris (parent → child on death)
 
 ```ron
 (
-    effects: [
-        (
+    version: 2,
+    assets: [
+        (id: "glow1", kind: Texture((path: "omagari://textures/glow1.png"))),
+        (id: "spark1", kind: Texture((path: "omagari://textures/spark1.png"))),
+    ],
+    layers: [
+        Particles((
             name: "debris",
-            parent: None,
-            capacity: 64,
-            spawner_settings: (count: Single(24.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
-            texture_index: Some(5),
-            init_modifiers: [
-                SetAttribute((attr: "age", attr_expr: Float(0.0))),
-                SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.5), Float(1.0))))),
-                SetAttribute((attr: "size", attr_expr: Float(0.08))),
-                SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(0.1), dimension: Volume)),
-                SetVelocitySphere((center_expr: Vec3((0.0, -0.3, 0.0)), speed_expr: Operator(Uniform(Float(4.0), Float(7.0))))),
-            ],
-            update_modifiers: [
-                AccelModifier((accel_expr: Vec3((0.0, -9.8, 0.0)))),
-                EmitSpawnEventModifier((condition: OnDie, count_expr: U32(20), child_index: 0)),
-            ],
-            render_modifiers: [
-                ColorOverLifetime((
-                    gradient: (g: [(0.0, (6.0, 3.0, 1.0, 1.0)), (1.0, (3.0, 0.8, 0.1, 1.0))]),
-                    blend: Some(Overwrite),
-                    mask: Some((15)),
-                )),
-            ],
-        ),
-        (
+            simulation_space: Local,
+            play: OnStart,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 64,
+                spawner: (count: Single(24.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.5), Float(1.0))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.08))),
+                    SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(0.1), dimension: Volume)),
+                    SetVelocitySphere((center_expr: Vec3((0.0, -0.3, 0.0)), speed_expr: Operator(Uniform(Float(4.0), Float(7.0))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel_expr: Vec3((0.0, -9.8, 0.0)))),
+                    EmitSpawnEventModifier((condition: OnDie, count_expr: U32(20), child_index: 0)),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (6.0, 3.0, 1.0, 1.0)), (1.0, (3.0, 0.8, 0.1, 1.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+        Particles((
             name: "pop",
             parent: Some("debris"),
-            capacity: 512,
-            spawner_settings: (count: Single(1.0), spawn_duration: Single(0.0), period: Single(0.0), cycle_count: 1, starts_active: true, emit_on_start: true),
-            texture_index: Some(2),
-            init_modifiers: [
-                InheritAttribute((attr: "position")),
-                SetAttribute((attr: "age", attr_expr: Float(0.0))),
-                SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.2), Float(0.4))))),
-                SetAttribute((attr: "size", attr_expr: Float(0.03))),
-                SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Normalized(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))))), Operator(Uniform(Float(1.0), Float(2.5))))))),
-            ],
-            update_modifiers: [
-                LinearDragModifier((drag_expr: Float(3.0))),
-            ],
-            render_modifiers: [
-                ColorOverLifetime((
-                    gradient: (g: [(0.0, (5.0, 4.0, 2.0, 1.0)), (1.0, (2.0, 0.5, 0.1, 0.0))]),
-                    blend: Some(Overwrite),
-                    mask: Some((15)),
-                )),
-            ],
-        ),
+            simulation_space: Local,
+            play: OnStart,
+            texture: Some("spark1"),
+            effect: (
+                capacity: 512,
+                spawner: (count: Single(1.0), spawn_duration: Single(0.0), period: Single(0.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    InheritAttribute((attr: "position")),
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.2), Float(0.4))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.03))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Normalized(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))))), Operator(Uniform(Float(1.0), Float(2.5))))))),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((drag_expr: Float(3.0))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (5.0, 4.0, 2.0, 1.0)), (1.0, (2.0, 0.5, 0.1, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
     ],
 )
 ```
@@ -427,12 +536,12 @@ The radius (1.4) is just outside the rock; the lower part of the bubble is under
 
 **Scale.** Everything is in world units and seconds. The editor camera starts 5 units from the origin and shows about ±2 units; `analyze_project` says when an effect is bigger. Size the effect to the user's game, not to the editor view.
 
-**The editor scene.** Effects play inside a big light gray cube (40 units wide) with grid lines every 1 unit (darker every 5) and small axes at the spawn point (X red, Y green, Z blue). You can refer the user to the grid ("each spark should travel about 2 squares"). The toolbar has a STAGE button, and `preview_in_editor` takes a `stage`, for where the effect plays:
+**The editor scene.** The editor plays the project through the same runtime as the game, on a still target at the spawn point. Effects play inside a big light gray cube (40 units wide) with grid lines every 1 unit (darker every 5) and small axes at the spawn point (X red, Y green, Z blue). You can refer the user to the grid ("each spark should travel about 2 squares"). The toolbar has a STAGE button, and `preview_in_editor` takes a `stage`, for where the effect plays:
 - `air`: the spawn point is in the middle of the room, nothing nearby. Shows everything, including particles that fall.
 - `floor`: the floor is at y = 0, under the spawn point, like ground in a game. Particles below y = 0 are hidden; `analyze_project` warns about that.
 - `object`: a rock about 2 units wide (radius ~1, 1.6 tall) is centered on the spawn point and rests on the floor. Use it for shields, barriers, auras and hit effects on a body; particles inside the rock are hidden.
 
-Pick the stage that matches how the game uses the effect. The BG button switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow.
+Pick the stage that matches how the game uses the effect. The BG button switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow. STOP stops the effect the way the game does: no new particles, live ones finish.
 
 **Typical values** (1 unit = 1 m):
 
@@ -445,16 +554,18 @@ Pick the stage that matches how the game uses the effect. The BG button switches
 | Ember / glow dot size | 0.03–0.1 |
 | Drag | 0.5 (floaty) to 5 (stops quickly) |
 | Counts | impacts 50–300, loops 20–500/s; past a few thousand alive, ask first |
-| HDR intensity | 1 = plain, 2–6 = glowing, 10+ = blown out |
-| Smoke alpha | 0.2–0.5; additive-looking glow comes from HDR colors, not alpha |
+| HDR intensity | 1 = plain, 2–6 = glowing, 10+ = blown out (halve it with `alpha_mode: Add`) |
+| Smoke alpha | 0.2–0.5 |
+| Character run speed (trail estimate) | 3.6 m/s |
 
 **How distance comes out:** a particle launched at speed v with drag d travels roughly v / d before stopping (without drag: v × lifetime). Gravity pulls it 4.9 × t² down after t seconds.
 
 **Make it read well:**
 - Fade alpha in at the start (t ≈ 0.05–0.15) and out at the end, so particles don't pop.
 - Vary lifetime, speed and size with `Uniform` (±20–50%); identical particles look artificial.
-- Layer simple effects (a bright core burst, sparks, smoke) instead of one complex one. Each layer is a separate root effect in the same project.
+- Layer simple effects (a bright core burst, sparks, smoke) instead of one complex one. Each is a separate root layer in the same project.
 - Keep `capacity` slightly above the reported peak count.
+- Glow, fire and magic often look better with `alpha_mode: Add`; smoke and dust need `Blend`.
 
 **Translate user feedback:**
 
@@ -463,9 +574,23 @@ Pick the stage that matches how the game uses the effect. The BG button switches
 | too fast / too slow | speed, lifetime, drag |
 | too big / small, spreads too much / too little | position radius, speed, size, drag |
 | too dense / too sparse | spawn count or rate (adjust capacity) |
-| too dim / not glowing / too bright | RGB intensity in ColorOverLifetime (HDR > 1 glows) |
+| too dim / not glowing / too bright | RGB intensity in ColorOverLifetime (HDR > 1 glows), or `alpha_mode: Add` |
 | pops in / disappears abruptly | alpha 0 at t = 0 and t = 1 in the gradient |
-| looks like squares / dots | a different `texture_index`, or larger size |
+| looks like squares / dots | add `ParticleTexture`, pick another texture, or a larger size |
+| streaks look wrong / sprites spin | another `Orient` mode (`ParallelCameraDepthPlane` for puffs) |
 | lasts too long / too short | lifetime, spawn_duration, cycle_count |
 | nothing appears | check alpha window, size, capacity, `starts_active`, and that the camera sees it |
 | falls / should rise | sign of the Y acceleration |
+| leaves a trail / should stay on the character | `simulation_space` (`Global` trails, `Local` follows) |
+
+## Game
+
+`export_project` writes `<name>.vfx.ron` (the project without the editor's `preview` block) to `<game assets>/vfx/`, or to `exported_effects/` when no game assets folder is configured (then copy it with `copy_to`). In the game, with `HanabiPlugin` and `omagari::OmagariPlugin` added:
+
+```rust
+let package: Handle<VfxPackage> = asset_server.load("vfx/fireball.vfx.ron");
+let instance = commands.spawn_vfx(&package, target); // follows `target`
+vfx.stop(instance);                                  // VfxControl: smooth stop, then VfxFinished
+```
+
+Built-in textures need nothing; other textures must exist at their path under the game's `assets/` folder. The game camera needs `Hdr` and `Bloom` for colors above 1.0 to glow. The game can also load `*.omagari.ron` projects directly.
