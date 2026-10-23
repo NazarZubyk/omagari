@@ -646,6 +646,25 @@ fn apply_update(
 // Checks
 // ---------------------------------------------------------------------------
 
+/// How bad a diagnostic is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Severity {
+    Error,
+    Warning,
+    Note,
+}
+
+/// Splits `[subject] message` into the subject and the message; messages
+/// about the whole project have no subject.
+pub fn split_subject(message: &str) -> (Option<&str>, &str) {
+    if let Some(rest) = message.strip_prefix('[') {
+        if let Some(end) = rest.find("] ") {
+            return (Some(&rest[..end]), &rest[end + 2..]);
+        }
+    }
+    (None, message)
+}
+
 #[derive(Default)]
 pub struct Diagnostics {
     pub errors: Vec<String>,
@@ -664,6 +683,32 @@ impl Diagnostics {
     }
     fn note(&mut self, effect: &str, msg: impl AsRef<str>) {
         self.notes.push(format!("[{}] {}", effect, msg.as_ref()));
+    }
+
+    /// Every message with its severity: errors, then warnings, then notes.
+    pub fn all(&self) -> impl Iterator<Item = (Severity, &str)> {
+        let errors = self.errors.iter().map(|m| (Severity::Error, m.as_str()));
+        let warnings = self.warnings.iter().map(|m| (Severity::Warning, m.as_str()));
+        let notes = self.notes.iter().map(|m| (Severity::Note, m.as_str()));
+        errors.chain(warnings).chain(notes)
+    }
+
+    /// The messages about one subject (a layer name, `asset "id"`,
+    /// `socket "name"`), without their `[subject] ` prefix.
+    pub fn about<'a>(&'a self, subject: &'a str) -> impl Iterator<Item = (Severity, &'a str)> + 'a {
+        self.all().filter_map(move |(severity, message)| match split_subject(message) {
+            (Some(s), rest) if s == subject => Some((severity, rest)),
+            _ => None,
+        })
+    }
+
+    /// (errors, warnings) about one subject.
+    pub fn count_about(&self, subject: &str) -> (usize, usize) {
+        self.about(subject).fold((0, 0), |(e, w), (severity, _)| match severity {
+            Severity::Error => (e + 1, w),
+            Severity::Warning => (e, w + 1),
+            Severity::Note => (e, w),
+        })
     }
 
     pub fn render(&self) -> String {
@@ -2252,11 +2297,9 @@ mod tests {
     /// it tells agents to run, with no warning at all.
     #[test]
     fn guide_recipes_pass_checks() {
-        let recipes = crate::mcp::GUIDE.split("## Recipes").nth(1).unwrap();
-        let recipes = recipes.split("\n## ").next().unwrap();
         let mut checked = 0;
-        for block in recipes.split("```ron\n").skip(1) {
-            let text = block.split("```").next().unwrap();
+        for recipe in crate::mcp::guide_recipes() {
+            let text = recipe.ron.as_str();
             let (project, migration) = ProjectV2::from_ron_str_with_warnings(text)
                 .unwrap_or_else(|e| panic!("{}\n{}", e, text));
             assert!(text.contains("version: 2"), "recipes must be v2:\n{}", text);
@@ -2282,6 +2325,24 @@ mod tests {
 
     fn has(list: &[String], needle: &str) -> bool {
         list.iter().any(|m| m.contains(needle))
+    }
+
+    /// The editor shows each layer's messages next to the layer.
+    #[test]
+    fn diagnostics_group_by_subject() {
+        assert_eq!(split_subject("[a] capacity is 0"), (Some("a"), "capacity is 0"));
+        assert_eq!(split_subject("[socket \"s\"] not used"), (Some("socket \"s\""), "not used"));
+        assert_eq!(split_subject("project has no layers"), (None, "project has no layers"));
+
+        let mut project = layer_project("", "init_modifiers: [], update_modifiers: [], render_modifiers: []");
+        project.layers[0].as_particles_mut().unwrap().effect.capacity = 0;
+        let d = check_project(&project, &assets_root());
+        let about_a: Vec<_> = d.about("a").collect();
+        assert!(about_a.contains(&(Severity::Error, "capacity is 0, nothing can spawn")), "{:?}", about_a);
+        let (errors, warnings) = d.count_about("a");
+        assert!(errors >= 1 && warnings >= 1, "{}", d.render());
+        assert_eq!(d.count_about("b"), (0, 0));
+        assert_eq!(d.all().count(), d.errors.len() + d.warnings.len() + d.notes.len());
     }
 
     const SEGMENT_POSITION: &str = r#"SetAttribute((attr: "position", attr_expr: Operator(Add(Property("segment_a"), Operator(Multiply(Operator(Subtract(Property("segment_b"), Property("segment_a"))), RandFloat))))))"#;
