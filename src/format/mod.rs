@@ -24,6 +24,7 @@ mod migrate;
 mod modifiers;
 mod particles;
 mod project;
+mod surface;
 
 pub use expr::*;
 pub use hanabi_serde::{CpuValueDef, CpuVecDef, SpawnerDef, SpawnerPreset};
@@ -31,6 +32,7 @@ pub use migrate::*;
 pub use modifiers::*;
 pub use particles::*;
 pub use project::*;
+pub use surface::*;
 
 /// A v1 editor project: a list of particle effects, saved as `*.omagari.ron`.
 #[derive(Resource, Serialize, Deserialize, Default, Clone)]
