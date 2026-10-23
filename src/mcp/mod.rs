@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use omagari::format::{OmagariProject, PARTICLE_TEXTURES};
+use omagari::format::{AssetKind, ProjectV2, BUILTIN_TEXTURES_PREFIX};
 
 use crate::controller::Folder;
+use crate::settings::GameAssets;
 
 pub mod analysis;
 
@@ -38,7 +39,7 @@ pub fn run() {
         }
     }
 
-    let registry = analysis::type_registry();
+    let ctx = Context::new(GameAssets::from_environment());
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     for line in stdin.lock().lines() {
@@ -50,11 +51,11 @@ pub fn run() {
             Ok(Value::Array(batch)) => {
                 let replies: Vec<Value> = batch
                     .iter()
-                    .filter_map(|m| handle_message(m, &registry))
+                    .filter_map(|m| handle_message(m, &ctx))
                     .collect();
                 if replies.is_empty() { None } else { Some(Value::Array(replies)) }
             }
-            Ok(message) => handle_message(&message, &registry),
+            Ok(message) => handle_message(&message, &ctx),
             Err(e) => Some(json!({
                 "jsonrpc": "2.0",
                 "id": null,
@@ -68,7 +69,27 @@ pub fn run() {
     }
 }
 
-fn handle_message(message: &Value, registry: &bevy::prelude::AppTypeRegistry) -> Option<Value> {
+/// What the tools need besides their arguments.
+pub struct Context {
+    game_assets: GameAssets,
+}
+
+impl Context {
+    pub fn new(game_assets: GameAssets) -> Self {
+        Context { game_assets }
+    }
+
+    /// Folder relative texture paths are looked up in: the game assets
+    /// folder, or this repository's `assets/`.
+    fn assets_root(&self) -> PathBuf {
+        self.game_assets
+            .folder()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("assets"))
+    }
+}
+
+fn handle_message(message: &Value, ctx: &Context) -> Option<Value> {
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     // Notifications have no id and get no reply.
     let id = message.get("id")?.clone();
@@ -84,7 +105,7 @@ fn handle_message(message: &Value, registry: &bevy::prelude::AppTypeRegistry) ->
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "omagari", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Omagari builds bevy_hanabi particle effects as *.omagari.ron projects. \
+                "instructions": "Omagari builds bevy_hanabi particle effects as *.omagari.ron projects (format v2: assets + particle layers). \
                     Call `guide` first (section \"workflow\" is enough to start). You cannot see the effect; \
                     use `analyze_project` for a text description and `preview_in_editor` to show it to the user."
             }))
@@ -94,7 +115,7 @@ fn handle_message(message: &Value, registry: &bevy::prelude::AppTypeRegistry) ->
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            let (text, is_error) = match call_tool(name, &args, registry) {
+            let (text, is_error) = match call_tool(name, &args, ctx) {
                 Ok(text) => (text, false),
                 Err(text) => (text, true),
             };
@@ -124,25 +145,25 @@ fn tool_list() -> Value {
     json!([
         {
             "name": "guide",
-            "description": "Omagari effect authoring guide: workflow, file format, modifiers, expressions, textures, recipes. Read before creating effects.",
+            "description": "Omagari effect authoring guide: workflow, file format (v2), layers, modifiers, expressions, textures, recipes, game use. Read before creating effects.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "One section to keep the reply short: workflow, format, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design. Omit for the whole guide."
+                        "description": "One section to keep the reply short: workflow, format, layers, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design, game. Omit for the whole guide."
                     }
                 }
             }
         },
         {
             "name": "list_projects",
-            "description": "List saved projects, bundled examples and exported files.",
+            "description": "List saved projects, bundled examples, the game assets folder and exported packages.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "read_project",
-            "description": "Return the RON text of a project.",
+            "description": "Return the RON text of a project. v1 projects are returned migrated to format v2.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "name": name_prop },
@@ -151,7 +172,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "write_project",
-            "description": "Check a project and save it to saved_effects/<name>.omagari.ron. Refuses to save when it has errors (unless force=true). Returns the check result and a short analysis.",
+            "description": "Check a project (v2; v1 input is migrated) and save it to saved_effects/<name>.omagari.ron in format v2. Refuses to save when it has errors (unless force=true). Returns the check result and a short analysis.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -164,7 +185,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "check_project",
-            "description": "Fast validation only: parse, structure, expression types, bevy_hanabi shader generation and export round trip. Pass `name` or `ron`.",
+            "description": "Fast validation only: parse (v1 or v2), structure, assets and texture files, expression types, bevy_hanabi shader generation and package round trip. Pass `name` or `ron`.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "name": name_prop, "ron": ron_prop }
@@ -172,25 +193,25 @@ fn tool_list() -> Value {
         },
         {
             "name": "analyze_project",
-            "description": "Text 'preview' instead of images: checks the project, simulates particles on the CPU and describes each effect (spawn pattern, counts, lifetime, motion extents, size, colors, visibility, timeline). Pass `name` or `ron`.",
+            "description": "Text 'preview' instead of images: checks the project, simulates particles on the CPU and describes each layer (spawn pattern, counts, lifetime, motion extents, size, colors, visibility, blending, simulation space and trail, timeline). Pass `name` or `ron`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": name_prop,
                     "ron": ron_prop,
-                    "effect": { "type": "string", "description": "Only describe the effect with this name." },
-                    "samples": { "type": "integer", "description": "Particles simulated per effect (20-2000, default 300)." }
+                    "effect": { "type": "string", "description": "Only describe the layer with this name." },
+                    "samples": { "type": "integer", "description": "Particles simulated per layer (20-2000, default 300)." }
                 }
             }
         },
         {
             "name": "export_project",
-            "description": "Export a saved project to exported_effects/<name>.hanabi.ron for use in a game, optionally copying it to another path too.",
+            "description": "Export a saved project as a VFX package <name>.vfx.ron for a game: to the game assets folder's vfx/ when one is configured, else exported_effects/. Optionally copies it to another path too.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": name_prop,
-                    "copy_to": { "type": "string", "description": "Optional extra destination file or folder, e.g. a game's assets/effects/ folder." }
+                    "copy_to": { "type": "string", "description": "Optional extra destination file or folder, e.g. a game's assets/vfx/ folder." }
                 },
                 "required": ["name"]
             }
@@ -214,61 +235,87 @@ fn tool_list() -> Value {
     ])
 }
 
-fn call_tool(name: &str, args: &Value, registry: &bevy::prelude::AppTypeRegistry) -> Result<String, String> {
+fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> {
     let str_arg = |key: &str| args.get(key).and_then(Value::as_str);
+    let assets_root = ctx.assets_root();
     match name {
         "guide" => Ok(guide_section(str_arg("section"))),
-        "list_projects" => Ok(list_projects()),
+        "list_projects" => Ok(list_projects(ctx)),
         "read_project" => {
             let path = resolve_project(str_arg("name").ok_or("missing `name`")?)?;
-            fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))
+            let text = read(&path)?;
+            let (project, notes) = parse_project(&text)?;
+            if notes.migrated {
+                // Agents copy what they read; give them the current format.
+                let v2 = project.to_ron_string().map_err(|e| e.to_string())?;
+                Ok(format!(
+                    "// {} is a v1 project; shown migrated to format v2 (write_project saves v2).\n{}{}",
+                    path.display(),
+                    notes.comment_lines(),
+                    v2
+                ))
+            } else {
+                Ok(text)
+            }
         }
         "write_project" => {
             let name = str_arg("name").ok_or("missing `name`")?;
             let ron_text = str_arg("ron").ok_or("missing `ron`")?;
             let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
             let file_name = project_file_name(name)?;
-            let project = parse_project(ron_text)?;
-            let diagnostics = analysis::check_project(&project, registry);
+            let (project, notes) = parse_project(ron_text)?;
+            let diagnostics = analysis::check_project(&project, &assets_root);
             if !diagnostics.errors.is_empty() && !force {
-                return Err(format!("NOT SAVED.\n{}", diagnostics.render()));
+                return Err(format!("NOT SAVED.\n{}{}", notes.text(), diagnostics.render()));
             }
+            // v1 input is stored migrated; v2 input is stored as written
+            // (keeps the author's comments and layout).
+            let text = if notes.migrated {
+                project.to_ron_string().map_err(|e| e.to_string())?
+            } else {
+                ron_text.to_string()
+            };
             let path = Folder::SavedEffects.full_file_path(file_name.clone());
-            fs::write(&path, ron_text).map_err(|e| format!("{}: {}", path.display(), e))?;
+            fs::write(&path, text).map_err(|e| format!("{}: {}", path.display(), e))?;
             Ok(format!(
-                "Saved {}.\n{}",
+                "Saved {}{}.\n{}{}",
                 path.display(),
-                analysis::analyze_project(&project, registry, 200, None)
+                if notes.migrated { " (migrated from v1 to format v2)" } else { "" },
+                notes.text(),
+                analysis::analyze_project(&project, &assets_root, 200, None)
             ))
         }
         "check_project" => {
-            let (project, _) = load_from_args(args)?;
-            let diagnostics = analysis::check_project(&project, registry);
-            let text = diagnostics.render();
+            let (project, notes) = load_from_args(args)?;
+            let diagnostics = analysis::check_project(&project, &assets_root);
+            let text = format!("{}{}", notes.text(), diagnostics.render());
             if diagnostics.errors.is_empty() { Ok(text) } else { Err(text) }
         }
         "analyze_project" => {
-            let (project, _) = load_from_args(args)?;
+            let (project, notes) = load_from_args(args)?;
             let samples = args.get("samples").and_then(Value::as_u64).unwrap_or(300) as usize;
-            Ok(analysis::analyze_project(&project, registry, samples, str_arg("effect")))
+            Ok(format!(
+                "{}{}",
+                notes.text(),
+                analysis::analyze_project(&project, &assets_root, samples, str_arg("effect"))
+            ))
         }
         "export_project" => {
             let path = resolve_project(str_arg("name").ok_or("missing `name`")?)?;
-            let project = parse_project(&read(&path)?)?;
-            let diagnostics = analysis::check_project(&project, registry);
+            let (project, _) = parse_project(&read(&path)?)?;
+            let diagnostics = analysis::check_project(&project, &assets_root);
             if !diagnostics.errors.is_empty() {
                 return Err(format!("NOT EXPORTED.\n{}", diagnostics.render()));
             }
-            let text = analysis::export_string(&project, registry)?;
             let base = path
                 .file_name()
                 .and_then(|f| f.to_str())
                 .and_then(|f| f.split('.').next())
                 .unwrap_or("effect")
                 .to_string();
-            let file_name = format!("{}.hanabi.ron", base);
-            let out = Folder::ExportedEffects.full_file_path(file_name.clone());
-            fs::write(&out, &text).map_err(|e| format!("{}: {}", out.display(), e))?;
+            let out = crate::controller::export_package(&project, &base, &ctx.game_assets.export_dir())
+                .map_err(|e| format!("export failed: {}", e))?;
+            let file_name = out.file_name().unwrap().to_string_lossy().to_string();
             let mut msg = format!("Exported {}", out.display());
             if let Some(copy_to) = str_arg("copy_to") {
                 let mut dest = PathBuf::from(copy_to);
@@ -276,13 +323,11 @@ fn call_tool(name: &str, args: &Value, registry: &bevy::prelude::AppTypeRegistry
                     fs::create_dir_all(&dest).map_err(|e| format!("{}: {}", dest.display(), e))?;
                     dest = dest.join(&file_name);
                 }
-                fs::write(&dest, &text).map_err(|e| format!("{}: {}", dest.display(), e))?;
+                fs::copy(&out, &dest).map_err(|e| format!("{}: {}", dest.display(), e))?;
                 msg += &format!(" and copied it to {}", dest.display());
             }
-            msg += &format!(
-                ".\nTexture indices used: {}. The game must pass textures in the same order as the editor's PARTICLE_TEXTURES (see guide section \"textures\").",
-                texture_list(&project)
-            );
+            msg += &format!(".\n{}", texture_list(&project));
+            msg += "\nThe game loads it with `asset_server.load(\"vfx/<name>.vfx.ron\")` and plays it with `commands.spawn_vfx(&handle, target)` (guide section \"game\").";
             Ok(msg)
         }
         "preview_in_editor" => {
@@ -301,8 +346,7 @@ fn call_tool(name: &str, args: &Value, registry: &bevy::prelude::AppTypeRegistry
                 Some(other) => return Err(format!("unknown stage \"{}\": use air, floor or object", other)),
             };
             let request = Folder::SavedEffects.full_file_path(PREVIEW_REQUEST_FILE.to_string());
-            fs::write(&request, format!("{}
-{}", file_name, stage))
+            fs::write(&request, format!("{}\n{}", file_name, stage))
                 .map_err(|e| format!("{}: {}", request.display(), e))?;
             // The editor deletes the request once it has loaded the project.
             let start = Instant::now();
@@ -347,7 +391,7 @@ fn guide_section(section: Option<&str>) -> String {
     }
 }
 
-fn list_files(dir: &str, suffix: &str) -> Vec<String> {
+fn list_files(dir: &Path, suffix: &str) -> Vec<String> {
     let mut files: Vec<String> = fs::read_dir(dir)
         .map(|entries| {
             entries
@@ -361,16 +405,25 @@ fn list_files(dir: &str, suffix: &str) -> Vec<String> {
     files
 }
 
-fn list_projects() -> String {
+fn list_projects(ctx: &Context) -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
+    let export_dir = ctx.game_assets.export_dir();
+    let game = match &ctx.game_assets.configured {
+        Some((folder, origin)) => format!("{} (from {})", folder.display(), origin.describe()),
+        None => "not set (textures resolve in assets/, exports go to exported_effects/)".to_string(),
+    };
+    let exported = Path::new(Folder::ExportedEffects.to_path());
     format!(
-        "root: {}\nsaved_effects/: {}\nexamples/: {}\nexported_effects/: {}\n",
+        "root: {}\ngame assets folder: {}\nsaved_effects/: {}\nexamples/: {}\nexports in {}: {}\nlegacy exports (*.hanabi.ron) in exported_effects/: {}\n",
         cwd,
-        list_files(Folder::SavedEffects.to_path(), ".omagari.ron").join(", "),
-        list_files("examples", ".omagari.ron").join(", "),
-        list_files(Folder::ExportedEffects.to_path(), ".hanabi.ron").join(", "),
+        game,
+        list_files(Path::new(Folder::SavedEffects.to_path()), ".omagari.ron").join(", "),
+        list_files(Path::new("examples"), ".omagari.ron").join(", "),
+        export_dir.display(),
+        list_files(&export_dir, ".vfx.ron").join(", "),
+        list_files(exported, ".hanabi.ron").join(", "),
     )
 }
 
@@ -397,7 +450,11 @@ fn resolve_project(name: &str) -> Result<PathBuf, String> {
     if path.exists() {
         Ok(path)
     } else {
-        Err(format!("{} not found. Saved: {}", path.display(), list_files(Folder::SavedEffects.to_path(), ".omagari.ron").join(", ")))
+        Err(format!(
+            "{} not found. Saved: {}",
+            path.display(),
+            list_files(Path::new(Folder::SavedEffects.to_path()), ".omagari.ron").join(", ")
+        ))
     }
 }
 
@@ -405,36 +462,131 @@ fn read(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))
 }
 
-fn parse_project(text: &str) -> Result<OmagariProject, String> {
-    OmagariProject::from_ron_str(text).map_err(|e| format!("RON parse error: {}", e))
+/// How a project text was read: migrated from v1, and the migration notes.
+#[derive(Default)]
+struct ParseNotes {
+    migrated: bool,
+    warnings: Vec<String>,
 }
 
-fn load_from_args(args: &Value) -> Result<(OmagariProject, String), String> {
+impl ParseNotes {
+    /// Lines to put before a tool's output.
+    fn text(&self) -> String {
+        let mut out = String::new();
+        if self.migrated {
+            out.push_str("Input is a v1 project; it was migrated to format v2.\n");
+        }
+        for w in self.warnings.iter() {
+            out.push_str(&format!("Note: {}\n", w));
+        }
+        out
+    }
+
+    fn comment_lines(&self) -> String {
+        self.warnings.iter().map(|w| format!("// note: {}\n", w)).collect()
+    }
+}
+
+/// Parses v1 or v2 project text; v1 is migrated to v2.
+fn parse_project(text: &str) -> Result<(ProjectV2, ParseNotes), String> {
+    let (project, warnings) =
+        ProjectV2::from_ron_str_with_warnings(text).map_err(|e| format!("RON parse error: {}", e))?;
+    let migrated = is_v1(text);
+    Ok((project, ParseNotes { migrated, warnings }))
+}
+
+/// v1 projects are a plain `effects` list without `version`.
+fn is_v1(text: &str) -> bool {
+    omagari::format::OmagariProject::from_ron_str(text).is_ok()
+}
+
+fn load_from_args(args: &Value) -> Result<(ProjectV2, ParseNotes), String> {
     if let Some(text) = args.get("ron").and_then(Value::as_str) {
-        return Ok((parse_project(text)?, text.to_string()));
+        return parse_project(text);
     }
     let name = args
         .get("name")
         .and_then(Value::as_str)
         .ok_or("pass `name` or `ron`")?;
-    let text = read(&resolve_project(name)?)?;
-    Ok((parse_project(&text)?, text))
+    parse_project(&read(&resolve_project(name)?)?)
 }
 
-fn texture_list(project: &OmagariProject) -> String {
-    let mut used: Vec<String> = project
-        .effects
-        .iter()
-        .filter_map(|e| e.texture_index())
-        .map(|t| {
-            let file = PARTICLE_TEXTURES
-                .get(t)
-                .map(|t| t.filename)
-                .unwrap_or("?");
-            format!("{}={}", t, file)
-        })
-        .collect();
-    used.sort();
-    used.dedup();
-    used.join(", ")
+/// The textures an exported package needs, and where they come from.
+fn texture_list(project: &ProjectV2) -> String {
+    let mut builtin = Vec::new();
+    let mut game = Vec::new();
+    for asset in project.assets.iter() {
+        let AssetKind::Texture(t) = &asset.kind;
+        if t.path.starts_with(BUILTIN_TEXTURES_PREFIX) {
+            builtin.push(format!("{}={}", asset.id, t.path));
+        } else {
+            game.push(format!("{}={}", asset.id, t.path));
+        }
+    }
+    let mut out = String::new();
+    if !builtin.is_empty() {
+        out += &format!("Built-in textures (embedded in the omagari library, nothing to copy): {}.", builtin.join(", "));
+    }
+    if !game.is_empty() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out += &format!("Game textures (must exist under the game's assets/ folder): {}.", game.join(", "));
+    }
+    if out.is_empty() {
+        out = "No textures.".into();
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> Context {
+        Context::new(GameAssets::default())
+    }
+
+    /// The first recipe of the guide (a v2 project).
+    fn recipe() -> String {
+        let recipes = GUIDE.split("## Recipes").nth(1).unwrap();
+        recipes.split("```ron\n").nth(1).unwrap().split("```").next().unwrap().to_string()
+    }
+
+    #[test]
+    fn check_and_analyze_accept_v2_text() {
+        let args = json!({ "ron": recipe() });
+        let check = call_tool("check_project", &args, &ctx()).unwrap();
+        assert!(check.starts_with("OK: no errors."), "{}", check);
+        assert!(!check.contains("WARNINGS"), "{}", check);
+        let report = call_tool("analyze_project", &args, &ctx()).unwrap();
+        assert!(report.contains("space: Local"), "{}", report);
+        assert!(report.contains("render: blend Blend; texture sampling ModulateOpacityFromR; orient AlongVelocity"), "{}", report);
+    }
+
+    #[test]
+    fn check_reports_v1_input_as_migrated() {
+        let v1 = r#"(effects: [(name: "a", capacity: 10, texture_index: Some(5),
+            spawner_settings: (count: Single(5.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+            init_modifiers: [SetAttribute((attr: "age", attr_expr: Float(0.0))), SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 1.0, 0.0))))],
+            update_modifiers: [], render_modifiers: [])])"#;
+        let check = call_tool("check_project", &json!({ "ron": v1 }), &ctx()).unwrap();
+        assert!(check.starts_with("Input is a v1 project; it was migrated to format v2."), "{}", check);
+        assert!(is_v1(v1));
+        assert!(!is_v1(&recipe()));
+    }
+
+    #[test]
+    fn check_errors_are_tool_errors() {
+        let broken = r#"(version: 2, layers: [Particles((name: "a", texture: Some("missing")))])"#;
+        let err = call_tool("check_project", &json!({ "ron": broken }), &ctx()).unwrap_err();
+        assert!(err.contains("texture \"missing\" is not in the assets list"), "{}", err);
+    }
+
+    #[test]
+    fn guide_sections_are_listed() {
+        for section in ["workflow", "format", "layers", "textures", "recipes", "game"] {
+            assert!(!guide_section(Some(section)).starts_with("No section"), "{}", section);
+        }
+    }
 }
