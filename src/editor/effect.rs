@@ -359,7 +359,7 @@ fn play_label(play: &PlayDef) -> &'static str {
 }
 
 /// The play mode: combo, plus the trigger or the parameter and threshold.
-fn ui_for_play(ui: &mut egui::Ui, play: &mut PlayDef, app: &AppContext, parameters: &[ParamDef], id: egui::Id) {
+pub(crate) fn ui_for_play(ui: &mut egui::Ui, play: &mut PlayDef, app: &AppContext, parameters: &[ParamDef], id: egui::Id) {
     egui::ComboBox::from_id_salt(id.with("play"))
         .selected_text(play_label(play))
         .show_ui(ui, |ui| {
@@ -496,7 +496,7 @@ fn ui_for_socket_name(ui: &mut egui::Ui, name: &mut String, sockets: &[String], 
     }
 }
 
-fn ui_for_attach(ui: &mut egui::Ui, attach: &mut AttachDef, sockets: &[String], id: egui::Id) {
+pub(crate) fn ui_for_attach(ui: &mut egui::Ui, attach: &mut AttachDef, sockets: &[String], id: egui::Id) {
     let first = sockets.first().cloned().unwrap_or_default();
     egui::ComboBox::from_id_salt(id.with("attach"))
         .selected_text(attach_label(attach))

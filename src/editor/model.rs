@@ -709,8 +709,8 @@ pub fn update_socket_markers(
 
     let mut names: Vec<(String, Option<usize>)> =
         project.sockets.iter().enumerate().map(|(i, s)| (s.name.clone(), Some(i))).collect();
-    for layer in project.layers.iter().filter_map(|l| l.as_particles()) {
-        for name in layer.attach.socket_names() {
+    for attach in project.layers.iter().filter_map(|l| l.attach()) {
+        for name in attach.socket_names() {
             if !name.is_empty() && !names.iter().any(|(n, _)| n == name) {
                 names.push((name.to_string(), None));
             }
@@ -739,8 +739,8 @@ pub fn update_socket_markers(
     let segments: Vec<(Vec3, Vec3)> = project
         .layers
         .iter()
-        .filter_map(|l| l.as_particles())
-        .filter_map(|l| match &l.attach {
+        .filter_map(|l| l.attach())
+        .filter_map(|attach| match attach {
             AttachDef::Segment { from, to } => {
                 let at = |n: &str| markers.iter().find(|m| m.name == n).map(|m| m.world);
                 Some((at(from)?, at(to)?))

@@ -47,7 +47,15 @@ pub fn layers_panel(ui: &mut egui::Ui, project: &ProjectV2, session: &mut Editor
                     session.actions.push(Action::AddSurfaceLayer);
                     ui.close();
                 }
-                ui.add_enabled(false, egui::Button::new("Shape, trail, light… (later phases)"));
+                if ui
+                    .button("🔷 Shape layer")
+                    .on_hover_text("A simple 3D shape with the effect shader: shield bubble, ground ring, shockwave, slash arc, glow column (presets in the inspector)")
+                    .clicked()
+                {
+                    session.actions.push(Action::AddShapeLayer);
+                    ui.close();
+                }
+                ui.add_enabled(false, egui::Button::new("Trail, afterimage, light… (later phases)"));
             })
             .response
             .on_hover_text("Add a layer");
@@ -138,6 +146,7 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
             LayerDef::Particles(p) if p.parent.is_some() => "·✨",
             LayerDef::Particles(_) => "✨",
             LayerDef::Surface(_) => "🎨",
+            LayerDef::Shape(_) => "🔷",
         };
         let mut text = RichText::new(format!("{} {}", icon, name));
         if !shows {
@@ -152,6 +161,7 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
                 "Surface layer: effect shader over the target's meshes, {} shell(s). Right-click for more.",
                 s.shells.len()
             ),
+            LayerDef::Shape(s) => format!("Shape layer: {}. Right-click for more.", s.shape.describe()),
         });
         if response.clicked() {
             session.actions.push(Action::SelectLayer(index));

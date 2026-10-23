@@ -13,6 +13,7 @@ use omagari::runtime::resolve_asset_path_in;
 
 use super::assets::{select_asset, TexturePreviews};
 use super::effect::new_particles_layer;
+use super::shape::new_shape_layer;
 use super::surface::new_surface_layer;
 use super::helpers::ui_text;
 use super::session::{Dialog, EditorSession};
@@ -48,6 +49,7 @@ pub enum Action {
     AddParticlesLayer,
     /// Adds a surface layer (effect shader over the target's meshes).
     AddSurfaceLayer,
+    AddShapeLayer,
     SelectLayer(usize),
     DuplicateLayer(usize),
     DeleteLayer(usize),
@@ -296,6 +298,14 @@ impl ActionContext<'_> {
                 let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
                 let layer = new_surface_layer(&mut self.project.assets, &names);
                 self.project.layers.push(LayerDef::Surface(layer));
+                self.session.select(self.project.layers.len() - 1);
+            }
+            Action::AddShapeLayer => {
+                let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
+                let trigger = self.project.triggers.first().map(|t| t.name.clone());
+                let param = self.project.parameters.iter().find(|p| p.kind() == omagari::format::ParamKind::Float).cloned();
+                let layer = new_shape_layer(&mut self.project.assets, &names, trigger.as_deref(), param.as_ref());
+                self.project.layers.push(LayerDef::Shape(layer));
                 self.session.select(self.project.layers.len() - 1);
             }
             Action::SelectLayer(index) => {

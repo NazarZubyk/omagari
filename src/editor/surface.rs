@@ -1,5 +1,5 @@
 //! Editor widgets for a surface layer (`omagari::format::SurfaceLayerDef`)
-//! and its effect material.
+//! and the effect material (shared with shape layers).
 
 use bevy::prelude::{Vec2, Vec4};
 use bevy_egui::egui;
@@ -66,7 +66,7 @@ pub fn builtin_noise_asset(assets: &mut Vec<AssetDef>) -> String {
 }
 
 /// The value range of a Float parameter, for curve keys.
-fn range_of<'a>(parameters: &'a [ParamDef]) -> impl Fn(&str) -> Option<(f32, f32)> + 'a {
+pub(crate) fn range_of<'a>(parameters: &'a [ParamDef]) -> impl Fn(&str) -> Option<(f32, f32)> + 'a {
     move |name: &str| {
         parameters
             .iter()
@@ -77,7 +77,7 @@ fn range_of<'a>(parameters: &'a [ParamDef]) -> impl Fn(&str) -> Option<(f32, f32
 
 /// One number value: label with a tooltip, then the binding editor.
 #[allow(clippy::too_many_arguments)]
-fn number_row(
+pub(crate) fn number_row(
     ui: &mut egui::Ui,
     label: &str,
     hint: &str,
@@ -96,7 +96,7 @@ fn number_row(
     ui.end_row();
 }
 
-fn color_row(
+pub(crate) fn color_row(
     ui: &mut egui::Ui,
     label: &str,
     hint: &str,
@@ -144,7 +144,7 @@ fn vec2_row(
 
 /// Texture + channel of a slot. Offers the project's textures and the
 /// built-in noise (added to the assets when picked).
-fn texture_slot_ui(ui: &mut egui::Ui, slot: &mut TextureSlotDef, assets: &mut Vec<AssetDef>, id: egui::Id) {
+pub(crate) fn texture_slot_ui(ui: &mut egui::Ui, slot: &mut TextureSlotDef, assets: &mut Vec<AssetDef>, id: egui::Id) {
     ui.horizontal(|ui| {
         let mut add_noise = false;
         egui::ComboBox::from_id_salt(id.with("asset"))
@@ -197,7 +197,7 @@ fn mapping_ui(ui: &mut egui::Ui, mapping: &mut NoiseMappingDef) {
 }
 
 /// A checkbox header for an optional part; returns whether it is on.
-fn optional<T>(ui: &mut egui::Ui, value: &mut Option<T>, label: &str, hint: &str, make: impl FnOnce() -> T) -> bool {
+pub(crate) fn optional<T>(ui: &mut egui::Ui, value: &mut Option<T>, label: &str, hint: &str, make: impl FnOnce() -> T) -> bool {
     let mut on = value.is_some();
     if ui.checkbox(&mut on, egui::RichText::new(label).strong()).on_hover_text(hint).changed() {
         *value = on.then(make);
@@ -382,20 +382,42 @@ pub fn draw_surface_layer(
         ui_for_visible(ui, &mut layer.visible, app, parameters, id);
         ui.end_row();
 
-        let m = &mut layer.material;
-        ui.label("Blend").on_hover_text(hints::SURFACE_BLEND);
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut m.blend, EffectBlendDef::Blend, "Blend").on_hover_text(hints::SURFACE_BLEND);
-            ui.radio_value(&mut m.blend, EffectBlendDef::Add, "Add").on_hover_text(hints::SURFACE_BLEND);
-        });
-        ui.end_row();
-
-        color_row(ui, "Colour", hints::SURFACE_COLOR, &mut m.color, app, parameters, id);
-        number_row(ui, "Opacity", hints::SURFACE_OPACITY, &mut m.opacity, app, parameters, "", (0.0, 1.0), 0.01, id);
-        number_row(ui, "Emissive", hints::SURFACE_EMISSIVE, &mut m.emissive, app, parameters, "×", (0.0, 100.0), 0.05, id);
+        material_rows(ui, &mut layer.material, app, parameters, id);
     });
+    material_parts(&mut layer.material, assets, parameters, app, ui, id);
+}
 
-    let m = &mut layer.material;
+/// The material's base values as grid rows: blend, colour, opacity,
+/// emissive.
+pub(crate) fn material_rows(
+    ui: &mut egui::Ui,
+    m: &mut EffectMaterialDef,
+    app: &AppContext,
+    parameters: &[ParamDef],
+    id: egui::Id,
+) {
+    ui.label("Blend").on_hover_text(hints::SURFACE_BLEND);
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut m.blend, EffectBlendDef::Blend, "Blend").on_hover_text(hints::SURFACE_BLEND);
+        ui.radio_value(&mut m.blend, EffectBlendDef::Add, "Add").on_hover_text(hints::SURFACE_BLEND);
+    });
+    ui.end_row();
+
+    color_row(ui, "Colour", hints::SURFACE_COLOR, &mut m.color, app, parameters, id);
+    number_row(ui, "Opacity", hints::SURFACE_OPACITY, &mut m.opacity, app, parameters, "", (0.0, 1.0), 0.01, id);
+    number_row(ui, "Emissive", hints::SURFACE_EMISSIVE, &mut m.emissive, app, parameters, "×", (0.0, 100.0), 0.05, id);
+}
+
+/// The material's optional parts, each behind a checkbox: noise A / B, rim,
+/// pulse, flash, dissolve, fill, mask.
+pub(crate) fn material_parts(
+    m: &mut EffectMaterialDef,
+    assets: &mut Vec<AssetDef>,
+    parameters: &[ParamDef],
+    app: &mut AppContext,
+    ui: &mut egui::Ui,
+    id: egui::Id,
+) {
     ui.separator();
     for (label, noise) in [("Noise A", &mut m.noise_a), ("Noise B", &mut m.noise_b)] {
         if optional(ui, noise, label, hints::NOISE, || NoiseDef {
@@ -465,7 +487,7 @@ pub fn draw_surface_layer(
         }
     }
     ui.separator();
-    if optional(ui, &mut m.fill, "Fill (band along the body)", hints::FILL, FillDef::default) {
+    if optional(ui, &mut m.fill, "Fill (band along an axis)", hints::FILL, FillDef::default) {
         let f = m.fill.as_mut().unwrap();
         let fid = id.with("fill");
         egui::Grid::new(fid.with("grid")).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
