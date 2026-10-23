@@ -1,0 +1,39 @@
+(
+    version: 2,
+    parameters: [
+        (name: "shield", default: Float(1.0), min: 0.0, max: 1.0, smoothing: 0.3),
+    ],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Shape((
+            name: "bubble",
+            attach: Target,
+            follow: Position,
+            shape: Sphere(radius: 1.1),
+            scale: Param("shield", [(0.0, (0.9, 0.9, 0.9)), (1.0, (1.0, 1.0, 1.0))]),
+            rotation_speed: Const(12.0),
+            play: Loop,
+            fade: (in: 0.3, out: 0.4),
+            material: (
+                blend: Add,
+                color: Const((0.3, 0.7, 1.6, 0.25)),
+                opacity: Param("shield", [(0.0, 0.0), (1.0, 1.0)]),
+                emissive: Const(1.0),
+                noise_a: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(2.0), scroll: Const((0.05, 0.15)), strength: Const(0.6), contrast: Const(1.5))),
+                rim: Some((color: Const((0.5, 1.2, 2.5, 0.8)), power: Const(2.5), intensity: Param("shield", [(0.0, 0.0), (1.0, 2.0)]))),
+                pulse: Some((frequency: Const(0.7), amount: Const(0.2))),
+            ),
+        )),
+    ],
+    preview: Some((
+        stage: Model,
+        camera: Game,
+        model: Some("anim/tpose.glb"),
+        animation: Some("mixamo.com"),
+        animation_speed: 1.0,
+        params: [("shield", Float(1.0))],
+        motion: Some(Circle(radius: 3.0, speed: 3.6)),
+        root_height: 0.9,
+        animation_file: Some("anim/run.glb"),
+    )),
+)

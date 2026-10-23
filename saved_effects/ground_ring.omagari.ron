@@ -1,0 +1,35 @@
+(
+    version: 2,
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Shape((
+            name: "ring",
+            attach: Target,
+            follow: PositionYaw,
+            shape: Ring(inner: 0.55, outer: 0.75),
+            transform: (offset: (0.0, -0.88, 0.0)),
+            scale: Age([(0.0, (1.0, 1.0, 1.0)), (0.6, (1.08, 1.0, 1.08)), (1.2, (1.0, 1.0, 1.0))]),
+            rotation_speed: Const(30.0),
+            play: Loop,
+            duration: Some(1.2),
+            fade: (in: 0.3, out: 0.4),
+            material: (
+                blend: Add,
+                color: Const((1.6, 0.7, 0.2, 0.8)),
+                noise_a: Some((texture: (asset: "noise"), mapping: Uv, scale: Const(3.0), scroll: Const((0.1, 0.0)), strength: Const(0.5), contrast: Const(1.5))),
+                pulse: Some((frequency: Const(0.83), amount: Const(0.35))),
+                fill: Some((axis: V, from: Const(0.3), to: Const(0.7), softness: Const(0.4))),
+            ),
+        )),
+    ],
+    preview: Some((
+        stage: Model,
+        camera: Game,
+        model: Some("anim/tpose.glb"),
+        animation: Some("mixamo.com"),
+        animation_speed: 1.0,
+        motion: Some(Circle(radius: 3.0, speed: 3.6)),
+        root_height: 0.9,
+        animation_file: Some("anim/run.glb"),
+    )),
+)
