@@ -788,6 +788,40 @@ pub fn sprite_index_over_lifetime(frames: u32) -> SetAttributeModifierEditor {
     }
 }
 
+/// The prebuilt init `SetAttribute` "random point on segment with radius":
+/// `position = Mix(segment_a, segment_b, rand) + a random offset of up to
+/// `radius` metres square to the segment` (a capsule-shaped volume along the
+/// segment, e.g. sparks along a blade). For `Segment`-attached layers, which
+/// get `segment_a` / `segment_b` from the runtime.
+///
+/// The offset is `normalize(cross(b − a, random vector) + tiny) × radius ×
+/// √rand`: square to the segment, spread over the disc; the tiny bias keeps a
+/// zero-length segment (sockets not resolved yet) finite.
+pub fn segment_point_with_radius(radius: f32) -> SetAttributeModifierEditor {
+    let op = |o: ExprOperatorEditor| ExprWriterEditor::Operator(Box::new(o));
+    let a = || ExprWriterEditor::Property("segment_a".into());
+    let b = || ExprWriterEditor::Property("segment_b".into());
+    let random_vector = op(ExprOperatorEditor::Subtract(
+        op(ExprOperatorEditor::Multiply(ExprWriterEditor::RandVec3, ExprWriterEditor::Float(2.0))),
+        ExprWriterEditor::Float(1.0),
+    ));
+    let across = op(ExprOperatorEditor::Normalized(op(ExprOperatorEditor::Add(
+        op(ExprOperatorEditor::Cross(op(ExprOperatorEditor::Subtract(b(), a())), random_vector)),
+        ExprWriterEditor::Vec3(Vec3::new(1e-6, 0.0, 0.0)),
+    ))));
+    let distance = op(ExprOperatorEditor::Multiply(
+        ExprWriterEditor::Float(radius.max(0.0)),
+        op(ExprOperatorEditor::Sqrt(ExprWriterEditor::RandFloat)),
+    ));
+    SetAttributeModifierEditor {
+        attr: Attribute::POSITION,
+        attr_expr: op(ExprOperatorEditor::Add(
+            op(ExprOperatorEditor::Mix(a(), b(), ExprWriterEditor::RandFloat)),
+            op(ExprOperatorEditor::Multiply(across, distance)),
+        )),
+    }
+}
+
 /// Rounds the corners of particle squares (bevy_hanabi's `RoundModifier`):
 /// 0 = square, 1 = circle / ellipse (f32, render time).
 #[derive(Serialize, Deserialize, Clone)]
