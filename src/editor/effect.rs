@@ -1,6 +1,7 @@
 //! Editor widgets for a particle layer (`omagari::format::ParticlesLayerDef`)
 //! and its particle effect.
 
+use bevy::prelude::default;
 use bevy_egui::*;
 use omagari::format::*;
 
@@ -71,6 +72,11 @@ impl UiProvider for ModifierEditor {
             ModifierEditor::LinearDragModifier(n) => n.draw_ui(app, ui, index),
             ModifierEditor::EmitSpawnEventModifier(n) => n.draw_ui(app, ui, index),
             ModifierEditor::ConformToSphereModifier(n) => n.draw_ui(app, ui, index),
+            ModifierEditor::SetPositionCone3d(n) => n.draw_ui(app, ui, index),
+            ModifierEditor::RadialAccel(n) => n.draw_ui(app, ui, index),
+            ModifierEditor::TangentAccel(n) => n.draw_ui(app, ui, index),
+            ModifierEditor::KillSphere(n) => n.draw_ui(app, ui, index),
+            ModifierEditor::KillAabb(n) => n.draw_ui(app, ui, index),
         }
     }
 }
@@ -82,6 +88,11 @@ impl UiProvider for RenderModifierEditor {
             RenderModifierEditor::ColorOverLifetime(n) => n.draw_ui(app, ui, index),
             RenderModifierEditor::ParticleTexture(n) => n.draw_ui(app, ui, index),
             RenderModifierEditor::Orient(n) => n.draw_ui(app, ui, index),
+            RenderModifierEditor::SetColor(n) => n.draw_ui(app, ui, index),
+            RenderModifierEditor::SetSize(n) => n.draw_ui(app, ui, index),
+            RenderModifierEditor::Flipbook(n) => n.draw_ui(app, ui, index),
+            RenderModifierEditor::Round(n) => n.draw_ui(app, ui, index),
+            RenderModifierEditor::ScreenSpaceSize(n) => n.draw_ui(app, ui, index),
         }
     }
 }
@@ -130,26 +141,46 @@ fn sample_mapping_hint(mapping: ImageSampleMappingDef) -> &'static str {
 }
 
 impl UiProvider for OrientModifierEditor {
-    fn draw_ui(&mut self, _app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
-        ui.horizontal(|ui| {
-            ui.label(OrientModifierEditor::label()).on_hover_text(hints::ORIENT);
-            let id = ui.make_persistent_id(format!("orient mode {}", index));
-            egui::ComboBox::from_id_salt(id)
-                .selected_text(orient_mode_label(self.mode))
-                .show_ui(ui, |ui| {
-                    for mode in [
-                        OrientModeDef::AlongVelocity,
-                        OrientModeDef::ParallelCameraDepthPlane,
-                        OrientModeDef::FaceCameraPosition,
-                    ] {
-                        ui.selectable_value(&mut self.mode, mode, orient_mode_label(mode))
-                            .on_hover_text(orient_mode_hint(mode));
-                    }
-                })
-                .response
-                .on_hover_text(orient_mode_hint(self.mode));
+    fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        ui.vertical(|ui| {
+            draw_orient_mode(self, ui, index);
+            let mut rotate = self.rotation_expr.is_some();
+            if ui.checkbox(&mut rotate, "rotation (radians)").on_hover_text(hints::ORIENT_ROTATION).changed() {
+                self.rotation_expr = rotate.then(|| ExprWriterEditor::Operator(Box::new(ExprOperatorEditor::Multiply(
+                    ExprWriterEditor::Age,
+                    ExprWriterEditor::Float(3.0),
+                ))));
+            }
+            if let Some(rotation) = &mut self.rotation_expr {
+                rotation.draw_ui(app, ui, index);
+                if self.mode == OrientModeDef::AlongVelocity {
+                    ui.colored_label(egui::Color32::from_hex("#FFCC66").unwrap(), "⚠ ignored with AlongVelocity");
+                }
+            }
         });
     }
+}
+
+/// The orient mode combo.
+fn draw_orient_mode(orient: &mut OrientModifierEditor, ui: &mut egui::Ui, index: u64) {
+    ui.horizontal(|ui| {
+        ui.label(OrientModifierEditor::label()).on_hover_text(hints::ORIENT);
+        let id = ui.make_persistent_id(format!("orient mode {}", index));
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(orient_mode_label(orient.mode))
+            .show_ui(ui, |ui| {
+                for mode in [
+                    OrientModeDef::AlongVelocity,
+                    OrientModeDef::ParallelCameraDepthPlane,
+                    OrientModeDef::FaceCameraPosition,
+                ] {
+                    ui.selectable_value(&mut orient.mode, mode, orient_mode_label(mode))
+                        .on_hover_text(orient_mode_hint(mode));
+                }
+            })
+            .response
+            .on_hover_text(orient_mode_hint(orient.mode));
+    });
 }
 
 fn orient_mode_label(mode: OrientModeDef) -> &'static str {
@@ -193,6 +224,19 @@ fn ui_for_cpu_value(ui: &mut egui::Ui, value: &mut CpuValueDef, max: f32, speed:
 }
 
 fn ui_for_spawner(ui: &mut egui::Ui, spawner: &mut SpawnerDef) {
+    ui.horizontal(|ui| {
+        ui.label("Preset:");
+        let current = spawner.preset();
+        for (preset, label, hint) in [
+            (SpawnerPreset::Once, "Once", hints::PRESET_ONCE),
+            (SpawnerPreset::Rate, "Rate", hints::PRESET_RATE),
+            (SpawnerPreset::Burst, "Burst", hints::PRESET_BURST),
+        ] {
+            if ui.selectable_label(current == Some(preset), label).on_hover_text(hint).clicked() {
+                *spawner = spawner.with_preset(preset);
+            }
+        }
+    });
     egui::Grid::new("spawner grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
         ui.label("Count").on_hover_text(hints::COUNT);
         ui.horizontal(|ui| ui_for_cpu_value(ui, &mut spawner.count, 10000.0, 1.0))
@@ -633,6 +677,38 @@ pub fn draw_particles_layer(
             }
         });
         ui.end_row();
+
+        ui.label("Motion").on_hover_text(hints::MOTION);
+        ui.horizontal(|ui| {
+            let m = &mut layer.effect.motion_integration;
+            ui.radio_value(m, MotionIntegrationDef::PostUpdate, "after update")
+                .on_hover_text("position += velocity × time after the update modifiers (default)");
+            ui.radio_value(m, MotionIntegrationDef::PreUpdate, "before update")
+                .on_hover_text("position += velocity × time before the update modifiers");
+            ui.radio_value(m, MotionIntegrationDef::None, "none")
+                .on_hover_text("Velocity does not move particles; only modifiers that set the position do");
+        });
+        ui.end_row();
+
+        ui.label("Simulate").on_hover_text(hints::SIM_CONDITION);
+        ui.horizontal(|ui| {
+            let c = &mut layer.effect.simulation_condition;
+            ui.radio_value(c, SimulationConditionDef::WhenVisible, "when visible").on_hover_text(hints::SIM_CONDITION);
+            ui.radio_value(c, SimulationConditionDef::Always, "always").on_hover_text(hints::SIM_CONDITION);
+        });
+        ui.end_row();
+
+        ui.label("Random seed").on_hover_text(hints::PRNG_SEED);
+        ui.horizontal(|ui| {
+            let mut fixed = layer.effect.prng_seed.is_some();
+            if ui.checkbox(&mut fixed, "fixed").on_hover_text(hints::PRNG_SEED).changed() {
+                layer.effect.prng_seed = fixed.then_some(1);
+            }
+            if let Some(seed) = &mut layer.effect.prng_seed {
+                *seed = ui_for_u32_ex(ui, *seed, 0, u32::MAX, 1);
+            }
+        });
+        ui.end_row();
     });
 
     ui.add_space(4.0);
@@ -643,99 +719,126 @@ pub fn draw_particles_layer(
         .header_response
         .on_hover_text(hints::SPAWNER);
 
+    app.layer_texture_grid = layer.texture.as_ref().and_then(|id| {
+        assets.iter().find(|a| &a.id == id).and_then(|a| match &a.kind {
+            AssetKind::Texture(t) => t.grid,
+        })
+    });
+    let frames = app.layer_texture_grid.map(|(rows, cols)| rows * cols).unwrap_or(16);
     let effect = &mut layer.effect;
     ui_for_modifiers_list(app, ui, &mut effect.init_modifiers, "Init", id, |ui, list| {
-        if ui.button(SetAttributeModifierEditor::label()).on_hover_text(hints::SET_ATTRIBUTE).clicked() {
-            list.push(ModifierEditor::SetAttribute(SetAttributeModifierEditor::default()));
-        }
-        if ui
-            .button(SetPositionCircleModifierEditor::label())
-            .on_hover_text("Particles start on (or inside) a circle")
-            .clicked()
-        {
-            list.push(ModifierEditor::SetPositionCircle(SetPositionCircleModifierEditor::default()));
-        }
-        if ui
-            .button(SetPositionSphereModifierEditor::label())
-            .on_hover_text("Particles start on (or inside) a sphere")
-            .clicked()
-        {
-            list.push(ModifierEditor::SetPositionSphere(SetPositionSphereModifierEditor::default()));
-        }
-        if ui
-            .button(SetVelocityCircleModifierEditor::label())
-            .on_hover_text("Particles fly outwards in a flat circle (speed in m/s)")
-            .clicked()
-        {
-            list.push(ModifierEditor::SetVelocityCircle(SetVelocityCircleModifierEditor::default()));
-        }
-        if ui
-            .button(SetVelocitySphereModifierEditor::label())
-            .on_hover_text("Particles fly outwards in all directions (speed in m/s)")
-            .clicked()
-        {
-            list.push(ModifierEditor::SetVelocitySphere(SetVelocitySphereModifierEditor::default()));
-        }
-        if ui
-            .button(SetVelocityTangentModifierEditor::label())
-            .on_hover_text("Particles spin around an axis (speed in m/s)")
-            .clicked()
-        {
-            list.push(ModifierEditor::SetVelocityTangent(SetVelocityTangentModifierEditor::default()));
-        }
-        if ui
-            .button(InheritAttributeModifierEditor::label())
-            .on_hover_text("Copies a value from the parent particle (child layers only)")
-            .clicked()
-        {
-            list.push(ModifierEditor::InheritAttribute(InheritAttributeModifierEditor::default()));
-        }
+        modifier_menu(ui, list, &INIT_MENU);
     });
     ui_for_modifiers_list(app, ui, &mut effect.update_modifiers, "Update", id, |ui, list| {
-        if ui.button(AccelModifierEditor::label()).on_hover_text(hints::ACCEL).clicked() {
-            list.push(ModifierEditor::AccelModifier(AccelModifierEditor::default()));
-        }
-        if ui.button(LinearDragModifierEditor::label()).on_hover_text(hints::DRAG).clicked() {
-            list.push(ModifierEditor::LinearDragModifier(LinearDragModifierEditor::default()));
-        }
-        if ui.button(EmitSpawnEventModifierEditor::label()).on_hover_text(hints::EMIT_SPAWN_EVENT).clicked() {
-            list.push(ModifierEditor::EmitSpawnEventModifier(EmitSpawnEventModifierEditor::default()));
-        }
+        modifier_menu(ui, list, &UPDATE_MENU);
+        ui.separator();
         if ui
-            .button(ConformToSphereModifierEditor::label())
-            .on_hover_text("Pulls particles onto the surface of a sphere")
+            .button("🎞 Flipbook frames over lifetime")
+            .on_hover_text(format!("{} ({} frames)", hints::FLIPBOOK_FRAMES, frames))
             .clicked()
         {
-            list.push(ModifierEditor::ConformToSphereModifier(ConformToSphereModifierEditor::default()));
+            list.push(ModifierEditor::SetAttribute(sprite_index_over_lifetime(frames)));
+            ui.close();
         }
     });
     ui_for_modifiers_list(app, ui, &mut effect.render_modifiers, "Render", id, |ui, list| {
-        if ui
-            .button(SizeOverLifetimeModifierEditor::label())
-            .on_hover_text(hints::SIZE_OVER_LIFETIME)
-            .clicked()
-        {
-            list.push(RenderModifierEditor::SizeOverLifetime(SizeOverLifetimeModifierEditor::default()));
-        }
-        if ui
-            .button(ColorOverLifetimeModifierEditor::label())
-            .on_hover_text(hints::COLOR_OVER_LIFETIME)
-            .clicked()
-        {
-            list.push(RenderModifierEditor::ColorOverLifetime(ColorOverLifetimeModifierEditor::default()));
-        }
-        if ui
-            .button(ParticleTextureModifierEditor::label())
-            .on_hover_text(hints::TEXTURE_MAPPING)
-            .clicked()
-        {
-            list.push(RenderModifierEditor::ParticleTexture(ParticleTextureModifierEditor::default()));
-        }
-        if ui.button(OrientModifierEditor::label()).on_hover_text(hints::ORIENT).clicked() {
-            list.push(RenderModifierEditor::Orient(OrientModifierEditor::default()));
-        }
+        modifier_menu(ui, list, &RENDER_MENU);
     });
 }
+
+/// One entry of a "+" menu: group, label, tooltip, new modifier.
+type MenuEntry<T> = (&'static str, fn() -> &'static str, &'static str, fn() -> T);
+
+/// Draws a "+" menu grouped into submenus; a click adds the modifier.
+fn modifier_menu<T>(ui: &mut egui::Ui, list: &mut Vec<T>, entries: &[MenuEntry<T>]) {
+    let mut groups: Vec<&str> = Vec::new();
+    for (group, ..) in entries {
+        if !groups.contains(group) {
+            groups.push(group);
+        }
+    }
+    for group in groups {
+        ui.menu_button(group, |ui| {
+            for (_, label, hint, make) in entries.iter().filter(|e| e.0 == group) {
+                if ui.button(label()).on_hover_text(*hint).clicked() {
+                    list.push(make());
+                    ui.close();
+                }
+            }
+        });
+    }
+}
+
+const INIT_MENU: [MenuEntry<ModifierEditor>; 9] = [
+    ("Attributes", SetAttributeModifierEditor::label, hints::SET_ATTRIBUTE, || ModifierEditor::SetAttribute(default())),
+    ("Attributes", InheritAttributeModifierEditor::label, "Copies a value from the parent particle (child layers only)", || {
+        ModifierEditor::InheritAttribute(default())
+    }),
+    ("Position", SetPositionCircleModifierEditor::label, "Particles start on (or inside) a circle", || {
+        ModifierEditor::SetPositionCircle(default())
+    }),
+    ("Position", SetPositionSphereModifierEditor::label, "Particles start on (or inside) a sphere", || {
+        ModifierEditor::SetPositionSphere(default())
+    }),
+    ("Position", SetPositionCone3dModifierEditor::label, hints::CONE, || ModifierEditor::SetPositionCone3d(default())),
+    ("Velocity", SetVelocityCircleModifierEditor::label, "Particles fly outwards in a flat circle (speed in m/s)", || {
+        ModifierEditor::SetVelocityCircle(default())
+    }),
+    ("Velocity", SetVelocitySphereModifierEditor::label, "Particles fly outwards in all directions (speed in m/s)", || {
+        ModifierEditor::SetVelocitySphere(default())
+    }),
+    ("Velocity", SetVelocityTangentModifierEditor::label, "Particles spin around an axis (speed in m/s)", || {
+        ModifierEditor::SetVelocityTangent(default())
+    }),
+    ("Velocity", SetAttributeModifierEditor::label, "Any start velocity: SetAttribute velocity with an expression", || {
+        ModifierEditor::SetAttribute(SetAttributeModifierEditor {
+            attr: bevy_hanabi::Attribute::VELOCITY,
+            attr_expr: ExprWriterEditor::Vec3(bevy::prelude::Vec3::Y),
+        })
+    }),
+];
+
+const UPDATE_MENU: [MenuEntry<ModifierEditor>; 11] = [
+    ("Forces", AccelModifierEditor::label, hints::ACCEL, || ModifierEditor::AccelModifier(default())),
+    ("Forces", RadialAccelModifierEditor::label, hints::RADIAL_ACCEL, || ModifierEditor::RadialAccel(default())),
+    ("Forces", TangentAccelModifierEditor::label, hints::TANGENT_ACCEL, || ModifierEditor::TangentAccel(default())),
+    ("Forces", LinearDragModifierEditor::label, hints::DRAG, || ModifierEditor::LinearDragModifier(default())),
+    ("Forces", ConformToSphereModifierEditor::label, "Pulls particles onto the surface of a sphere", || {
+        ModifierEditor::ConformToSphereModifier(default())
+    }),
+    ("Kill", KillSphereModifierEditor::label, hints::KILL_SPHERE, || ModifierEditor::KillSphere(default())),
+    ("Kill", KillAabbModifierEditor::label, hints::KILL_AABB, || ModifierEditor::KillAabb(default())),
+    ("Events", EmitSpawnEventModifierEditor::label, hints::EMIT_SPAWN_EVENT, || ModifierEditor::EmitSpawnEventModifier(default())),
+    ("Every frame", SetAttributeModifierEditor::label, "Sets a value every frame (e.g. a position on a path, an animated sprite_index)", || {
+        ModifierEditor::SetAttribute(default())
+    }),
+    ("Every frame", SetPositionSphereModifierEditor::label, "Moves particles to a random point of a sphere every frame (jitter)", || {
+        ModifierEditor::SetPositionSphere(default())
+    }),
+    ("Every frame", SetVelocitySphereModifierEditor::label, "Sets the velocity away from a point every frame", || {
+        ModifierEditor::SetVelocitySphere(default())
+    }),
+];
+
+const RENDER_MENU: [MenuEntry<RenderModifierEditor>; 9] = [
+    ("Color / Size", ColorOverLifetimeModifierEditor::label, hints::COLOR_OVER_LIFETIME, || {
+        RenderModifierEditor::ColorOverLifetime(default())
+    }),
+    ("Color / Size", SetColorModifierEditor::label, hints::SET_COLOR, || RenderModifierEditor::SetColor(default())),
+    ("Color / Size", SizeOverLifetimeModifierEditor::label, hints::SIZE_OVER_LIFETIME, || {
+        RenderModifierEditor::SizeOverLifetime(default())
+    }),
+    ("Color / Size", SetSizeModifierEditor::label, hints::SET_SIZE, || RenderModifierEditor::SetSize(default())),
+    ("Color / Size", ScreenSpaceSizeModifierEditor::label, hints::SCREEN_SPACE_SIZE, || {
+        RenderModifierEditor::ScreenSpaceSize(default())
+    }),
+    ("Texture / Flipbook", ParticleTextureModifierEditor::label, hints::TEXTURE_MAPPING, || {
+        RenderModifierEditor::ParticleTexture(default())
+    }),
+    ("Texture / Flipbook", FlipbookModifierEditor::label, hints::FLIPBOOK, || RenderModifierEditor::Flipbook(default())),
+    ("Texture / Flipbook", RoundModifierEditor::label, hints::ROUND, || RenderModifierEditor::Round(default())),
+    ("Orientation", OrientModifierEditor::label, hints::ORIENT, || RenderModifierEditor::Orient(default())),
+];
 
 /// A new particle layer, textured with the first built-in (cloud) like a new
 /// v1 effect; adds the texture asset when missing. The name is made unique.
@@ -769,6 +872,30 @@ pub fn new_particles_layer(assets: &mut Vec<AssetDef>, existing: &[String]) -> P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every modifier kind can be added from a "+" menu of a list it may be
+    /// in.
+    #[test]
+    fn menus_offer_every_modifier() {
+        let kinds = |entries: &[MenuEntry<ModifierEditor>]| -> Vec<&'static str> {
+            entries.iter().map(|e| (e.3)().kind_name()).collect()
+        };
+        let (init, update) = (kinds(&INIT_MENU), kinds(&UPDATE_MENU));
+        for m in ModifierEditor::all_defaults() {
+            let name = m.kind_name();
+            assert!(init.contains(&name) || update.contains(&name), "{} is in no menu", name);
+        }
+        for (entries, context) in [(&INIT_MENU[..], bevy_hanabi::ModifierContext::Init), (&UPDATE_MENU[..], bevy_hanabi::ModifierContext::Update)] {
+            for e in entries {
+                let m = (e.3)();
+                assert!(m.contexts().contains(context), "{} offered in the wrong list", m.kind_name());
+            }
+        }
+        let render: Vec<&str> = RENDER_MENU.iter().map(|e| (e.3)().kind_name()).collect();
+        for m in RenderModifierEditor::all_defaults() {
+            assert!(render.contains(&m.kind_name()), "{} is in no menu", m.kind_name());
+        }
+    }
 
     #[test]
     fn new_layers_get_unique_names_and_one_cloud_asset() {

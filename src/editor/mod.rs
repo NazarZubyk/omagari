@@ -46,6 +46,9 @@ pub struct AppContext {
     pub params: Vec<(String, omagari::format::ParamKind)>,
     /// Names of the open project's triggers (play pickers).
     pub trigger_names: Vec<String>,
+    /// `(rows, columns)` of the selected layer's texture grid, while its
+    /// inspector is drawn (Flipbook).
+    pub layer_texture_grid: Option<(u32, u32)>,
     /// File name of the open project in `saved_effects/`; `None` = untitled.
     pub filename: Option<String>,
     /// File name SAVE AS offers for an untitled project (from its recipe).
