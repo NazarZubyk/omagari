@@ -10,6 +10,7 @@ use bevy_egui::EguiContexts;
 use bevy_panorbit_camera::PanOrbitCamera;
 use omagari::format::ProjectV2;
 
+use super::assets::{drop_overlay, TexturePreviews};
 use super::camera::PreviewCamera;
 use super::history::Activity;
 use super::scene::Backdrop;
@@ -26,6 +27,7 @@ pub struct EditorUi<'w, 's> {
     session: ResMut<'w, EditorSession>,
     preview_state: Res<'w, PreviewState>,
     game_assets: Res<'w, GameAssets>,
+    previews: ResMut<'w, TexturePreviews>,
     backdrop: ResMut<'w, Backdrop>,
     render_settings: ResMut<'w, RenderSettings>,
     virtual_time: ResMut<'w, Time<Virtual>>,
@@ -41,6 +43,7 @@ pub fn app_ui(params: EditorUi) -> Result {
         mut session,
         preview_state,
         game_assets,
+        mut previews,
         mut backdrop,
         mut render_settings,
         mut virtual_time,
@@ -96,7 +99,7 @@ pub fn app_ui(params: EditorUi) -> Result {
         .default_size(430.0)
         .size_range(300.0..=900.0)
         .show(&mut root, |ui| {
-            inspector::right_panel(ui, project, session, app, &mut scene_backdrop);
+            inspector::right_panel(ui, project, session, app, &mut scene_backdrop, &mut previews, &game_assets);
         });
     let central = root.available_rect_before_wrap();
 
@@ -113,6 +116,7 @@ pub fn app_ui(params: EditorUi) -> Result {
     if session.problems_open {
         problems::problems_window(&ctx, project, session);
     }
+    drop_overlay(&ctx, session);
 
     if scene_backdrop != *backdrop {
         *backdrop = scene_backdrop;

@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game.
 
 ## Workflow
 
@@ -250,7 +250,33 @@ Built-in textures (embedded in the omagari library; the game needs no files). Us
 
 They are grayscale; use `ParticleTexture((sample_mapping: ModulateOpacityFromR))` so the shape comes from the texture and the color from the color attributes.
 
-Other textures use a path relative to the game's `assets/` folder (`vfx/textures/smoke.png`). The file must exist there (`check_project` warns when it doesn't); the editor and the check look it up in the configured game assets folder (or this repository's `assets/`). `purpose` (`Sprite`, `Noise`, `Mask`, `Gradient`) picks wrap and color-space defaults; sprites need nothing else.
+Other textures use a path relative to the game's `assets/` folder (`vfx/textures/smoke.png`). The file must exist there (`check_project` warns when it doesn't); the editor and the check look it up in the configured game assets folder (or this repository's `assets/`). `purpose` (`Sprite`, `Noise`, `Mask`, `Gradient`) picks wrap and color-space defaults; sprites need nothing else. Bring new files in with `import_asset` (section "assets").
+
+## Assets
+
+**Import** a file with `import_asset(path, purpose?, id?, project?)`. A file outside the game assets folder is copied to `<game assets>/vfx/textures/` (a name taken by a different file gets `_2`, `_3`, ...; an identical file is reused); a file already inside it is used where it is. The reply has the asset entry; with `project` it is added to that saved project. `list_assets` lists the built-ins and every texture file in the game assets folder with size, layout and which saved projects use it.
+
+Formats: **PNG** (works everywhere), **JPG** (the game needs Bevy's `jpeg` feature; the check adds a note), KTX2 (copied, not inspected). Avoid 16-bit grayscale PNGs: Bevy loads them as integer textures that cannot be sampled (the check warns; `extract_channel` with `Luminance` writes an 8-bit copy).
+
+**Purpose** (guessed from the file name when you don't pass one: noise / perlin / voronoi / cellular → Noise, mask → Mask, gradient / ramp → Gradient, else Sprite) sets the defaults of the other settings; leave them out unless you need something else:
+
+| purpose | wrap | color_space | use |
+| :-- | :-- | :-- | :-- |
+| `Sprite` | Clamp | Srgb | pictures on particles: smoke, sparks |
+| `Noise` | Repeat | Linear | tiling patterns that scroll (later: surface layers) |
+| `Mask` | Clamp | Linear | black/white shapes |
+| `Gradient` | Clamp | Srgb | colour ramps |
+
+`filter: Some(Nearest)` gives hard pixels (pixel art), default `Linear`. `grid: Some((rows, cols))` marks a sprite sheet (flipbooks come later); it must divide the image evenly. `check_project` warns about settings that fight the purpose (Noise + Clamp, Gradient + Repeat, Noise/Mask + Srgb).
+
+```ron
+(id: "noise", kind: Texture((path: "vfx/textures/perlin_noise.png", purpose: Noise))),
+(id: "pixel", kind: Texture((path: "vfx/textures/ember.png", filter: Some(Nearest)))),
+```
+
+**Channels.** Particle layers sample the whole texture: `Modulate` (RGBA), `ModulateRGB` or `ModulateOpacityFromR` (red only). They **cannot pick G, B or A**. For a channel-packed texture (different masks in R, G, B, A), call `extract_channel(project, asset, channel)` with `R`, `G`, `B`, `A` or `Luminance`: it writes `<name>_<channel>.png` (8-bit grayscale) next to the file (built-ins: into `vfx/textures/`) and adds it to the project as `<asset>_<channel>` with the same settings. Use it with `ParticleTexture((sample_mapping: ModulateOpacityFromR))`. Omagari's own shader layers (later phases) pick a channel per texture slot: `(asset: "pack", channel: G)`, default `Luminance`.
+
+The user sees the same in the editor's ASSETS tab: thumbnails, an R / G / B / A view, the settings, rename (updates the layers), delete (refused while a layer uses the asset), extract channel, add built-in, and import by button or by dropping files on the window.
 
 ## Hierarchy
 
@@ -719,4 +745,4 @@ vfx.restart(instance); // while stopping: plays again (re-applied status)
 
 One-shot packages (every root layer `OnStart` with a finite `cycle_count`) finish and clean up by themselves; looping ones run until `stop`. Despawning the target removes its instances (and sends `VfxFinished`). Sockets with a `node` need that node name in the target's hierarchy (section "attach"). Editing the package file while the game runs updates running instances (hot reload, when the game enables Bevy's file watcher).
 
-Built-in textures need nothing; other textures must exist at their path under the game's `assets/` folder. The game camera needs `Hdr` and `Bloom` for colors above 1.0 to glow. The game can also load `*.omagari.ron` projects directly.
+Built-in textures need nothing; other textures must exist at their path under the game's `assets/` folder (`import_asset` puts them there). JPG textures need Bevy's `jpeg` feature in the game. The game camera needs `Hdr` and `Bloom` for colors above 1.0 to glow. The game can also load `*.omagari.ron` projects directly.

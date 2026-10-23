@@ -4,8 +4,8 @@ use std::fs::create_dir;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use omagari::format::{PreviewMotion, ProjectV2};
-use omagari::runtime::InMemoryPackageAssets;
+use omagari::format::{PreviewMotion, ProjectV2, TextureAssetDef};
+use omagari::runtime::{apply_texture_settings, InMemoryPackageAssets};
 use omagari::{VfxCommandsExt, VfxControl, VfxPackage};
 
 use crate::editor::session::EditorSession;
@@ -48,6 +48,9 @@ pub struct PreviewState {
     pub instances: Vec<Entity>,
     /// Warnings from the last build.
     pub warnings: Vec<String>,
+    /// The textures of the last build and their settings
+    /// ([`sync_preview_texture_settings`]).
+    pub textures: Vec<(Handle<Image>, TextureAssetDef)>,
 }
 
 pub fn spawn_preview_target(mut commands: Commands) {
@@ -90,6 +93,14 @@ pub fn apply_preview_commands(
                     warn!("preview: {}", warning);
                 }
                 state.warnings = warnings;
+                state.textures = package
+                    .particle_layers
+                    .iter()
+                    .filter_map(|layer| {
+                        let id = project.layers.get(layer.layer_index)?.as_particles()?.texture.as_ref()?;
+                        Some((layer.texture.clone()?, project.texture(id)?.clone()))
+                    })
+                    .collect();
                 // The previous package is dropped with its handle once its
                 // instances are gone.
                 let handle = packages_or_control.p0().add(package);
@@ -119,6 +130,26 @@ pub fn apply_preview_commands(
                     .into_iter()
                     .filter(|&instance| vfx.stop(instance))
                     .collect();
+            }
+        }
+    }
+}
+
+/// Gives the preview's textures the settings the project asks for: Bevy
+/// keeps a file's image with the settings of its first load, so a texture
+/// whose wrap, colour space or filter was just edited would keep the old
+/// ones until the editor restarts.
+pub fn sync_preview_texture_settings(state: Res<PreviewState>, mut images: ResMut<Assets<Image>>) {
+    for (handle, texture) in state.textures.iter() {
+        let Some(image) = images.get(handle) else { continue };
+        let mut probe = Image {
+            texture_descriptor: image.texture_descriptor.clone(),
+            sampler: image.sampler.clone(),
+            ..default()
+        };
+        if apply_texture_settings(&mut probe, texture) {
+            if let Some(mut image) = images.get_mut(handle) {
+                apply_texture_settings(&mut image, texture);
             }
         }
     }

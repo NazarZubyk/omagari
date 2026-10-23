@@ -18,6 +18,8 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use omagari::format::*;
 use omagari::runtime::{socket_lookup, BUILTIN_TEXTURES};
 
+use crate::asset_library as library;
+
 const DT: f32 = 1.0 / 60.0;
 /// Longest time a single particle is simulated.
 const MAX_PARTICLE_TIME: f32 = 30.0;
@@ -976,6 +978,64 @@ fn check_attach(d: &mut Diagnostics, project: &ProjectV2, layers: &[&ParticlesLa
     }
 }
 
+/// Texture settings that do not fit the purpose, sprite-sheet grids, and
+/// files Bevy loads in a form particles cannot sample.
+fn check_texture_settings(d: &mut Diagnostics, label: &str, t: &TextureAssetDef, assets_root: &Path) {
+    use TexturePurpose as P;
+    match (t.purpose, t.wrap) {
+        (P::Noise, Some(TextureWrap::Clamp)) => d.warn(
+            label,
+            "Noise with wrap Clamp: scrolled or tiled noise shows stretched edges; use Repeat (the Noise default)",
+        ),
+        (P::Gradient, Some(TextureWrap::Repeat)) => {
+            d.warn(label, "Gradient with wrap Repeat: the ends of the ramp bleed into each other; use Clamp")
+        }
+        _ => {}
+    }
+    if matches!(t.purpose, P::Noise | P::Mask) && t.color_space == Some(TextureColorSpace::Srgb) {
+        d.warn(
+            label,
+            format!(
+                "{} with colour space Srgb: data textures should be Linear, or their values are bent (the {} default)",
+                t.purpose.name(),
+                t.purpose.name()
+            ),
+        );
+    }
+    let info = library::texture_info_at(&t.path, assets_root).ok();
+    if let Some((rows, cols)) = t.grid {
+        if rows == 0 || cols == 0 {
+            d.error(label, format!("grid ({}, {}) needs at least 1 row and 1 column", rows, cols));
+        } else {
+            if t.purpose != P::Sprite {
+                d.warn(label, format!("grid is for sprite sheets (flipbooks), but the purpose is {}", t.purpose.name()));
+            }
+            if let Some(info) = &info {
+                if info.width % cols != 0 || info.height % rows != 0 {
+                    d.warn(
+                        label,
+                        format!(
+                            "grid {} rows × {} columns does not divide the {}×{} image evenly; frames will be cut off",
+                            rows, cols, info.width, info.height
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    if let Some(info) = &info {
+        if info.loads_as_integer_texture() {
+            d.warn(
+                label,
+                format!(
+                    "{} is a 16-bit grayscale PNG: Bevy loads it as an integer texture that cannot be sampled; save it as 8-bit (extract channel Luminance writes one)",
+                    t.path
+                ),
+            );
+        }
+    }
+}
+
 /// Runs every static check on a project: structure, assets, expression types,
 /// the bevy_hanabi shader generation and a package round trip. Relative
 /// texture paths are looked up in `assets_root` (the game assets folder).
@@ -1004,12 +1064,29 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
             }
         } else if t.path.is_empty() {
             d.error(&label, "texture path is empty");
-        } else if !assets_root.join(&t.path).is_file() {
-            d.warn(
-                &label,
-                format!("{} is not in the game assets folder ({}); it will not load", t.path, assets_root.display()),
-            );
+        } else {
+            match library::path_problem(&t.path) {
+                Err(e) => d.error(&label, e),
+                Ok(Some(w)) => d.warn(&label, w),
+                Ok(None) => {}
+            }
+            let ext = library::extension(&t.path);
+            if !library::TEXTURE_EXTENSIONS.contains(&ext.as_str()) {
+                d.warn(
+                    &label,
+                    format!("{}: .{} is not a texture type Omagari imports (PNG, JPG, KTX2); Bevy may not load it", t.path, ext),
+                );
+            } else if ext == "jpg" || ext == "jpeg" {
+                d.note(&label, "JPG: the game needs Bevy's `jpeg` feature to load it (PNG works by default)");
+            }
+            if !assets_root.join(&t.path).is_file() {
+                d.warn(
+                    &label,
+                    format!("{} is not in the game assets folder ({}); it will not load", t.path, assets_root.display()),
+                );
+            }
         }
+        check_texture_settings(&mut d, &label, t, assets_root);
         if !layers.iter().any(|l| l.texture.as_deref() == Some(asset.id.as_str())) {
             d.warn(&label, "not used by any layer");
         }
@@ -2526,6 +2603,68 @@ mod tests {
         );
         let d = check_project(&project, &assets_root());
         assert!(!d.render().contains("game assets folder"), "{}", d.render());
+    }
+
+    /// Settings that fight the purpose, bad grids, paths outside the game
+    /// folder, JPG, 16-bit grayscale PNGs.
+    #[test]
+    fn texture_settings_and_paths_are_checked() {
+        let dir = std::env::temp_dir().join(format!("omagari_texture_checks_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbaImage::new(10, 8).save(dir.join("sheet.png")).unwrap();
+        image::ImageBuffer::<image::Luma<u16>, Vec<u16>>::new(4, 4).save(dir.join("height16.png")).unwrap();
+        image::RgbImage::new(4, 4).save(dir.join("photo.jpg")).unwrap();
+        let layer = |name: &str, id: &str| {
+            format!(r#"Particles((name: "{}", texture: Some("{}"), effect: (render_modifiers: [ParticleTexture(())]))),"#, name, id)
+        };
+        let ids = ["noise", "ramp", "mask", "sheet", "zero", "height", "photo", "abs", "up", "odd"];
+        let layers: String = ids.iter().map(|id| layer(&format!("l_{}", id), id)).collect();
+        let project = parse(&format!(
+            r#"(version: 2,
+                assets: [
+                    (id: "noise", kind: Texture((path: "sheet.png", purpose: Noise, wrap: Some(Clamp)))),
+                    (id: "ramp", kind: Texture((path: "sheet.png", purpose: Gradient, wrap: Some(Repeat)))),
+                    (id: "mask", kind: Texture((path: "sheet.png", purpose: Mask, color_space: Some(Srgb)))),
+                    (id: "sheet", kind: Texture((path: "sheet.png", grid: Some((2, 3))))),
+                    (id: "zero", kind: Texture((path: "sheet.png", grid: Some((0, 2))))),
+                    (id: "height", kind: Texture((path: "height16.png", purpose: Noise))),
+                    (id: "photo", kind: Texture((path: "photo.jpg"))),
+                    (id: "abs", kind: Texture((path: "C:/textures/x.png"))),
+                    (id: "up", kind: Texture((path: "../x.png"))),
+                    (id: "odd", kind: Texture((path: "sheet.psd"))),
+                ],
+                layers: [{}])"#,
+            layers
+        ));
+        let d = check_project(&project, &dir);
+        let all = d.render();
+        let about = |id: &str| -> String {
+            d.about(&format!("asset \"{}\"", id)).map(|(_, m)| m.to_string()).collect::<Vec<_>>().join("\n")
+        };
+        assert!(about("noise").contains("Noise with wrap Clamp"), "{}", all);
+        assert!(about("ramp").contains("Gradient with wrap Repeat"), "{}", all);
+        assert!(about("mask").contains("Mask with colour space Srgb"), "{}", all);
+        assert!(about("sheet").contains("does not divide the 10×8 image evenly"), "{}", all);
+        assert!(d.errors.iter().any(|e| e.contains("[asset \"zero\"] grid (0, 2)")), "{}", all);
+        assert!(about("height").contains("16-bit grayscale PNG"), "{}", all);
+        assert!(d.notes.iter().any(|n| n.contains("[asset \"photo\"] JPG")), "{}", all);
+        assert!(d.errors.iter().any(|e| e.contains("[asset \"abs\"] C:/textures/x.png is not relative")), "{}", all);
+        assert!(about("up").contains("points outside the game assets folder"), "{}", all);
+        assert!(about("odd").contains(".psd is not a texture type"), "{}", all);
+
+        // Defaults from the purpose raise nothing.
+        let fine = parse(
+            r#"(version: 2,
+                assets: [(id: "n", kind: Texture((path: "sheet.png", purpose: Noise))), (id: "s", kind: Texture((path: "sheet.png", grid: Some((2, 5)))))],
+                layers: [
+                    Particles((name: "a", texture: Some("n"), effect: (render_modifiers: [ParticleTexture(())]))),
+                    Particles((name: "b", texture: Some("s"), effect: (render_modifiers: [ParticleTexture(())]))),
+                ])"#,
+        );
+        let d = check_project(&fine, &dir);
+        assert!(d.about("asset \"n\"").next().is_none() && d.about("asset \"s\"").next().is_none(), "{}", d.render());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
