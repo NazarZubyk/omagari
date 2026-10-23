@@ -5,7 +5,12 @@
 //! let instance = commands.spawn_vfx(&package, target);
 //! let burst = commands.spawn_vfx_at(&package, Transform::from_xyz(1.0, 0.0, 2.0));
 //!
+//! let tinted = commands.spawn_vfx_with(&package, target, VfxSpawn { params: &[("tint", Color::WHITE.into())] });
+//!
 //! fn later(mut vfx: VfxControl) {
+//!     vfx.set_param(instance, "intensity", 0.8); // smoothed; names are the package's
+//!     vfx.trigger(instance, "tick");
+//!     vfx.trigger_at(instance, "hit", TriggerArgs::at(contact_point));
 //!     vfx.stop(instance);    // graceful: no new particles, despawn when all died
 //!     vfx.restart(instance); // while stopping: plays again, same instance
 //! }
@@ -19,8 +24,10 @@ use bevy::prelude::*;
 use bevy_hanabi::prelude::*;
 
 use super::attach::{FitState, SocketAttach};
-use super::package::VfxPackage;
-use crate::format::AttachDef;
+use super::package::{apply_texture_settings_to, VfxPackage};
+use super::params::{sync_instance, ParamState, VfxWarnOnce};
+use super::triggers::TriggerArgs;
+use crate::format::{AttachDef, ParamValue};
 
 /// Sent once when an instance ends, right before the instance entity is
 /// despawned:
@@ -182,6 +189,11 @@ pub struct VfxInstance {
     /// Spawned with [`VfxCommandsExt::spawn_vfx_at`]: no target, the
     /// instance's own transform places it.
     pub(crate) in_world: bool,
+    /// Parameter values; they survive rebuilds (hot reload, package
+    /// replaced).
+    pub(crate) params: ParamState,
+    /// Triggers fired and not applied yet.
+    pub(crate) triggers: Vec<(String, TriggerArgs)>,
 }
 
 impl VfxInstance {
@@ -195,7 +207,22 @@ impl VfxInstance {
             rebuild: false,
             linger: 0.0,
             in_world: false,
+            params: ParamState::default(),
+            triggers: Vec::new(),
         }
+    }
+
+    /// Starts with these parameter values (no smoothing from the defaults).
+    pub fn with_params(mut self, params: &[(&str, ParamValue)]) -> Self {
+        for (name, value) in params {
+            self.params.set_later(name, *value, true);
+        }
+        self
+    }
+
+    /// The instance's parameter values.
+    pub fn params(&self) -> &ParamState {
+        &self.params
     }
 
     pub fn package(&self) -> &Handle<VfxPackage> {
@@ -241,33 +268,81 @@ pub struct VfxLayer {
     pub index: usize,
 }
 
+/// Runtime state of a layer entity: what the parameters and triggers ask of
+/// its spawner.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct VfxLayerState {
+    /// `visible` factor, 0..1 (1 without `visible`).
+    pub visibility: f32,
+    /// Spawn rate from the `rate` binding (particles per second), `None` =
+    /// the spawner's own count.
+    pub rate: Option<f32>,
+    /// A burst waiting for the spawner (`OnTrigger` layers), with its
+    /// payload.
+    pub burst: Option<TriggerArgs>,
+    /// A `While` layer's condition was true last frame.
+    pub while_on: bool,
+    /// Fraction of a particle carried over to the next frame.
+    pub remainder: f32,
+}
+
+impl Default for VfxLayerState {
+    fn default() -> Self {
+        VfxLayerState {
+            visibility: 1.0,
+            rate: None,
+            burst: None,
+            while_on: false,
+            remainder: 0.0,
+        }
+    }
+}
+
+/// Options of [`VfxCommandsExt::spawn_vfx_with`].
+#[derive(Clone, Copy, Default, Debug)]
+pub struct VfxSpawn<'a> {
+    /// Starting parameter values (set at once, not smoothed from the
+    /// defaults). Names are the package's parameters.
+    pub params: &'a [(&'a str, ParamValue)],
+}
+
 /// Spawning instances from [`Commands`].
 pub trait VfxCommandsExt {
     /// Spawns an instance of `package` attached to `target` (as its child)
     /// and returns the instance entity. The layers appear once the package
     /// and its textures have loaded.
-    fn spawn_vfx(&mut self, package: &Handle<VfxPackage>, target: Entity) -> Entity;
+    fn spawn_vfx(&mut self, package: &Handle<VfxPackage>, target: Entity) -> Entity {
+        self.spawn_vfx_with(package, target, VfxSpawn::default())
+    }
+
+    /// [`VfxCommandsExt::spawn_vfx`] with starting parameter values.
+    fn spawn_vfx_with(&mut self, package: &Handle<VfxPackage>, target: Entity, options: VfxSpawn) -> Entity;
 
     /// Spawns an instance of `package` in the world at `transform`, with no
     /// target (a one-shot hit, an explosion). It is cleaned up when it
     /// finishes: by itself when every layer is one-shot, else when stopped.
-    fn spawn_vfx_at(&mut self, package: &Handle<VfxPackage>, transform: Transform) -> Entity;
+    fn spawn_vfx_at(&mut self, package: &Handle<VfxPackage>, transform: Transform) -> Entity {
+        self.spawn_vfx_at_with(package, transform, VfxSpawn::default())
+    }
+
+    /// [`VfxCommandsExt::spawn_vfx_at`] with starting parameter values.
+    fn spawn_vfx_at_with(&mut self, package: &Handle<VfxPackage>, transform: Transform, options: VfxSpawn) -> Entity;
 }
 
 impl VfxCommandsExt for Commands<'_, '_> {
-    fn spawn_vfx(&mut self, package: &Handle<VfxPackage>, target: Entity) -> Entity {
+    fn spawn_vfx_with(&mut self, package: &Handle<VfxPackage>, target: Entity, options: VfxSpawn) -> Entity {
         self.spawn((
             Name::new("vfx"),
-            VfxInstance::new(package.clone(), target),
+            VfxInstance::new(package.clone(), target).with_params(options.params),
             FitState::default(),
             ChildOf(target),
         ))
         .id()
     }
 
-    fn spawn_vfx_at(&mut self, package: &Handle<VfxPackage>, transform: Transform) -> Entity {
+    fn spawn_vfx_at_with(&mut self, package: &Handle<VfxPackage>, transform: Transform, options: VfxSpawn) -> Entity {
         let instance = self.spawn_empty().id();
-        let mut component = VfxInstance::new(package.clone(), instance);
+        let mut component = VfxInstance::new(package.clone(), instance).with_params(options.params);
         component.in_world = true;
         self.entity(instance)
             .insert((Name::new("vfx"), component, transform));
@@ -281,6 +356,7 @@ pub struct VfxControl<'w, 's> {
     instances: Query<'w, 's, &'static mut VfxInstance>,
     spawners: Query<'w, 's, &'static mut EffectSpawner>,
     packages: Res<'w, Assets<VfxPackage>>,
+    warned: ResMut<'w, VfxWarnOnce>,
 }
 
 impl VfxControl<'_, '_> {
@@ -313,14 +389,89 @@ impl VfxControl<'_, '_> {
             inst.lifecycle = VfxLifecycle::default();
             return true;
         }
-        let auto_finish = self.packages.get(&inst.package).and_then(|p| p.auto_finish);
+        let package = self.packages.get(&inst.package);
+        let auto_finish = package.and_then(|p| p.auto_finish);
         inst.lifecycle.restart(auto_finish);
-        for &layer in inst.layers.iter() {
+        for (index, &layer) in inst.layers.iter().enumerate() {
+            // OnTrigger / While layers are switched by their trigger or
+            // parameter, never by a restart.
+            let driven = package
+                .and_then(|p| p.particle_layers.get(index))
+                .is_some_and(|l| l.play.is_driven());
+            if driven {
+                continue;
+            }
             if let Ok(mut spawner) = self.spawners.get_mut(layer) {
                 spawner.reset();
                 spawner.active = true;
             }
         }
+        true
+    }
+
+    /// Sets a parameter of the instance; its current value follows smoothly
+    /// (the parameter's `smoothing`). Float values are clamped to the
+    /// parameter's range. Names are the package's parameters: an unknown
+    /// name or a value of the wrong kind (a number for a colour parameter)
+    /// is ignored with one warning per package and name. Values set before
+    /// the package has loaded apply when it has. Returns `false` if
+    /// `instance` is not an instance.
+    pub fn set_param(&mut self, instance: Entity, name: &str, value: impl Into<ParamValue>) -> bool {
+        self.set(instance, name, value.into(), false)
+    }
+
+    /// Like [`VfxControl::set_param`], without smoothing: the current value
+    /// jumps to `value`.
+    pub fn set_param_now(&mut self, instance: Entity, name: &str, value: impl Into<ParamValue>) -> bool {
+        self.set(instance, name, value.into(), true)
+    }
+
+    fn set(&mut self, instance: Entity, name: &str, value: ParamValue, now: bool) -> bool {
+        let Ok(mut inst) = self.instances.get_mut(instance) else {
+            return false;
+        };
+        let inst = &mut *inst;
+        match self.packages.get(&inst.package) {
+            Some(package) => {
+                sync_instance(inst, package, &mut self.warned);
+                if let Err(error) = inst.params.set(name, value, now) {
+                    self.warned.param_error(&inst.package, name, error);
+                }
+            }
+            None => inst.params.set_later(name, value, now),
+        }
+        true
+    }
+
+    /// The current (smoothed, pulsed) value of a parameter; `None` if
+    /// `instance` is not an instance, its package has not loaded yet, or it
+    /// has no such parameter.
+    pub fn param(&self, instance: Entity, name: &str) -> Option<ParamValue> {
+        let inst = self.instances.get(instance).ok()?;
+        if !inst.params.is_synced(inst.package.id()) {
+            return None;
+        }
+        inst.params.get(name)
+    }
+
+    /// Fires a trigger of the package: `OnTrigger` layers burst and the
+    /// trigger's pulses run. Fired while the instance is starting, it applies
+    /// once the layers exist; ignored while it stops. Unknown names are
+    /// ignored with one warning per package and name. Returns `false` if
+    /// `instance` is not an instance.
+    pub fn trigger(&mut self, instance: Entity, name: &str) -> bool {
+        self.trigger_at(instance, name, TriggerArgs::default())
+    }
+
+    /// [`VfxControl::trigger`] with a payload: a world position and
+    /// direction and a strength, written into the properties `trigger_pos`,
+    /// `trigger_dir`, `trigger_strength` of the bursting layers (in their
+    /// simulation space) before they burst.
+    pub fn trigger_at(&mut self, instance: Entity, name: &str, args: TriggerArgs) -> bool {
+        let Ok(mut inst) = self.instances.get_mut(instance) else {
+            return false;
+        };
+        inst.triggers.push((name.to_string(), args));
         true
     }
 
@@ -426,6 +577,7 @@ pub(crate) fn start_instances(
                     instance: entity,
                     index,
                 },
+                VfxLayerState::default(),
                 ChildOf(entity),
             ));
             if let Some(texture) = &layer.texture {
@@ -458,9 +610,13 @@ pub(crate) fn start_instances(
 }
 
 /// Marks running instances for a rebuild when their package asset changes
-/// (hot reload of the package file).
+/// (hot reload of the package file); their parameter values are kept. The
+/// package's textures get its (possibly edited) settings: Bevy keeps an
+/// image loaded with the settings of its first load.
 pub(crate) fn reload_instances(
     mut events: MessageReader<AssetEvent<VfxPackage>>,
+    packages: Res<Assets<VfxPackage>>,
+    images: Option<ResMut<Assets<Image>>>,
     mut instances: Query<&mut VfxInstance>,
 ) {
     let modified: Vec<AssetId<VfxPackage>> = events
@@ -473,28 +629,28 @@ pub(crate) fn reload_instances(
     if modified.is_empty() {
         return;
     }
-    for mut instance in instances.iter_mut() {
-        if instance.state() == VfxState::Running && modified.contains(&instance.package.id()) {
-            instance.rebuild = true;
+    if let Some(mut images) = images {
+        for package in modified.iter().filter_map(|id| packages.get(*id)) {
+            for layer in package.particle_layers.iter() {
+                let Some(handle) = &layer.texture else { continue };
+                let def = package
+                    .project
+                    .layers
+                    .get(layer.layer_index)
+                    .and_then(|l| l.as_particles())
+                    .and_then(|l| l.texture.as_ref())
+                    .and_then(|id| package.project.texture(id));
+                if let Some(def) = def {
+                    apply_texture_settings_to(&mut images, handle, def);
+                }
+            }
         }
     }
-}
-
-/// Keeps the spawners of stopping instances and of retired layers inactive
-/// (bevy_hanabi inserts the spawner component on the first tick, so this
-/// runs every frame).
-pub(crate) fn stop_layer_spawners(
-    instances: Query<&VfxInstance>,
-    mut spawners: Query<&mut EffectSpawner>,
-) {
-    for instance in instances.iter() {
-        let stopping = instance.lifecycle.is_stopping();
-        let layers = instance.layers.iter().filter(|_| stopping);
-        for &layer in layers.chain(instance.retired.iter().map(|(e, _)| e)) {
-            if let Ok(mut spawner) = spawners.get_mut(layer) {
-                if spawner.active {
-                    spawner.active = false;
-                }
+    for mut instance in instances.iter_mut() {
+        if modified.contains(&instance.package.id()) {
+            instance.params.resync = true;
+            if instance.state() == VfxState::Running {
+                instance.rebuild = true;
             }
         }
     }

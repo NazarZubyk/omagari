@@ -10,8 +10,8 @@ use bevy_hanabi::prelude::*;
 
 use super::builtin::{resolve_asset_path, resolve_asset_path_in};
 use crate::format::{
-    AttachDef, PlayDef, ProjectV2, SimulationSpaceDef, TextureAssetDef, TextureColorSpace,
-    TextureFilter, TextureWrap,
+    param_property_name, AttachDef, Binding, ParamKind, PlayDef, ProjectV2, SimulationSpaceDef,
+    TextureAssetDef, TextureColorSpace, TextureFilter, TextureWrap, VisibleRangeDef,
 };
 
 /// Stop duration used for a layer whose particle lifetime cannot be estimated.
@@ -45,8 +45,15 @@ pub struct PreparedParticleLayer {
     pub linger: f32,
     pub attach: AttachDef,
     pub simulation_space: SimulationSpaceDef,
-    /// Properties the produced effect declares (e.g. `segment_a`).
+    /// Properties the produced effect declares (e.g. `segment_a`,
+    /// `param_intensity`).
     pub properties: Vec<String>,
+    /// Parameters the effect reads: (parameter name, property name).
+    pub param_properties: Vec<(String, String)>,
+    pub play: PlayDef,
+    /// Spawn rate binding (particles per second).
+    pub rate: Option<Binding<f32>>,
+    pub visible: Option<VisibleRangeDef>,
 }
 
 /// Where [`VfxPackage::build`] puts the effects and textures it creates.
@@ -173,6 +180,27 @@ pub fn texture_image_settings(texture: &TextureAssetDef) -> (bool, ImageSampler)
     (is_srgb, sampler)
 }
 
+/// [`apply_texture_settings`] on an image in `images`, touching the asset
+/// (which re-uploads it) only when something changes. Returns whether it
+/// did.
+pub fn apply_texture_settings_to(images: &mut Assets<Image>, handle: &Handle<Image>, texture: &TextureAssetDef) -> bool {
+    let Some(image) = images.get(handle) else {
+        return false;
+    };
+    let mut probe = Image {
+        texture_descriptor: image.texture_descriptor.clone(),
+        sampler: image.sampler.clone(),
+        ..default()
+    };
+    if !apply_texture_settings(&mut probe, texture) {
+        return false;
+    }
+    match images.get_mut(handle) {
+        Some(mut image) => apply_texture_settings(&mut image, texture),
+        None => false,
+    }
+}
+
 /// Gives an already loaded image a texture's settings (sampler, sRGB or
 /// linear for 8-bit RGBA formats). Returns whether it changed anything.
 ///
@@ -215,11 +243,38 @@ impl VfxPackage {
                     layer.name
                 ));
             }
-            if matches!(layer.play, PlayDef::OnTrigger(_) | PlayDef::While(..)) {
-                warnings.push(format!(
-                    "[{}] play {:?} is not supported yet; the layer plays as authored",
-                    layer.name, layer.play
-                ));
+            // Parameters the CPU side reads must be Float parameters.
+            let float_params = layer
+                .rate
+                .as_ref()
+                .and_then(|r| r.param())
+                .map(|p| ("rate", p))
+                .into_iter()
+                .chain(layer.visible.as_ref().map(|v| ("visible", v.param.as_str())))
+                .chain(match &layer.play {
+                    PlayDef::While(p, _) => Some(("play While", p.as_str())),
+                    _ => None,
+                });
+            for (what, param) in float_params {
+                match project.param(param).map(|p| p.kind()) {
+                    Some(ParamKind::Float) => {}
+                    Some(ParamKind::Color) => warnings.push(format!(
+                        "[{}] {} reads \"{}\", a Color parameter; it needs a Float one",
+                        layer.name, what, param
+                    )),
+                    None => warnings.push(format!(
+                        "[{}] {} reads \"{}\", which is not a parameter of this package",
+                        layer.name, what, param
+                    )),
+                }
+            }
+            if let Some(trigger) = layer.play.trigger() {
+                if project.trigger(trigger).is_none() {
+                    warnings.push(format!(
+                        "[{}] plays on trigger \"{}\", which is not a trigger of this package",
+                        layer.name, trigger
+                    ));
+                }
             }
 
             let texture = layer.texture.as_ref().and_then(|id| {
@@ -254,8 +309,14 @@ impl VfxPackage {
                 FALLBACK_LIFETIME
             }));
 
-            let effect = layer.produce(warnings);
-            let properties = effect.properties().iter().map(|p| p.name().to_string()).collect();
+            let effect = layer.produce(&project.parameters, warnings);
+            let properties: Vec<String> = effect.properties().iter().map(|p| p.name().to_string()).collect();
+            let param_properties = project
+                .parameters
+                .iter()
+                .map(|p| (p.name.clone(), param_property_name(&p.name)))
+                .filter(|(_, property)| properties.contains(property))
+                .collect();
             particle_layers.push(PreparedParticleLayer {
                 layer_index,
                 name: layer.name.clone(),
@@ -266,6 +327,10 @@ impl VfxPackage {
                 attach: layer.attach.clone(),
                 simulation_space: layer.simulation_space,
                 properties,
+                param_properties,
+                play: layer.play.clone(),
+                rate: layer.rate.clone(),
+                visible: layer.visible.clone(),
             });
             emit_ends.push(match layer.play {
                 PlayDef::OnStart => layer.effect.emit_duration(),

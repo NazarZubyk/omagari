@@ -5,8 +5,9 @@
 //! load, and unknown struct fields are ignored (a newer editor's file still
 //! loads in an older game).
 //!
-//! Parameters, triggers, `rate`, `visible` and `play` beyond `Loop` /
-//! `OnStart` are data only for now; the runtime uses them in later phases.
+//! Parameters and triggers are declared per package (any names, any
+//! number); the runtime keeps their values per instance and fires triggers
+//! (`runtime/params.rs`, `runtime/triggers.rs`).
 
 use std::ops::{Add, Mul};
 
@@ -15,6 +16,7 @@ use bevy_hanabi::prelude::*;
 use ron::ser::PrettyConfig;
 use serde::{de::IgnoredAny, Deserialize, Deserializer, Serialize};
 
+use super::expr::ExprWriterEditor;
 use super::migrate::migrate_v1;
 use super::particles::ParticleEffectDef;
 use super::OmagariProject;
@@ -223,6 +225,181 @@ impl ProjectV2 {
             .enumerate()
             .filter_map(|(i, l)| l.as_particles().map(|p| (i, p)))
     }
+
+    /// The parameter with this name.
+    pub fn param(&self, name: &str) -> Option<&ParamDef> {
+        self.parameters.iter().find(|p| p.name == name)
+    }
+
+    /// The trigger with this name.
+    pub fn trigger(&self, name: &str) -> Option<&TriggerDef> {
+        self.triggers.iter().find(|t| t.name == name)
+    }
+
+    /// What reads the parameter `name`, in words (`layer "mist" (expressions,
+    /// rate)`, `trigger "tick" (pulse)`); the preview block does not count.
+    pub fn param_users(&self, name: &str) -> Vec<String> {
+        let mut users = Vec::new();
+        for (_, layer) in self.particle_layers() {
+            let mut what = Vec::new();
+            if layer.effect.params_read().iter().any(|p| p == name) {
+                what.push("expressions");
+            }
+            if layer.rate.as_ref().and_then(|r| r.param()) == Some(name) {
+                what.push("rate");
+            }
+            if layer.visible.as_ref().is_some_and(|v| v.param == name) {
+                what.push("visible");
+            }
+            if matches!(&layer.play, PlayDef::While(p, _) if p == name) {
+                what.push("play While");
+            }
+            if !what.is_empty() {
+                users.push(format!("layer \"{}\" ({})", layer.name, what.join(", ")));
+            }
+        }
+        for trigger in self.triggers.iter() {
+            if trigger.pulses.iter().any(|p| p.param == name) {
+                users.push(format!("trigger \"{}\" (pulse)", trigger.name));
+            }
+        }
+        users
+    }
+
+    /// Names of the layers played by the trigger `name` (`play: OnTrigger`).
+    pub fn trigger_users(&self, name: &str) -> Vec<String> {
+        self.particle_layers()
+            .filter(|(_, l)| l.play.trigger() == Some(name))
+            .map(|(_, l)| l.name.clone())
+            .collect()
+    }
+
+    /// Renames the parameter `from` to `to` and every reference to it:
+    /// expressions, `rate`, `visible`, `play: While`, pulses and the preview
+    /// values. Fails when `to` is empty or taken, or `from` does not exist.
+    pub fn rename_param(&mut self, from: &str, to: &str) -> Result<(), String> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err("a parameter name cannot be empty".into());
+        }
+        if from == to {
+            return Ok(());
+        }
+        if self.param(to).is_some() {
+            return Err(format!("a parameter \"{}\" already exists", to));
+        }
+        let param = self
+            .parameters
+            .iter_mut()
+            .find(|p| p.name == from)
+            .ok_or_else(|| format!("no parameter \"{}\"", from))?;
+        param.name = to.to_string();
+        for layer in self.layers.iter_mut() {
+            let Some(layer) = layer.as_particles_mut() else { continue };
+            for e in layer.effect.exprs_mut() {
+                e.visit_mut(&mut |e| {
+                    if let ExprWriterEditor::Param(name) = e {
+                        if name == from {
+                            *name = to.to_string();
+                        }
+                    }
+                });
+            }
+            if let Some(Binding::Param(name, _)) = &mut layer.rate {
+                if name == from {
+                    *name = to.to_string();
+                }
+            }
+            if let Some(visible) = &mut layer.visible {
+                if visible.param == from {
+                    visible.param = to.to_string();
+                }
+            }
+            if let PlayDef::While(name, _) = &mut layer.play {
+                if name == from {
+                    *name = to.to_string();
+                }
+            }
+        }
+        for pulse in self.triggers.iter_mut().flat_map(|t| t.pulses.iter_mut()) {
+            if pulse.param == from {
+                pulse.param = to.to_string();
+            }
+        }
+        if let Some(preview) = &mut self.preview {
+            for (name, _) in preview.params.iter_mut() {
+                if name == from {
+                    *name = to.to_string();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Renames the trigger `from` to `to` and every reference to it (`play:
+    /// OnTrigger`, preview auto triggers). Fails when `to` is empty or taken,
+    /// or `from` does not exist.
+    pub fn rename_trigger(&mut self, from: &str, to: &str) -> Result<(), String> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err("a trigger name cannot be empty".into());
+        }
+        if from == to {
+            return Ok(());
+        }
+        if self.trigger(to).is_some() {
+            return Err(format!("a trigger \"{}\" already exists", to));
+        }
+        let trigger = self
+            .triggers
+            .iter_mut()
+            .find(|t| t.name == from)
+            .ok_or_else(|| format!("no trigger \"{}\"", from))?;
+        trigger.name = to.to_string();
+        for layer in self.layers.iter_mut() {
+            let Some(layer) = layer.as_particles_mut() else { continue };
+            if let PlayDef::OnTrigger(name) = &mut layer.play {
+                if name == from {
+                    *name = to.to_string();
+                }
+            }
+        }
+        if let Some(preview) = &mut self.preview {
+            for (name, _) in preview.auto_triggers.iter_mut() {
+                if name == from {
+                    *name = to.to_string();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A parameter name based on `base` that no parameter has yet: `base`,
+    /// `base2`, ...
+    pub fn unique_param_name(&self, base: &str) -> String {
+        unique_name(base, |n| self.param(n).is_some())
+    }
+
+    /// A trigger name based on `base` that no trigger has yet.
+    pub fn unique_trigger_name(&self, base: &str) -> String {
+        unique_name(base, |n| self.trigger(n).is_some())
+    }
+}
+
+/// `base`, `base2`, `base3`, ... : the first one `taken` refuses.
+fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    let base = base.trim();
+    if !taken(base) {
+        return base.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{}{}", base, n);
+        if !taken(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 // --- parameters and triggers -------------------------------------------------
@@ -241,11 +418,78 @@ impl Default for ParamValue {
     }
 }
 
+impl ParamValue {
+    pub fn kind(&self) -> ParamKind {
+        match self {
+            ParamValue::Float(_) => ParamKind::Float,
+            ParamValue::Color(_) => ParamKind::Color,
+        }
+    }
+
+    pub fn as_float(&self) -> Option<f32> {
+        match *self {
+            ParamValue::Float(v) => Some(v),
+            ParamValue::Color(_) => None,
+        }
+    }
+
+    /// Linear RGBA.
+    pub fn as_color(&self) -> Option<Vec4> {
+        match *self {
+            ParamValue::Color(c) => Some(c),
+            ParamValue::Float(_) => None,
+        }
+    }
+
+    /// The bevy_hanabi property value: f32 or vec4.
+    pub fn to_value(&self) -> Value {
+        match *self {
+            ParamValue::Float(v) => Value::from(v),
+            ParamValue::Color(c) => Value::from(c),
+        }
+    }
+}
+
+impl From<f32> for ParamValue {
+    fn from(value: f32) -> Self {
+        ParamValue::Float(value)
+    }
+}
+
+/// Linear RGBA.
+impl From<Vec4> for ParamValue {
+    fn from(value: Vec4) -> Self {
+        ParamValue::Color(value)
+    }
+}
+
+impl From<LinearRgba> for ParamValue {
+    fn from(value: LinearRgba) -> Self {
+        ParamValue::Color(value.to_vec4())
+    }
+}
+
+/// Converted to linear RGBA (like particle colours).
+impl From<Color> for ParamValue {
+    fn from(value: Color) -> Self {
+        ParamValue::Color(value.to_linear().to_vec4())
+    }
+}
+
 /// Kind of a parameter, given by its default value.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ParamKind {
     Float,
     Color,
+}
+
+impl ParamKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            ParamKind::Float => "Float",
+            ParamKind::Color => "Color",
+        }
+    }
 }
 
 /// A named value the game sets per instance; any name, any number.
@@ -281,10 +525,23 @@ impl Default for ParamDef {
 
 impl ParamDef {
     pub fn kind(&self) -> ParamKind {
-        match self.default {
-            ParamValue::Float(_) => ParamKind::Float,
-            ParamValue::Color(_) => ParamKind::Color,
+        self.default.kind()
+    }
+
+    /// `value` clamped to `[min, max]` (Float; colours are kept as they are).
+    pub fn clamp(&self, value: ParamValue) -> ParamValue {
+        match value {
+            ParamValue::Float(v) => {
+                let (lo, hi) = (self.min.min(self.max), self.max.max(self.min));
+                ParamValue::Float(v.clamp(lo, hi))
+            }
+            color => color,
         }
+    }
+
+    /// The middle of a Float parameter's range.
+    pub fn middle(&self) -> f32 {
+        (self.min + self.max) * 0.5
     }
 }
 
@@ -323,6 +580,16 @@ pub enum Binding<T> {
 impl<T: Default> Default for Binding<T> {
     fn default() -> Self {
         Binding::Const(T::default())
+    }
+}
+
+impl<T> Binding<T> {
+    /// The parameter a curve reads, `None` for a constant.
+    pub fn param(&self) -> Option<&str> {
+        match self {
+            Binding::Const(_) => None,
+            Binding::Param(name, _) => Some(name),
+        }
     }
 }
 
@@ -636,7 +903,30 @@ pub enum PlayDef {
     While(String, f32),
 }
 
-/// Layer visible only in a parameter range, cross-fading over `fade`.
+impl PlayDef {
+    /// The trigger an `OnTrigger` layer waits for.
+    pub fn trigger(&self) -> Option<&str> {
+        match self {
+            PlayDef::OnTrigger(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Whether the runtime switches the layer's spawner on and off
+    /// (`OnTrigger`, `While`): such layers do not start by themselves.
+    pub fn is_driven(&self) -> bool {
+        matches!(self, PlayDef::OnTrigger(_) | PlayDef::While(..))
+    }
+}
+
+/// Layer visible only while a Float parameter is in `[from, to]`, fading out
+/// over `fade` (parameter units) outside the range, so neighbouring ranges
+/// cross-fade. The factor multiplies the spawn rate and is readable as
+/// `Property("visibility")` (multiply alpha by it to fade live particles).
+///
+/// ```ron
+/// visible: Some((param: "intensity", from: 0.6, to: 1.0, fade: 0.1))
+/// ```
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
 pub struct VisibleRangeDef {
@@ -644,6 +934,28 @@ pub struct VisibleRangeDef {
     pub from: f32,
     pub to: f32,
     pub fade: f32,
+}
+
+impl VisibleRangeDef {
+    /// 1 inside `[from, to]`, falling linearly to 0 over `fade` outside it
+    /// (0 outside right away when `fade` is 0).
+    pub fn factor(&self, value: f32) -> f32 {
+        let (from, to) = (self.from.min(self.to), self.to.max(self.from));
+        let distance = if value < from {
+            from - value
+        } else if value > to {
+            value - to
+        } else {
+            0.0
+        };
+        if distance <= 0.0 {
+            1.0
+        } else if self.fade <= 0.0 {
+            0.0
+        } else {
+            (1.0 - distance / self.fade).clamp(0.0, 1.0)
+        }
+    }
 }
 
 // --- layers ------------------------------------------------------------------
@@ -711,10 +1023,35 @@ impl Default for ParticlesLayerDef {
 
 impl ParticlesLayerDef {
     /// Builds the layer's bevy_hanabi effect (named after the layer, in the
-    /// layer's simulation space). See [`ParticleEffectDef::produce`].
-    pub fn produce(&self, warnings: &mut Vec<String>) -> EffectAsset {
-        self.effect
-            .produce(&self.name, self.simulation_space.into(), warnings)
+    /// layer's simulation space), with `Param(..)` reads resolved against the
+    /// package's `params`. See [`ParticleEffectDef::produce`]. Root layers
+    /// played by the runtime (`OnTrigger`, `While`) do not start active.
+    pub fn produce(&self, params: &[ParamDef], warnings: &mut Vec<String>) -> EffectAsset {
+        let mut effect = self
+            .effect
+            .produce(&self.name, self.simulation_space.into(), params, warnings);
+        if self.play.is_driven() && self.parent.is_none() {
+            effect.spawner = effect.spawner.with_starts_active(false);
+        }
+        effect
+    }
+
+    /// Every parameter the layer reads: expressions, `rate`, `visible` and
+    /// `play: While`, sorted, without duplicates.
+    pub fn params_used(&self) -> Vec<String> {
+        let mut names = self.effect.params_read();
+        if let Some(name) = self.rate.as_ref().and_then(|r| r.param()) {
+            names.push(name.to_string());
+        }
+        if let Some(visible) = &self.visible {
+            names.push(visible.param.clone());
+        }
+        if let PlayDef::While(name, _) = &self.play {
+            names.push(name.clone());
+        }
+        names.sort();
+        names.dedup();
+        names
     }
 }
 
@@ -860,7 +1197,7 @@ mod tests {
         let (_, layer) = project.particle_layers().next().unwrap();
         assert_eq!(layer.effect.properties_read(), vec!["segment_a".to_string(), "segment_b".to_string()]);
         let mut warnings = Vec::new();
-        let effect = layer.produce(&mut warnings);
+        let effect = layer.produce(&project.parameters, &mut warnings);
         assert!(warnings.is_empty(), "{:?}", warnings);
         let names: Vec<&str> = effect.properties().iter().map(|p| p.name()).collect();
         assert_eq!(names, vec!["segment_a", "segment_b"]);
@@ -873,9 +1210,144 @@ mod tests {
             attr_expr: ExprWriterEditor::Property("nope".into()),
         })];
         let mut warnings = Vec::new();
-        let effect = def.produce(&mut warnings);
+        let effect = def.produce(&project.parameters, &mut warnings);
         assert!(effect.properties().is_empty());
         assert!(warnings[0].contains("Property(\"nope\") is not a runtime property"), "{:?}", warnings);
+    }
+
+    const PARAM_PROJECT: &str = r#"(
+        parameters: [
+            (name: "intensity", default: Float(0.25), min: 0.0, max: 1.0, smoothing: 0.4),
+            (name: "tint", default: Color((0.65, 0.08, 0.95, 1.0))),
+            (name: "hit flash", default: Float(0.0)),
+        ],
+        triggers: [(name: "tick", pulses: [(param: "intensity", to: 1.0, decay: 0.3)]), (name: "hit")],
+        layers: [
+            Particles((
+                name: "mist",
+                rate: Some(Param("intensity", [(0.0, 5.0), (1.0, 40.0)])),
+                visible: Some((param: "intensity", from: 0.2, to: 1.0, fade: 0.1)),
+                effect: (init_modifiers: [
+                    SetAttribute((attr: "hdr_color", attr_expr: Operator(Mix(Param("tint"), Vec4((1.0, 1.0, 1.0, 1.0)), Param("intensity"))))),
+                    SetAttribute((attr: "size", attr_expr: Operator(Clamp(Operator(Multiply(Param("intensity"), Param("hit flash"))), Float(0.05), Float(0.4))))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Max(Float(0.2), Operator(SmoothStep(Float(0.0), Float(1.0), Param("intensity"))))))),
+                    SetAttribute((attr: "alpha", attr_expr: Operator(Min(Float(1.0), Property("visibility"))))),
+                ]),
+            )),
+            Particles((name: "burst", play: OnTrigger("hit"), effect: (spawner: (cycle_count: 1)))),
+            Particles((name: "charge", play: While("intensity", 0.9))),
+        ],
+        preview: Some((params: [("intensity", Float(0.5))], auto_triggers: [("hit", 1.0)])),
+    )"#;
+
+    /// Each parameter an effect reads is one property (f32 / vec4, default
+    /// value), however often it is read; bevy_hanabi generates the shaders.
+    #[test]
+    fn parameters_become_properties_declared_once() {
+        let project = ProjectV2::from_ron_str(PARAM_PROJECT).unwrap();
+        let (_, mist) = project.particle_layers().next().unwrap();
+        assert_eq!(mist.effect.params_read(), vec!["hit flash", "intensity", "tint"]);
+        assert_eq!(mist.params_used(), vec!["hit flash", "intensity", "tint"]);
+        let mut warnings = Vec::new();
+        let effect = mist.produce(&project.parameters, &mut warnings);
+        assert!(warnings.is_empty(), "{:?}", warnings);
+        let properties: Vec<(&str, Value)> =
+            effect.properties().iter().map(|p| (p.name(), *p.default_value())).collect();
+        assert_eq!(
+            properties,
+            vec![
+                ("param_tint", Value::from(Vec4::new(0.65, 0.08, 0.95, 1.0))),
+                ("param_intensity", Value::from(0.25f32)),
+                ("param_hit_20_flash", Value::from(0.0f32)),
+                ("visibility", Value::from(1.0f32)),
+            ]
+        );
+        EffectShaderSources::generate(&effect, None, 0).expect("shaders with parameter properties");
+
+        // Runtime-played layers do not start by themselves.
+        let burst = project.layers[1].as_particles().unwrap().produce(&project.parameters, &mut warnings);
+        assert!(!burst.spawner.starts_active());
+        assert!(mist.produce(&project.parameters, &mut warnings).spawner.starts_active());
+
+        // An unknown parameter reads 0.0, with a warning.
+        let mut warnings = Vec::new();
+        mist.produce(&[], &mut warnings);
+        assert!(warnings.iter().any(|w| w.contains("Param(\"tint\") is not a parameter")), "{:?}", warnings);
+    }
+
+    #[test]
+    fn parameter_property_names_are_valid_and_distinct() {
+        assert_eq!(param_property_name("intensity"), "param_intensity");
+        assert_eq!(param_property_name("hit_flash"), "param_hit__flash");
+        assert_eq!(param_property_name("hit flash"), "param_hit_20_flash");
+        assert_eq!(param_property_name("Glut-Stärke"), "param_Glut_2d_St_e4_rke");
+        assert_ne!(param_property_name("a_b"), param_property_name("a b"));
+        for name in ["x", "loop", "fn", "_", "1st"] {
+            let property = param_property_name(name);
+            assert!(property.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{}", property);
+        }
+    }
+
+    #[test]
+    fn renaming_a_parameter_or_trigger_updates_every_reference() {
+        let mut p = ProjectV2::from_ron_str(PARAM_PROJECT).unwrap();
+        assert_eq!(
+            p.param_users("intensity"),
+            vec![
+                "layer \"mist\" (expressions, rate, visible)".to_string(),
+                "layer \"charge\" (play While)".to_string(),
+                "trigger \"tick\" (pulse)".to_string(),
+            ]
+        );
+        p.rename_param("intensity", "power").unwrap();
+        assert!(p.param("intensity").is_none());
+        assert_eq!(p.param_users("intensity"), Vec::<String>::new());
+        assert_eq!(p.param_users("power").len(), 3);
+        let mist = p.layers[0].as_particles().unwrap();
+        assert_eq!(mist.rate.as_ref().unwrap().param(), Some("power"));
+        assert_eq!(mist.visible.as_ref().unwrap().param, "power");
+        assert!(mist.effect.params_read().contains(&"power".to_string()));
+        assert_eq!(p.layers[2].as_particles().unwrap().play, PlayDef::While("power".into(), 0.9));
+        assert_eq!(p.triggers[0].pulses[0].param, "power");
+        assert_eq!(p.preview.as_ref().unwrap().params[0].0, "power");
+        assert!(p.rename_param("power", "tint").unwrap_err().contains("already exists"));
+        assert!(p.rename_param("power", "  ").is_err());
+        assert!(p.rename_param("nope", "x").is_err());
+
+        assert_eq!(p.trigger_users("hit"), vec!["burst".to_string()]);
+        p.rename_trigger("hit", "impact").unwrap();
+        assert_eq!(p.layers[1].as_particles().unwrap().play, PlayDef::OnTrigger("impact".into()));
+        assert_eq!(p.preview.as_ref().unwrap().auto_triggers[0].0, "impact");
+        assert!(p.rename_trigger("impact", "tick").is_err());
+
+        assert_eq!(p.unique_param_name("power"), "power2");
+        assert_eq!(p.unique_trigger_name("boom"), "boom");
+    }
+
+    #[test]
+    fn visible_ranges_fade_outside() {
+        let v = VisibleRangeDef { param: "p".into(), from: 0.4, to: 0.6, fade: 0.2 };
+        assert_eq!(v.factor(0.5), 1.0);
+        assert_eq!(v.factor(0.4), 1.0);
+        assert!((v.factor(0.3) - 0.5).abs() < 1e-5);
+        assert!((v.factor(0.7) - 0.5).abs() < 1e-5);
+        assert_eq!(v.factor(0.9), 0.0);
+        let hard = VisibleRangeDef { fade: 0.0, ..v };
+        assert_eq!(hard.factor(0.61), 0.0);
+        assert_eq!(hard.factor(0.6), 1.0);
+    }
+
+    #[test]
+    fn param_values_convert_from_numbers_and_colours() {
+        assert_eq!(ParamValue::from(0.5), ParamValue::Float(0.5));
+        let red = ParamValue::from(Color::srgb(1.0, 0.0, 0.0));
+        assert_eq!(red, ParamValue::Color(Vec4::new(1.0, 0.0, 0.0, 1.0)));
+        // sRGB 0.5 is about 0.214 linear.
+        let grey = ParamValue::from(Color::srgb(0.5, 0.5, 0.5)).as_color().unwrap();
+        assert!((grey.x - 0.214).abs() < 1e-3, "{}", grey);
+        let def = ParamDef { min: 0.0, max: 2.0, ..default() };
+        assert_eq!(def.clamp(ParamValue::Float(3.0)), ParamValue::Float(2.0));
+        assert_eq!(def.middle(), 1.0);
     }
 
     fn asset_project() -> ProjectV2 {

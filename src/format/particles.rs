@@ -9,6 +9,7 @@ use serde::Serialize;
 use super::hanabi_serde::{self, SpawnerDef};
 use super::expr::{EffectWriter, ExprWriterEditor};
 use super::modifiers::*;
+use super::project::ParamDef;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum ModifierEditor {
@@ -406,13 +407,17 @@ impl ParticleEffectDef {
     /// Builds the bevy_hanabi effect. `warnings` receives one line per value
     /// that could not be used (e.g. a modifier in a list that doesn't support
     /// it); such values are skipped.
+    ///
+    /// `params` are the package's parameters: each one an expression reads
+    /// (`Param(name)`) becomes a property, declared once.
     pub fn produce(
         &self,
         name: &str,
         simulation_space: SimulationSpace,
+        params: &[ParamDef],
         warnings: &mut Vec<String>,
     ) -> EffectAsset {
-        let writer = EffectWriter::new();
+        let writer = EffectWriter::with_params(params);
 
         let mut init_modifiers = Vec::new();
         for m in self.init_modifiers.iter() {
@@ -483,19 +488,51 @@ impl ParticleEffectDef {
     /// Names of the properties its expressions read (`Property("...")`),
     /// sorted, without duplicates.
     pub fn properties_read(&self) -> Vec<String> {
+        self.names_read(|e| match e {
+            ExprWriterEditor::Property(name) => Some(name),
+            _ => None,
+        })
+    }
+
+    /// Names of the parameters its expressions read (`Param("...")`),
+    /// sorted, without duplicates.
+    pub fn params_read(&self) -> Vec<String> {
+        self.names_read(|e| match e {
+            ExprWriterEditor::Param(name) => Some(name),
+            _ => None,
+        })
+    }
+
+    fn names_read(&self, pick: impl Fn(&ExprWriterEditor) -> Option<&String>) -> Vec<String> {
         let mut names = Vec::new();
-        for m in self.init_modifiers.iter().chain(self.update_modifiers.iter()) {
-            for e in m.exprs() {
-                e.visit(&mut |e| {
-                    if let ExprWriterEditor::Property(name) = e {
-                        names.push(name.clone());
-                    }
-                });
-            }
+        for e in self.exprs() {
+            e.visit(&mut |e| {
+                if let Some(name) = pick(e) {
+                    names.push(name.clone());
+                }
+            });
         }
         names.sort();
         names.dedup();
         names
+    }
+
+    /// Every expression of its init and update modifiers.
+    pub fn exprs(&self) -> Vec<&ExprWriterEditor> {
+        self.init_modifiers
+            .iter()
+            .chain(self.update_modifiers.iter())
+            .flat_map(|m| m.exprs())
+            .collect()
+    }
+
+    /// Every expression of its init and update modifiers, mutable.
+    pub fn exprs_mut(&mut self) -> Vec<&mut ExprWriterEditor> {
+        self.init_modifiers
+            .iter_mut()
+            .chain(self.update_modifiers.iter_mut())
+            .flat_map(|m| m.exprs_mut())
+            .collect()
     }
 
     /// Seconds from start until the spawner has emitted its last particle,

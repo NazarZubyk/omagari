@@ -158,7 +158,7 @@ fn export_v2(project: &ProjectV2) -> ExportedProject {
             name: layer.name.clone(),
             parent: layer.parent.clone(),
             texture_index,
-            effect_asset: layer.produce(&mut warnings),
+            effect_asset: layer.produce(&project.parameters, &mut warnings),
         });
         assert!(warnings.is_empty(), "{}: {:?}", layer.name, warnings);
     }
@@ -221,7 +221,7 @@ fn v2_project_round_trips() {
 
     for (_, layer) in project.particle_layers() {
         let mut warnings = Vec::new();
-        layer.produce(&mut warnings);
+        layer.produce(&project.parameters, &mut warnings);
         assert!(warnings.is_empty(), "{}: {:?}", layer.name, warnings);
     }
 }
@@ -257,7 +257,7 @@ fn v2_wrong_list_modifier_warns() {
     let project = ProjectV2::from_ron_str(text).unwrap();
     let (_, layer) = project.particle_layers().next().unwrap();
     let mut warnings = Vec::new();
-    let effect = layer.produce(&mut warnings);
+    let effect = layer.produce(&project.parameters, &mut warnings);
     assert_eq!(warnings.len(), 2, "{:?}", warnings);
     assert!(warnings[0].contains("AccelModifier cannot be used in the init list"));
     assert!(warnings[1].contains("InheritAttribute cannot be used in the update list"));
