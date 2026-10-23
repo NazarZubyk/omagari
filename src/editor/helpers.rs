@@ -172,3 +172,8 @@ impl ListCommand {
         }
     }
 }
+
+/// Text for egui's default fonts, which have no "→".
+pub fn ui_text(text: &str) -> String {
+    text.replace('→', "➡")
+}

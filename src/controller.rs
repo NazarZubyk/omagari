@@ -8,6 +8,7 @@ use omagari::format::{PreviewMotion, ProjectV2};
 use omagari::runtime::InMemoryPackageAssets;
 use omagari::{VfxCommandsExt, VfxControl, VfxPackage};
 
+use crate::editor::session::EditorSession;
 use crate::editor::AppContext;
 use crate::settings::{GameAssets, GAME_ASSET_SOURCE};
 
@@ -22,7 +23,7 @@ pub struct EffectResource {
 #[derive(Component)]
 pub struct PreviewTarget;
 
-/// What the RENDER / STOP buttons and MCP preview requests ask for.
+/// What the playback buttons, live preview and MCP preview requests ask for.
 #[derive(Message, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PreviewCommand {
     /// Rebuild the package from the open project and play it again: the
@@ -31,6 +32,9 @@ pub enum PreviewCommand {
     Render,
     /// Stop the instance gracefully (no new particles, live ones finish).
     Stop,
+    /// Remove the preview instances at once (no lingering particles) and
+    /// play the project from the start in a new instance.
+    Restart,
 }
 
 /// The preview package and its instances. Only these instances are touched
@@ -55,13 +59,16 @@ pub fn spawn_preview_target(mut commands: Commands) {
     ));
 }
 
-/// Applies RENDER / STOP: RENDER builds a [`VfxPackage`] from the in-memory
-/// project and spawns it through the runtime on the preview target, exactly
-/// like a game would; STOP stops the running instances gracefully.
+/// Applies RENDER / STOP / RESTART: RENDER builds a [`VfxPackage`] from the
+/// in-memory project (hidden layers masked out, see
+/// [`crate::editor::layer_view::LayerView`]) and spawns it through the
+/// runtime on the preview target, exactly like a game would; STOP stops the
+/// running instances gracefully.
 pub fn apply_preview_commands(
     mut commands: Commands,
     mut requests: MessageReader<PreviewCommand>,
     project: Res<ProjectV2>,
+    session: Res<EditorSession>,
     mut effects: ResMut<Assets<EffectAsset>>,
     asset_server: Res<AssetServer>,
     target: Single<Entity, With<PreviewTarget>>,
@@ -71,10 +78,10 @@ pub fn apply_preview_commands(
 ) {
     for request in requests.read() {
         match request {
-            PreviewCommand::Render => {
+            PreviewCommand::Render | PreviewCommand::Restart => {
                 let mut warnings = Vec::new();
                 let package = VfxPackage::build(
-                    project.clone(),
+                    session.view.apply(&project),
                     &mut InMemoryPackageAssets::new(&mut effects, &asset_server)
                         .with_source(Some(GAME_ASSET_SOURCE)),
                     &mut warnings,
@@ -87,6 +94,11 @@ pub fn apply_preview_commands(
                 // instances are gone.
                 let handle = packages_or_control.p0().add(package);
                 let mut vfx = packages_or_control.p1();
+                if *request == PreviewCommand::Restart {
+                    for instance in state.instances.drain(..) {
+                        commands.entity(instance).try_despawn();
+                    }
+                }
                 state.instances.retain(|&i| vfx.is_alive(i));
                 // Same path as hot reload: the instance keeps running with the
                 // new package.
