@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use omagari::format::{AssetKind, ProjectV2, BUILTIN_TEXTURES_PREFIX};
+use omagari::format::{AssetKind, PreviewMotion, ProjectV2, BUILTIN_TEXTURES_PREFIX, DEFAULT_MOTION_SPEED};
 
 use crate::controller::Folder;
 use crate::settings::GameAssets;
@@ -24,6 +24,118 @@ pub const GUIDE: &str = include_str!("../../docs/CLAUDE_VFX_GUIDE.md");
 
 /// File the running editor polls for preview requests.
 pub const PREVIEW_REQUEST_FILE: &str = ".preview_request";
+
+/// Stages `preview_in_editor` accepts.
+pub const PREVIEW_STAGES: [&str; 3] = ["air", "floor", "object"];
+
+/// What `preview_in_editor` asks the editor for, written to
+/// [`PREVIEW_REQUEST_FILE`] as a JSON object
+/// `{ "name": "fire.omagari.ron", "stage": "floor", "motion": { "type": "circle", "radius": 3.0, "speed": 3.6 } }`.
+/// The older two-line form (file name, then an optional stage) is still read.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PreviewRequest {
+    /// Project file name in `saved_effects/`.
+    pub name: String,
+    /// `air`, `floor` or `object`; `None` keeps the editor's stage.
+    pub stage: Option<String>,
+    /// `None` keeps the project's preview motion; `Some(None)` = no motion.
+    pub motion: Option<Option<PreviewMotion>>,
+}
+
+impl PreviewRequest {
+    pub fn to_json(&self) -> String {
+        let mut object = json!({ "name": self.name });
+        if let Some(stage) = &self.stage {
+            object["stage"] = json!(stage);
+        }
+        if let Some(motion) = self.motion {
+            object["motion"] = motion_to_json(motion);
+        }
+        object.to_string()
+    }
+
+    /// Reads the JSON form, or the older two-line form.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let trimmed = text.trim_start();
+        if !trimmed.starts_with('{') {
+            let mut lines = text.lines();
+            let name = lines.next().unwrap_or_default().trim().to_string();
+            let stage = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            return Ok(PreviewRequest { name, stage, motion: None });
+        }
+        let value: Value = serde_json::from_str(trimmed).map_err(|e| format!("invalid preview request: {}", e))?;
+        let name = value
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("preview request without \"name\"")?
+            .to_string();
+        let stage = value.get("stage").and_then(Value::as_str).map(str::to_string);
+        let motion = match value.get("motion") {
+            None | Some(Value::Null) => None,
+            Some(m) => Some(motion_from_json(m)?),
+        };
+        Ok(PreviewRequest { name, stage, motion })
+    }
+}
+
+/// `{"type": "none"}`, `{"type": "circle", "radius": r, "speed": v}` or
+/// `{"type": "back_and_forth", "distance": d, "speed": v}`; missing numbers
+/// take defaults (radius 3 m, distance 4 m, speed 3.6 m/s).
+pub fn motion_from_json(value: &Value) -> Result<Option<PreviewMotion>, String> {
+    let number = |key: &str, default: f32| -> Result<f32, String> {
+        match value.get(key) {
+            None | Some(Value::Null) => Ok(default),
+            Some(v) => v
+                .as_f64()
+                .map(|x| x as f32)
+                .filter(|x| x.is_finite())
+                .ok_or_else(|| format!("motion \"{}\" must be a number", key)),
+        }
+    };
+    let kind = match value {
+        Value::String(s) => s.as_str(),
+        _ => value.get("type").and_then(Value::as_str).unwrap_or("none"),
+    };
+    let speed = number("speed", DEFAULT_MOTION_SPEED)?;
+    match kind {
+        "none" => Ok(None),
+        "circle" => {
+            let radius = number("radius", 3.0)?;
+            if radius <= 0.0 {
+                return Err("motion radius must be above 0".into());
+            }
+            Ok(Some(PreviewMotion::Circle { radius, speed }))
+        }
+        "back_and_forth" => {
+            let distance = number("distance", 4.0)?;
+            if distance <= 0.0 {
+                return Err("motion distance must be above 0".into());
+            }
+            Ok(Some(PreviewMotion::BackAndForth { distance, speed }))
+        }
+        other => Err(format!("unknown motion type \"{}\": use none, circle or back_and_forth", other)),
+    }
+}
+
+pub fn motion_to_json(motion: Option<PreviewMotion>) -> Value {
+    match motion {
+        None => json!({ "type": "none" }),
+        Some(PreviewMotion::Circle { radius, speed }) => json!({ "type": "circle", "radius": radius, "speed": speed }),
+        Some(PreviewMotion::BackAndForth { distance, speed }) => {
+            json!({ "type": "back_and_forth", "distance": distance, "speed": speed })
+        }
+    }
+}
+
+fn motion_text(motion: Option<PreviewMotion>) -> String {
+    match motion {
+        None => "standing still".into(),
+        Some(PreviewMotion::Circle { radius, speed }) => format!("moving in a {} m circle at {} m/s", radius, speed),
+        Some(PreviewMotion::BackAndForth { distance, speed }) => {
+            format!("moving back and forth over {} m at {} m/s", distance, speed)
+        }
+    }
+}
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -145,13 +257,13 @@ fn tool_list() -> Value {
     json!([
         {
             "name": "guide",
-            "description": "Omagari effect authoring guide: workflow, file format (v2), layers, modifiers, expressions, textures, recipes, game use. Read before creating effects.",
+            "description": "Omagari effect authoring guide: workflow, file format (v2), layers, attach (sockets, segments, fit, lifecycle), modifiers, expressions, textures, recipes, game use. Read before creating effects.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "One section to keep the reply short: workflow, format, layers, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design, game. Omit for the whole guide."
+                        "description": "One section to keep the reply short: workflow, format, layers, attach, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design, game. Omit for the whole guide."
                     }
                 }
             }
@@ -225,8 +337,18 @@ fn tool_list() -> Value {
                     "name": name_prop,
                     "stage": {
                         "type": "string",
-                        "enum": ["air", "floor", "object"],
+                        "enum": PREVIEW_STAGES,
                         "description": "Scene to play it in: \"air\" (middle of an empty room), \"floor\" (floor at y = 0), \"object\" (a ~2-unit rock centered on the spawn point, floor under it). Omit to keep the user's current choice."
+                    },
+                    "motion": {
+                        "type": "object",
+                        "description": "Move the target while it plays, to judge Local vs Global layers and trails: {\"type\": \"circle\", \"radius\": 3.0, \"speed\": 3.6}, {\"type\": \"back_and_forth\", \"distance\": 4.0, \"speed\": 3.6} or {\"type\": \"none\"} (metres, m/s; speed defaults to 3.6, a running character). Omit to keep the project's preview motion.",
+                        "properties": {
+                            "type": { "type": "string", "enum": ["none", "circle", "back_and_forth"] },
+                            "radius": { "type": "number" },
+                            "distance": { "type": "number" },
+                            "speed": { "type": "number" }
+                        }
                     }
                 },
                 "required": ["name"]
@@ -341,19 +463,31 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
             }
             let file_name = path.file_name().unwrap().to_string_lossy().to_string();
             let stage = match str_arg("stage") {
-                None => String::new(),
-                Some(s @ ("air" | "floor" | "object")) => s.to_string(),
+                None => None,
+                Some(s) if PREVIEW_STAGES.contains(&s) => Some(s.to_string()),
                 Some(other) => return Err(format!("unknown stage \"{}\": use air, floor or object", other)),
             };
+            let motion = match args.get("motion") {
+                None | Some(Value::Null) => None,
+                Some(m) => Some(motion_from_json(m)?),
+            };
+            let preview = PreviewRequest {
+                name: file_name.clone(),
+                stage: stage.clone(),
+                motion,
+            };
             let request = Folder::SavedEffects.full_file_path(PREVIEW_REQUEST_FILE.to_string());
-            fs::write(&request, format!("{}\n{}", file_name, stage))
-                .map_err(|e| format!("{}: {}", request.display(), e))?;
+            fs::write(&request, preview.to_json()).map_err(|e| format!("{}: {}", request.display(), e))?;
             // The editor deletes the request once it has loaded the project.
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(3) {
                 if !request.exists() {
-                    let in_stage = if stage.is_empty() { String::new() } else { format!(" in the {} stage", stage) };
-                    return Ok(format!("The editor loaded {} and is playing it for the user{}.", file_name, in_stage));
+                    let in_stage = stage.map(|s| format!(" in the {} stage", s)).unwrap_or_default();
+                    let moving = motion.map(|m| format!(", the target {}", motion_text(m))).unwrap_or_default();
+                    return Ok(format!(
+                        "The editor loaded {} and is playing it for the user{}{}.",
+                        file_name, in_stage, moving
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -584,8 +718,36 @@ mod tests {
     }
 
     #[test]
+    fn preview_requests_are_json_and_old_files_still_read() {
+        let request = PreviewRequest {
+            name: "fire.omagari.ron".into(),
+            stage: Some("floor".into()),
+            motion: Some(Some(PreviewMotion::Circle { radius: 2.0, speed: 3.6 })),
+        };
+        let text = request.to_json();
+        assert!(text.starts_with('{'), "{}", text);
+        assert_eq!(PreviewRequest::parse(&text).unwrap(), request);
+
+        let still = PreviewRequest { motion: Some(None), stage: None, ..request.clone() };
+        assert_eq!(PreviewRequest::parse(&still.to_json()).unwrap(), still);
+
+        let old = PreviewRequest::parse("fire.omagari.ron\nobject").unwrap();
+        assert_eq!(old.name, "fire.omagari.ron");
+        assert_eq!(old.stage.as_deref(), Some("object"));
+        assert_eq!(old.motion, None);
+        assert_eq!(PreviewRequest::parse("fire.omagari.ron\n").unwrap().stage, None);
+
+        assert_eq!(
+            motion_from_json(&json!({ "type": "back_and_forth" })).unwrap(),
+            Some(PreviewMotion::BackAndForth { distance: 4.0, speed: 3.6 })
+        );
+        assert!(motion_from_json(&json!({ "type": "zigzag" })).is_err());
+        assert!(motion_from_json(&json!({ "type": "circle", "radius": 0.0 })).is_err());
+    }
+
+    #[test]
     fn guide_sections_are_listed() {
-        for section in ["workflow", "format", "layers", "textures", "recipes", "game"] {
+        for section in ["workflow", "format", "layers", "attach", "textures", "recipes", "game"] {
             assert!(!guide_section(Some(section)).starts_with("No section"), "{}", section);
         }
     }

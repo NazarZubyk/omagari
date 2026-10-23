@@ -4,7 +4,7 @@ use std::fs::create_dir;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use omagari::format::ProjectV2;
+use omagari::format::{PreviewMotion, ProjectV2};
 use omagari::runtime::InMemoryPackageAssets;
 use omagari::{VfxCommandsExt, VfxControl, VfxPackage};
 
@@ -17,14 +17,17 @@ pub struct EffectResource {
 }
 
 /// The entity preview instances are attached to: the spawn point at the
-/// origin (the stage moves the room around it, not the effect).
+/// origin (the stage moves the room around it, not the effect), moved by the
+/// project's preview motion.
 #[derive(Component)]
 pub struct PreviewTarget;
 
 /// What the RENDER / STOP buttons and MCP preview requests ask for.
 #[derive(Message, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PreviewCommand {
-    /// Rebuild the package from the open project and restart the instance.
+    /// Rebuild the package from the open project and play it again: the
+    /// running preview instance gets the new package (old particles finish,
+    /// new layers start), or a new instance is spawned.
     Render,
     /// Stop the instance gracefully (no new particles, live ones finish).
     Stop,
@@ -69,9 +72,6 @@ pub fn apply_preview_commands(
     for request in requests.read() {
         match request {
             PreviewCommand::Render => {
-                for instance in state.instances.drain(..) {
-                    commands.entity(instance).try_despawn();
-                }
                 let mut warnings = Vec::new();
                 let package = VfxPackage::build(
                     project.clone(),
@@ -86,8 +86,18 @@ pub fn apply_preview_commands(
                 // The previous package is dropped with its handle once its
                 // instances are gone.
                 let handle = packages_or_control.p0().add(package);
-                let instance = commands.spawn_vfx(&handle, *target);
-                state.instances.push(instance);
+                let mut vfx = packages_or_control.p1();
+                state.instances.retain(|&i| vfx.is_alive(i));
+                // Same path as hot reload: the instance keeps running with the
+                // new package.
+                let replaced = state
+                    .instances
+                    .last()
+                    .is_some_and(|&i| vfx.replace_package(i, handle.clone()));
+                if !replaced {
+                    let instance = commands.spawn_vfx(&handle, *target);
+                    state.instances.push(instance);
+                }
                 state.package = Some(handle);
             }
             PreviewCommand::Stop => {
@@ -99,6 +109,34 @@ pub fn apply_preview_commands(
                     .collect();
             }
         }
+    }
+}
+
+/// Moves the preview target along the project's preview motion, facing the
+/// direction of travel; back to the origin without motion.
+pub fn move_preview_target(
+    time: Res<Time>,
+    project: Res<ProjectV2>,
+    mut clock: Local<f32>,
+    mut last: Local<Option<PreviewMotion>>,
+    mut target: Single<&mut Transform, With<PreviewTarget>>,
+) {
+    let motion = project.preview.as_ref().and_then(|p| p.motion);
+    if motion != *last {
+        // A new motion starts from its beginning.
+        *clock = 0.0;
+        *last = motion;
+    }
+    let wanted = match motion {
+        Some(motion) => {
+            *clock += time.delta_secs();
+            let (position, direction) = motion.sample(*clock);
+            Transform::from_translation(position).looking_to(direction, Vec3::Y)
+        }
+        None => Transform::default(),
+    };
+    if **target != wanted {
+        **target = wanted;
     }
 }
 
@@ -267,6 +305,35 @@ mod tests {
         assert_eq!(package.particle_layers[0].name, "dots");
         assert!(package.project.preview.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The preview target follows the project's preview motion, facing where
+    /// it goes, and returns to the origin without one.
+    #[test]
+    fn preview_target_follows_the_motion() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(0.25)))
+            .add_systems(Startup, spawn_preview_target)
+            .add_systems(Update, move_preview_target);
+        let mut project = ProjectV2::default();
+        project.preview = Some(PreviewDef {
+            motion: Some(PreviewMotion::BackAndForth { distance: 4.0, speed: 2.0 }),
+            ..default()
+        });
+        app.insert_resource(project);
+        for _ in 0..4 {
+            app.update();
+        }
+        let mut targets = app.world_mut().query_filtered::<&Transform, With<PreviewTarget>>();
+        let transform = *targets.single(app.world()).unwrap();
+        assert!(transform.translation.x > 0.4 && transform.translation.x <= 2.0, "{}", transform.translation);
+        assert!((transform.forward().as_vec3() - Vec3::X).length() < 1e-4, "faces +X");
+
+        app.world_mut().resource_mut::<ProjectV2>().preview = None;
+        app.update();
+        let transform = *targets.single(app.world()).unwrap();
+        assert_eq!(transform, Transform::default());
     }
 
     #[test]

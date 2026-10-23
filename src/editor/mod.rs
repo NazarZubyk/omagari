@@ -4,6 +4,7 @@ pub mod effect;
 pub mod expr;
 pub mod helpers;
 pub mod modifiers;
+pub mod package;
 
 use omagari::format::ExprWriterEditor;
 
@@ -13,6 +14,8 @@ pub struct AppContext {
     pub expr_clipboard: Option<ExprWriterEditor>,
     /// Names of the open project's layers (parent pickers).
     pub layer_names: Vec<String>,
+    /// Names of the open project's sockets (attach pickers).
+    pub socket_names: Vec<String>,
     pub filename: Option<String>,
     /// Result of the last save/export, shown in the toolbar.
     pub status: Option<String>,

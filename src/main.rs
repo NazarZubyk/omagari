@@ -24,6 +24,7 @@ mod settings;
 
 use crate::controller::*;
 use crate::editor::effect::{draw_particles_layer, new_particles_layer};
+use crate::editor::package::{motion_menu, sockets_and_fit_menu};
 use crate::editor::helpers::*;
 use crate::settings::{GameAssets, OmagariSettings, SettingOrigin, SETTINGS_FILE};
 
@@ -50,7 +51,7 @@ fn main() {
         .add_message::<PreviewCommand>()
         .init_resource::<PreviewState>()
         .add_systems(Startup, (setup, spawn_preview_target))
-        .add_systems(Update, poll_preview_requests)
+        .add_systems(Update, (poll_preview_requests, move_preview_target))
         .add_systems(
             Update,
             apply_preview_commands
@@ -356,9 +357,11 @@ fn draw_room_grid(
     stage: Res<Stage>,
     rock_bottom: Res<RockBottom>,
     camera: Single<&Transform, With<PanOrbitCamera>>,
+    target: Single<&Transform, (With<PreviewTarget>, Without<PanOrbitCamera>)>,
 ) {
-    // Small axes at the spawn point: X red, Y green, Z blue.
-    gizmos.axes(Transform::from_xyz(0.0, 0.004, 0.0), 0.5);
+    // Small axes at the preview target (the spawn point, moved by the preview
+    // motion): X red, Y green, Z blue.
+    gizmos.axes(**target * Transform::from_xyz(0.0, 0.004, 0.0), 0.5);
 
     let Some((minor, major)) = backdrop.grid_colors() else {
         return;
@@ -384,9 +387,10 @@ fn draw_room_grid(
 
 /// Loads and plays a project when the MCP server asks for a preview.
 ///
-/// The server writes the project file name to `saved_effects/.preview_request`,
-/// optionally followed by a stage name on the next line, and waits for the
-/// editor to delete it.
+/// The server writes a JSON request (`{ "name", "stage", "motion" }`, see
+/// [`mcp::PreviewRequest`]; the older form is the file name, optionally
+/// followed by a stage name on the next line) to
+/// `saved_effects/.preview_request` and waits for the editor to delete it.
 fn poll_preview_requests(
     mut since_last_poll: Local<f32>,
     time: Res<Time>,
@@ -406,13 +410,22 @@ fn poll_preview_requests(
         return;
     };
     let _ = std::fs::remove_file(&request);
-    let mut lines = content.lines();
-    let filename = lines.next().unwrap_or_default().trim().to_string();
-    if let Some(requested) = lines.next().and_then(Stage::parse) {
+    let request = match mcp::PreviewRequest::parse(&content) {
+        Ok(request) => request,
+        Err(e) => {
+            warn!("preview request: {}", e);
+            return;
+        }
+    };
+    if let Some(requested) = request.stage.as_deref().and_then(Stage::parse) {
         *stage = requested;
     }
+    let filename = request.name;
     match load_project(&filename) {
-        Ok(loaded) => {
+        Ok(mut loaded) => {
+            if let Some(motion) = request.motion {
+                loaded.preview.get_or_insert_with(PreviewDef::default).motion = motion;
+            }
             *project = loaded;
             res.context.filename = Some(filename);
             preview.write(PreviewCommand::Render);
@@ -445,6 +458,7 @@ fn app_ui(
     );
 
     res.context.layer_names = project.layers.iter().map(|l| l.name().to_string()).collect();
+    res.context.socket_names = project.sockets.iter().map(|s| s.name.clone()).collect();
 
     let mut filename = res
         .context
@@ -546,6 +560,17 @@ fn app_ui(
                         });
                     }
 
+                    ui.menu_button(motion_label(&project), |ui| {
+                        motion_menu(ui, &mut project);
+                    })
+                    .response
+                    .on_hover_text("Move the preview target to see how the effect follows a moving character");
+                    ui.menu_button("⚓ SOCKETS & FIT", |ui| {
+                        sockets_and_fit_menu(ui, &mut project);
+                    })
+                    .response
+                    .on_hover_text("Named points on the target (for Socket / Segment attach) and size fit");
+
                     ui.menu_button("⚙ GAME ASSETS", |ui| {
                         game_assets_menu(ui, &game_assets, &mut res.context);
                     });
@@ -635,6 +660,14 @@ fn app_ui(
     });
 
     Ok(())
+}
+
+fn motion_label(project: &ProjectV2) -> &'static str {
+    match project.preview.as_ref().and_then(|p| p.motion) {
+        None => "⟳ MOTION: OFF",
+        Some(PreviewMotion::Circle { .. }) => "⟳ MOTION: CIRCLE",
+        Some(PreviewMotion::BackAndForth { .. }) => "⟳ MOTION: BACK & FORTH",
+    }
 }
 
 /// The game assets folder in effect, and a field to change the one stored in

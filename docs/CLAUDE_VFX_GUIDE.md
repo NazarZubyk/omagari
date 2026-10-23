@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design, game.
 
 ## Workflow
 
@@ -11,7 +11,7 @@ Fetch one section at a time with `guide(section: "...")`: workflow, format, laye
 3. **Save with `write_project(name, ron)`.** It refuses to save on errors and returns the analysis. Fix every ERROR. Read every WARNING; most are real problems.
 4. **Tune with `analyze_project(name)` until the numbers match the intent.** Check: spawn pattern, peak count vs capacity, lifetime, motion extents (is it the right size? does it go up/down/outward?), size in world units, colors and the alpha window, simulation space. Use `effect: "<layer name>"` to describe a single layer and save tokens.
 5. **For small changes, edit the saved file directly** (`saved_effects/<name>.omagari.ron`) with your file-edit tool, then call `check_project(name)` or `analyze_project(name)`. This is far cheaper than resending the whole RON.
-6. **Show it to the user with `preview_in_editor(name, stage)`**, with stage `air`, `floor` or `object` (see section "design"). Ask what they see and what to change, in words ("too fast", "too dim", "should spread wider"). Section "design" maps common feedback to parameters. This replaces any unsaved edits the user had open in the editor, so say so if they were editing.
+6. **Show it to the user with `preview_in_editor(name, stage, motion)`**, with stage `air`, `floor` or `object` (see section "design") and, for effects on moving characters, a `motion` such as `{"type": "circle", "radius": 3.0, "speed": 3.6}`. Ask what they see and what to change, in words ("too fast", "too dim", "should spread wider"). Section "design" maps common feedback to parameters. This replaces any unsaved edits the user had open in the editor, so say so if they were editing.
 7. **Export with `export_project(name, copy_to?)`** when the user is happy. It writes `<name>.vfx.ron` into the game assets folder's `vfx/` (or `exported_effects/` when none is configured). Section "game" says how the game plays it.
 
 The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSphere is approximate, the target stands still). Trust it for scale, timing, counts and colors, not for exact looks.
@@ -59,7 +59,7 @@ RON rules that trip people up:
 
 Nothing is hard-coded any more: texture sampling and orientation are render modifiers, blending is `alpha_mode`. A v1 project (`effects: [...]`) still loads and is migrated (Global space, the old fixed render settings made explicit); always write v2.
 
-Projects can also hold `parameters`, `triggers`, `sockets` and `fit`; the runtime doesn't use them yet, so leave them out (the check warns).
+Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` and `triggers`, which the runtime doesn't use yet, so leave those out (the check warns).
 
 ## Layers
 
@@ -67,7 +67,7 @@ Projects can also hold `parameters`, `triggers`, `sockets` and `fit`; the runtim
 | :-- | :-- | :-- |
 | `name` | string | Unique. Used by `parent` and `analyze_project(effect: ...)`. |
 | `parent` | `None` / `Some("name")` | Spawned by the parent's spawn events (section "hierarchy"). |
-| `attach` | `Target` | Where the layer sits. Only `Target` (the entity the game spawns the effect on) works now. |
+| `attach` | `Target` / `Socket("name")` / `Segment(from: "a", to: "b")` | Where the layer sits: the target's origin (default), a socket it follows, or a line between two sockets. Section "attach". |
 | `simulation_space` | `Local` / `Global` | See below. |
 | `play` | `Loop` / `OnStart` | `Loop` = the spawner repeats (`cycle_count: 0`); `OnStart` = one-shot (`cycle_count` ≥ 1). The check warns when they disagree. `OnTrigger`/`While` come later. |
 | `texture` | `None` / `Some("asset id")` | The texture the `ParticleTexture` render modifier samples. |
@@ -77,7 +77,33 @@ Projects can also hold `parameters`, `triggers`, `sockets` and `fit`; the runtim
 - `Local`: particles move with the target. Use it for anything that should stay on the character: auras, shields, orbiting sparks, status effects. It is the default.
 - `Global`: particles stay where they were emitted, so a moving target leaves a trail behind. Use it for smoke trails, footstep dust, embers left behind. A looping `Global` layer with long-lived particles leaves a long trail: `analyze_project` estimates it as target speed (3.6 m/s, or the preview motion's speed) × lifetime and warns from 1 s of lifetime.
 
-In the editor and in `analyze_project` the target stands still, so both spaces look the same there.
+`analyze_project` assumes a still target, where both spaces look the same. In the editor, the toolbar's ⟳ MOTION (or `preview_in_editor(..., motion)`) moves the target so the user sees the difference.
+
+## Attach
+
+**Where a layer sits** (`attach`, per layer):
+- `Target` (default): the origin of the entity the game spawns the effect on.
+- `Socket("name")`: the layer follows a socket. A **package socket** is an entry of the project's `sockets` list: `(name: "head", node: Some("mixamorig:Head"), offset: (0.0, 0.1, 0.0))` is the node with that `Name` in the target's hierarchy (a bone or part of the game's model) plus an offset in metres in the node's space; `node: None` is an offset from the target's origin. A socket name that is not in `sockets` is used as a node name directly. Until the node exists (the model is still loading), and if it never does, the layer sits at the target's origin (+ the offset); the game logs a warning after 3 s.
+- `Segment(from: "a", to: "b")`: a line between two sockets, e.g. a blade's base and tip. The layer sits at the target's origin and every frame the runtime writes the two ends into `Property("segment_a")` and `Property("segment_b")` (vec3, in the layer's simulation space). Read them in init expressions to spawn along the line, e.g. position = `Operator(Add(Property("segment_a"), Operator(Multiply(Operator(Subtract(Property("segment_b"), Property("segment_a"))), RandFloat))))` (recipe "Blade edge sparks"). A Segment layer that reads neither gets a warning, and so does a layer that reads them without being a Segment.
+
+```ron
+sockets: [
+    (name: "blade_base", node: Some("Sword"), offset: (0.0, 0.1, 0.0)),
+    (name: "blade_tip", node: Some("Sword"), offset: (0.0, 1.0, 0.0)),
+    (name: "chest", node: None, offset: (0.0, 1.2, 0.0)),
+],
+```
+
+Socket names and nodes come from the game's model: ask the user (bone names like `mixamorig:RightHand`, or the weapon entity's name). `check_project` lists socket names that are not package sockets as NOTES (they must exist as nodes in the model); the editor's preview target has no model, so the user sees nodes at the target's origin. Package sockets with `node: None` work everywhere. Give a child layer the same `attach` as its parent (the check warns otherwise).
+
+**Size fit** (`fit`, per project):
+- `None` (default): the effect keeps its authored size, even on a scaled target.
+- `Some(TargetScale)`: scales with the target entity's scale.
+- `Some(TargetHeight(1.8))`: author the effect for a 1.8 m character; on a target whose model is 4 m tall (its meshes, measured once they are loaded) everything is scaled × 4 / 1.8. Socket offsets scale too.
+
+Fit scales `Local` layers only: bevy_hanabi gives `Global` layers the emitter's position, not its scale, so the check warns about `Global` layers in a fitted project.
+
+**Lifecycle** (the game controls it, section "game"): an instance plays once its package has loaded and runs until the game stops it; stopping is smooth (no new particles, live ones finish), and restarting while stopping plays it again on the same instance. An instance whose root layers are all one-shot (`play: OnStart` with `cycle_count` ≥ 1) finishes by itself after its last spawn plus its longest particle life, so one-shot effects clean up without code; looping ones run until stopped.
 
 ## Spawner
 
@@ -150,6 +176,7 @@ Putting an init modifier in `update_modifiers` (or the reverse) is an error: it 
 | `Operator(Vec3(x, y, z))` | vec3 | builds a vec3 from three f32 expressions |
 | `Operator(Vec4(x, y, z, w))` | vec4 | builds a vec4 from four f32 expressions |
 | `Operator(Pack4x8UNorm(v))` | u32 | packs a vec4 in [0, 1] into a u32 color |
+| `Property("segment_a")`, `Property("segment_b")` | vec3 | ends of a `Segment`-attached layer (section "attach"); the analysis puts them at the sockets' offsets |
 | `Operator(Attr("<name>"))` | attribute type | this particle's attribute |
 | `Operator(ParentAttr("<name>"))` | attribute type | the parent particle's attribute (children only) |
 
@@ -532,6 +559,100 @@ The radius (1.4) is just outside the rock; the lower part of the bubble is under
 )
 ```
 
+### Blade edge sparks (segment between two sockets, looping)
+
+```ron
+(
+    version: 2,
+    assets: [(id: "spark1", kind: Texture((path: "omagari://textures/spark1.png")))],
+    sockets: [
+        (name: "blade_base", node: None, offset: (0.0, 0.2, 0.0)),
+        (name: "blade_tip", node: None, offset: (0.0, 1.2, 0.0)),
+    ],
+    layers: [
+        Particles((
+            name: "edge_sparks",
+            attach: Segment(from: "blade_base", to: "blade_tip"),
+            simulation_space: Global,
+            play: Loop,
+            texture: Some("spark1"),
+            effect: (
+                capacity: 256,
+                spawner: (count: Single(80.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.2), Float(0.5))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.03))),
+                    SetAttribute((attr: "position", attr_expr: Operator(Add(Property("segment_a"), Operator(Multiply(Operator(Subtract(Property("segment_b"), Property("segment_a"))), RandFloat)))))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Float(0.6))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel_expr: Vec3((0.0, -2.0, 0.0)))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (2.0, 3.0, 5.0, 0.0)), (0.1, (2.0, 3.0, 5.0, 1.0)), (1.0, (0.5, 1.0, 3.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+    ],
+)
+```
+
+In the game, give the sockets the weapon's node (`node: Some("Sword")`) or put the package on the weapon entity and keep `node: None` with offsets along the blade. `Global` leaves the sparks behind during a swing; `Local` keeps them on the blade.
+
+### Status aura on a body (socket + fit, looping)
+
+```ron
+(
+    version: 2,
+    assets: [(id: "glow1", kind: Texture((path: "omagari://textures/glow1.png")))],
+    fit: Some(TargetHeight(1.8)),
+    sockets: [(name: "chest", node: None, offset: (0.0, 1.0, 0.0))],
+    layers: [
+        Particles((
+            name: "aura",
+            attach: Socket("chest"),
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 256,
+                spawner: (count: Single(60.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(1.0), Float(1.6))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.08))),
+                    SetPositionCircle((center_expr: Vec3((0.0, -0.9, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.45), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Vec3(Float(0.0), Operator(Uniform(Float(0.6), Float(1.2))), Float(0.0))))),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((drag_expr: Float(0.5))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (0.6, 0.1, 1.0, 0.0)), (0.2, (1.2, 0.2, 2.0, 0.8)), (1.0, (0.4, 0.05, 0.8, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+    ],
+)
+```
+
+Made for a 1.8 m character: the socket sits 1 m up, particles start at the feet (0.9 m below the socket) and rise ~1.2 m. On a 4 m enemy the whole aura is scaled × 2.2.
+
 ## Design
 
 **Scale.** Everything is in world units and seconds. The editor camera starts 5 units from the origin and shows about ±2 units; `analyze_project` says when an effect is bigger. Size the effect to the user's game, not to the editor view.
@@ -541,7 +662,7 @@ The radius (1.4) is just outside the rock; the lower part of the bubble is under
 - `floor`: the floor is at y = 0, under the spawn point, like ground in a game. Particles below y = 0 are hidden; `analyze_project` warns about that.
 - `object`: a rock about 2 units wide (radius ~1, 1.6 tall) is centered on the spawn point and rests on the floor. Use it for shields, barriers, auras and hit effects on a body; particles inside the rock are hidden.
 
-Pick the stage that matches how the game uses the effect. The BG button switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow. STOP stops the effect the way the game does: no new particles, live ones finish.
+Pick the stage that matches how the game uses the effect. The toolbar's ⟳ MOTION (or `preview_in_editor(..., motion: {"type": "circle", "radius": 3.0, "speed": 3.6})`, also `back_and_forth` with `distance`, or `none`) moves the target, so the user sees whether layers stay on a running character (`Local`) or trail behind (`Global`); the setting is saved in the project's `preview` block. The BG button switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow. STOP stops the effect the way the game does: no new particles, live ones finish.
 
 **Typical values** (1 unit = 1 m):
 
@@ -589,8 +710,13 @@ Pick the stage that matches how the game uses the effect. The BG button switches
 
 ```rust
 let package: Handle<VfxPackage> = asset_server.load("vfx/fireball.vfx.ron");
-let instance = commands.spawn_vfx(&package, target); // follows `target`
-vfx.stop(instance);                                  // VfxControl: smooth stop, then VfxFinished
+let instance = commands.spawn_vfx(&package, target);                // follows `target`
+let hit = commands.spawn_vfx_at(&package, Transform::from_translation(p)); // in the world, no target
+vfx.stop(instance);    // VfxControl: smooth stop
+vfx.restart(instance); // while stopping: plays again (re-applied status)
+// message VfxFinished { instance, target }: sent once when an instance ends
 ```
+
+One-shot packages (every root layer `OnStart` with a finite `cycle_count`) finish and clean up by themselves; looping ones run until `stop`. Despawning the target removes its instances (and sends `VfxFinished`). Sockets with a `node` need that node name in the target's hierarchy (section "attach"). Editing the package file while the game runs updates running instances (hot reload, when the game enables Bevy's file watcher).
 
 Built-in textures need nothing; other textures must exist at their path under the game's `assets/` folder. The game camera needs `Hdr` and `Bloom` for colors above 1.0 to glow. The game can also load `*.omagari.ron` projects directly.

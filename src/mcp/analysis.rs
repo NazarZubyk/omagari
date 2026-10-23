@@ -16,7 +16,7 @@ use bevy_hanabi::prelude::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use omagari::format::*;
-use omagari::runtime::BUILTIN_TEXTURES;
+use omagari::runtime::{socket_lookup, BUILTIN_TEXTURES};
 
 const DT: f32 = 1.0 / 60.0;
 /// Longest time a single particle is simulated.
@@ -253,7 +253,7 @@ fn eval(e: &ExprWriterEditor, env: &mut Env) -> Result<Val, String> {
         ExprWriterEditor::Time => Val::F(env.time),
         ExprWriterEditor::Age => env.attrs.get(Attribute::AGE),
         ExprWriterEditor::Operator(op) => eval_op(op, env)?,
-        // Read as zero of their type; the runtime writes the real values.
+        // The simulation substitutes real values first (`resolve_properties`).
         ExprWriterEditor::Property(name) => match runtime_property(name) {
             Some(RuntimePropertyType::Float) => Val::F(0.0),
             Some(RuntimePropertyType::Vec3) => Val::V3(Vec3::ZERO),
@@ -650,6 +650,9 @@ fn apply_update(
 pub struct Diagnostics {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
+    /// Things worth knowing that are not problems (e.g. a socket name that
+    /// must exist as a node in the game's model).
+    pub notes: Vec<String>,
 }
 
 impl Diagnostics {
@@ -658,6 +661,9 @@ impl Diagnostics {
     }
     fn warn(&mut self, effect: &str, msg: impl AsRef<str>) {
         self.warnings.push(format!("[{}] {}", effect, msg.as_ref()));
+    }
+    fn note(&mut self, effect: &str, msg: impl AsRef<str>) {
+        self.notes.push(format!("[{}] {}", effect, msg.as_ref()));
     }
 
     pub fn render(&self) -> String {
@@ -674,6 +680,12 @@ impl Diagnostics {
             let _ = writeln!(out, "WARNINGS ({}):", self.warnings.len());
             for w in &self.warnings {
                 let _ = writeln!(out, "- {}", w);
+            }
+        }
+        if !self.notes.is_empty() {
+            let _ = writeln!(out, "NOTES ({}):", self.notes.len());
+            for n in &self.notes {
+                let _ = writeln!(out, "- {}", n);
             }
         }
         out
@@ -698,24 +710,78 @@ fn expr_has_placeholder(e: &ExprWriterEditor) -> bool {
 }
 
 fn modifier_exprs(m: &ModifierEditor) -> Vec<&ExprWriterEditor> {
-    match m {
-        ModifierEditor::SetAttribute(m) => vec![&m.attr_expr],
-        ModifierEditor::InheritAttribute(_) => vec![],
-        ModifierEditor::SetPositionCircle(m) => vec![&m.center_expr, &m.axis_expr, &m.radius_expr],
-        ModifierEditor::SetPositionSphere(m) => vec![&m.center_expr, &m.radius_expr],
-        ModifierEditor::SetVelocityCircle(m) => vec![&m.center_expr, &m.axis_expr, &m.speed_expr],
-        ModifierEditor::SetVelocitySphere(m) => vec![&m.center_expr, &m.speed_expr],
-        ModifierEditor::SetVelocityTangent(m) => vec![&m.origin_expr, &m.axis_expr, &m.speed_expr],
-        ModifierEditor::AccelModifier(m) => vec![&m.accel_expr],
-        ModifierEditor::LinearDragModifier(m) => vec![&m.drag_expr],
-        ModifierEditor::EmitSpawnEventModifier(m) => vec![&m.count_expr],
-        ModifierEditor::ConformToSphereModifier(m) => vec![
-            &m.origin_expr,
-            &m.radius_expr,
-            &m.influence_dist_expr,
-            &m.attraction_accel_expr,
-            &m.max_attraction_speed_expr,
-        ],
+    m.exprs()
+}
+
+/// Where the analysis puts a socket: its offset from the target root (a
+/// node's position is unknown without the model, so nodes count as the
+/// target root).
+fn socket_position(project: &ProjectV2, name: &str) -> Vec3 {
+    socket_lookup(project, name).1
+}
+
+/// A copy of the project whose `Property(...)` reads are replaced by the
+/// values the runtime would write for a still target: segment ends at their
+/// socket positions.
+pub fn resolve_properties(project: &ProjectV2) -> ProjectV2 {
+    let mut resolved = project.clone();
+    for layer in resolved.layers.iter_mut() {
+        let Some(layer) = layer.as_particles_mut() else {
+            continue;
+        };
+        let (a, b) = match &layer.attach {
+            AttachDef::Segment { from, to } => (socket_position(project, from), socket_position(project, to)),
+            _ => (Vec3::ZERO, Vec3::ZERO),
+        };
+        let effect = &mut layer.effect;
+        for m in effect.init_modifiers.iter_mut().chain(effect.update_modifiers.iter_mut()) {
+            for e in m.exprs_mut() {
+                e.visit_mut(&mut |e| {
+                    if let ExprWriterEditor::Property(name) = e {
+                        match name.as_str() {
+                            "segment_a" => *e = ExprWriterEditor::Vec3(a),
+                            "segment_b" => *e = ExprWriterEditor::Vec3(b),
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        }
+    }
+    resolved
+}
+
+/// How a layer is attached, in words.
+fn attach_text(project: &ProjectV2, attach: &AttachDef) -> String {
+    let socket = |name: &str| match project.socket(name) {
+        Some(s) => match &s.node {
+            Some(node) => format!("socket \"{}\" (node \"{}\" + offset {})", name, node, fmt_vec3(s.offset)),
+            None => format!("socket \"{}\" (target root + offset {})", name, fmt_vec3(s.offset)),
+        },
+        None => format!("node \"{}\" of the target's model (target root until found)", name),
+    };
+    match attach {
+        AttachDef::Target => "target root".into(),
+        AttachDef::Socket(name) => format!("{}; the layer follows it", socket(name)),
+        AttachDef::Segment { from, to } => format!(
+            "segment from {} to {}; segment_a / segment_b hold the ends (simulated at {} and {})",
+            socket(from),
+            socket(to),
+            fmt_vec3(socket_position(project, from)),
+            fmt_vec3(socket_position(project, to))
+        ),
+    }
+}
+
+/// The project's size fit, in words.
+fn fit_text(fit: Option<FitDef>) -> String {
+    match fit {
+        None => "none — authored size, whatever the target's scale".into(),
+        Some(FitDef::TargetScale) => "TargetScale — scales with the target's scale (Local layers only)".into(),
+        Some(FitDef::TargetHeight(h)) => format!(
+            "TargetHeight({}) — scaled by the target's mesh height / {} m (Local layers only)",
+            h, h
+        ),
     }
 }
 
@@ -807,6 +873,64 @@ fn texture_label(project: &ProjectV2, layer: &ParticlesLayerDef) -> String {
     }
 }
 
+/// Attach checks of one layer: socket names, segment property use.
+fn check_attach(d: &mut Diagnostics, project: &ProjectV2, layers: &[&ParticlesLayerDef], index: usize) {
+    let layer = layers[index];
+    let name = layer.name.as_str();
+    for socket in layer.attach.socket_names() {
+        if socket.is_empty() {
+            d.error(name, "attach names an empty socket");
+        } else if project.socket(socket).is_none() {
+            let has_model = project.preview.as_ref().is_some_and(|p| p.model.is_some());
+            d.note(
+                name,
+                format!(
+                    "\"{}\" is not a package socket, so it must be a node name in the target's model{}; until it is found the layer sits at the target root",
+                    socket,
+                    if has_model { "" } else { " (no preview model to check against)" }
+                ),
+            );
+        }
+    }
+    let reads = layer.effect.properties_read();
+    for property in reads.iter() {
+        if runtime_property(property).is_none() {
+            let known: Vec<&str> = RUNTIME_PROPERTIES.iter().map(|(n, _, _)| *n).collect();
+            d.error(name, format!("Property(\"{}\") is not a runtime property ({})", property, known.join(", ")));
+        }
+    }
+    let reads_segment = reads.iter().any(|p| p == "segment_a" || p == "segment_b");
+    match &layer.attach {
+        AttachDef::Segment { from, to } => {
+            if from == to {
+                d.warn(name, format!("segment from \"{}\" to itself has no length", from));
+            }
+            if !reads_segment {
+                d.warn(
+                    name,
+                    "attach is Segment, but no expression reads Property(\"segment_a\") / Property(\"segment_b\"), so particles ignore the segment; e.g. position = segment_a + (segment_b - segment_a) × RandFloat",
+                );
+            }
+        }
+        _ if reads_segment => d.warn(
+            name,
+            "reads segment_a / segment_b, but only Segment-attached layers get them (they stay (0, 0, 0))",
+        ),
+        _ => {}
+    }
+    if let Some(pi) = parent_index(layers, index) {
+        if layers[pi].attach != layer.attach {
+            d.warn(
+                name,
+                format!(
+                    "attach differs from the parent \"{}\"; child particles spawn at parent particles, so give the child the parent's attach",
+                    layers[pi].name
+                ),
+            );
+        }
+    }
+}
+
 /// Runs every static check on a project: structure, assets, expression types,
 /// the bevy_hanabi shader generation and a package round trip. Relative
 /// texture paths are looked up in `assets_root` (the game assets folder).
@@ -849,12 +973,41 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
     for (what, used) in [
         ("parameters", !project.parameters.is_empty()),
         ("triggers", !project.triggers.is_empty()),
-        ("sockets", !project.sockets.is_empty()),
-        ("fit", project.fit.is_some()),
     ] {
         if used {
             d.warnings.push(format!("{} are stored but not used by the runtime yet", what));
         }
+    }
+
+    for (i, socket) in project.sockets.iter().enumerate() {
+        let label = format!("socket \"{}\"", socket.name);
+        if socket.name.is_empty() {
+            d.errors.push("a socket has an empty name".into());
+        }
+        if project.sockets[..i].iter().any(|s| s.name == socket.name) {
+            d.error(&label, "duplicate socket name; layers find sockets by name");
+        }
+        if socket.node.as_deref() == Some("") {
+            d.error(&label, "node is an empty name; use None for the target root");
+        }
+        if !layers.iter().any(|l| l.attach.socket_names().contains(&socket.name.as_str())) {
+            d.warn(&label, "not used by any layer");
+        }
+    }
+
+    match project.fit {
+        Some(FitDef::TargetHeight(h)) if !(h > 0.0) => {
+            d.errors.push(format!("fit TargetHeight({}) needs a reference height above 0 (metres)", h));
+        }
+        Some(_) => {
+            for layer in layers.iter().filter(|l| l.simulation_space == SimulationSpaceDef::Global) {
+                d.warn(
+                    &layer.name,
+                    "fit does not scale Global layers (bevy_hanabi applies only the emitter position to them); use Local or no fit",
+                );
+            }
+        }
+        None => {}
     }
 
     for (i, layer) in layers.iter().enumerate() {
@@ -883,9 +1036,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
             None => {}
         }
 
-        if layer.attach != AttachDef::Target {
-            d.warn(name, format!("attach {:?} is not supported yet; the layer is attached to the target", layer.attach));
-        }
+        check_attach(&mut d, project, &layers, i);
         if matches!(layer.play, PlayDef::OnTrigger(_) | PlayDef::While(..)) {
             d.warn(name, format!("play {:?} is not supported yet; the layer plays as authored", layer.play));
         }
@@ -1467,6 +1618,24 @@ fn simulate_project(project: &ProjectV2, n_samples: usize, seed: u64) -> (Vec<Ef
         }
         sims.push(sim);
     }
+    // Positions are simulated relative to each layer; report them relative to
+    // the target (a socket layer sits at its socket).
+    for (sim, effect) in sims.iter_mut().zip(effects) {
+        let origin = match &effect.attach {
+            AttachDef::Socket(name) => socket_position(project, name),
+            _ => Vec3::ZERO,
+        };
+        if origin == Vec3::ZERO {
+            continue;
+        }
+        for sample in sim.samples.iter_mut() {
+            sample.birth_pos += origin;
+            sample.end_pos += origin;
+            for p in sample.path.iter_mut() {
+                *p += origin;
+            }
+        }
+    }
     (sims, horizon)
 }
 
@@ -1822,7 +1991,8 @@ pub fn analyze_project(
         out.push_str("\n(simulation still runs, but results for broken effects are unreliable)\n");
     }
 
-    let (sims, horizon) = simulate_project(project, n_samples.clamp(20, 2000), 42);
+    let _ = writeln!(out, "fit: {}", fit_text(project.fit));
+    let (sims, horizon) = simulate_project(&resolve_properties(project), n_samples.clamp(20, 2000), 42);
     let truncated = horizon >= MAX_TIMELINE - DT;
     let effects = particle_layers(project);
     let mut total_alive = vec![0.0f32; bins(horizon)];
@@ -1856,6 +2026,7 @@ pub fn analyze_project(
         let _ = writeln!(out, "  spawn: {}", sim.spawn_text);
         let _ = writeln!(out, "  {}", render_text(&effect.effect));
         let _ = writeln!(out, "  space: {}", space_text(project, effect, &effects, i));
+        let _ = writeln!(out, "  attach: {}", attach_text(project, &effect.attach));
         if let Some(e) = &sim.error {
             let _ = writeln!(out, "  simulation failed: {}", e);
             continue;
@@ -2091,7 +2262,12 @@ mod tests {
             assert!(text.contains("version: 2"), "recipes must be v2:\n{}", text);
             assert!(migration.is_empty(), "{:?}\n{}", migration, text);
             let d = check_project(&project, &assets_root());
-            assert!(d.errors.is_empty() && d.warnings.is_empty(), "{}\n{}", d.render(), text);
+            assert!(
+                d.errors.is_empty() && d.warnings.is_empty() && d.notes.is_empty(),
+                "{}\n{}",
+                d.render(),
+                text
+            );
             let mut produce_warnings = Vec::new();
             for (_, layer) in project.particle_layers() {
                 layer.produce(&mut produce_warnings);
@@ -2102,6 +2278,86 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 6, "only {} recipes found", checked);
+    }
+
+    fn has(list: &[String], needle: &str) -> bool {
+        list.iter().any(|m| m.contains(needle))
+    }
+
+    const SEGMENT_POSITION: &str = r#"SetAttribute((attr: "position", attr_expr: Operator(Add(Property("segment_a"), Operator(Multiply(Operator(Subtract(Property("segment_b"), Property("segment_a"))), RandFloat))))))"#;
+
+    #[test]
+    fn attach_sockets_and_fit_are_checked() {
+        let effect = |init: &str| format!("init_modifiers: [SetAttribute((attr: \"age\", attr_expr: Float(0.0))), {}],", init);
+        let mut p = layer_project(
+            r#"play: OnStart, attach: Segment(from: "base", to: "tip"),"#,
+            &effect(SEGMENT_POSITION),
+        );
+        p.sockets = vec![
+            SocketDef { name: "base".into(), node: None, offset: Vec3::ZERO },
+            SocketDef { name: "tip".into(), node: None, offset: Vec3::new(0.0, 1.0, 0.0) },
+        ];
+        let d = check_project(&p, &assets_root());
+        assert!(d.errors.is_empty() && d.notes.is_empty(), "{}", d.render());
+        assert!(!has(&d.warnings, "segment"), "{}", d.render());
+
+        // The simulation puts particles on the segment, 0 to 1 m up.
+        let report = analyze_project(&p, &assets_root(), 100, None);
+        assert!(report.contains("attach: segment from socket \"base\""), "{}", report);
+        assert!(report.contains("fit: none"), "{}", report);
+        let (sims, _) = simulate_project(&resolve_properties(&p), 100, 1);
+        for sample in sims[0].samples.iter() {
+            let y = sample.birth_pos.y;
+            assert!((0.0..=1.0).contains(&y), "spawned at y {}", y);
+        }
+
+        // Unknown and missing sockets, an unused one, a duplicate.
+        p.sockets.push(SocketDef { name: "tip".into(), node: Some(String::new()), offset: Vec3::ZERO });
+        p.sockets.push(SocketDef { name: "spare".into(), node: None, offset: Vec3::ZERO });
+        p.layers[0].as_particles_mut().unwrap().attach = AttachDef::Segment { from: "base".into(), to: "Hand".into() };
+        let d = check_project(&p, &assets_root());
+        assert!(has(&d.errors, "duplicate socket name"), "{}", d.render());
+        assert!(has(&d.errors, "node is an empty name"), "{}", d.render());
+        assert!(has(&d.warnings, "socket \"spare\"] not used"), "{}", d.render());
+        assert!(has(&d.notes, "\"Hand\" is not a package socket"), "{}", d.render());
+        assert!(!has(&d.warnings, "Hand"), "node names are only a note: {}", d.render());
+
+        // Segment ends without a Segment, a Segment without them.
+        let p = layer_project(r#"play: OnStart, attach: Socket("Head"),"#, &effect(SEGMENT_POSITION));
+        let d = check_project(&p, &assets_root());
+        assert!(has(&d.warnings, "only Segment-attached layers get them"), "{}", d.render());
+        let p = layer_project(r#"play: OnStart, attach: Segment(from: "a", to: "a"),"#, &effect(""));
+        let d = check_project(&p, &assets_root());
+        assert!(has(&d.warnings, "no expression reads Property"), "{}", d.render());
+        assert!(has(&d.warnings, "has no length"), "{}", d.render());
+
+        // Unknown properties are errors.
+        let p = layer_project(
+            "play: OnStart,",
+            &effect(r#"SetAttribute((attr: "position", attr_expr: Property("trigger_pos")))"#),
+        );
+        let d = check_project(&p, &assets_root());
+        assert!(has(&d.errors, "Property(\"trigger_pos\") is not a runtime property"), "{}", d.render());
+
+        // Fit: a reference height is needed; Global layers are not scaled.
+        let mut p = layer_project("play: OnStart, simulation_space: Global,", &effect(""));
+        p.fit = Some(FitDef::TargetHeight(0.0));
+        assert!(has(&check_project(&p, &assets_root()).errors, "reference height above 0"));
+        p.fit = Some(FitDef::TargetHeight(1.8));
+        let d = check_project(&p, &assets_root());
+        assert!(has(&d.warnings, "fit does not scale Global layers"), "{}", d.render());
+        assert!(analyze_project(&p, &assets_root(), 20, None).contains("fit: TargetHeight(1.8)"));
+
+        // A socket layer's particles are reported where the socket is.
+        let mut p = layer_project(
+            r#"play: OnStart, attach: Socket("chest"),"#,
+            &effect(r#"SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(0.1), dimension: Volume))"#),
+        );
+        p.sockets = vec![SocketDef { name: "chest".into(), node: None, offset: Vec3::new(0.0, 1.0, 0.0) }];
+        let (sims, _) = simulate_project(&resolve_properties(&p), 50, 1);
+        assert!(sims[0].samples.iter().all(|s| (s.birth_pos.y - 1.0).abs() <= 0.1 + 1e-4));
+        p.layers[0].as_particles_mut().unwrap().simulation_space = SimulationSpaceDef::Local;
+        assert!(!has(&check_project(&p, &assets_root()).warnings, "fit"));
     }
 
     /// The format example in the guide parses as v2.
