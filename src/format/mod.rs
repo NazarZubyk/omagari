@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ExportedEffect, ExportedProject};
 
+pub mod coverage;
 mod expr;
 pub mod hanabi_serde;
 mod migrate;
@@ -25,7 +26,7 @@ mod particles;
 mod project;
 
 pub use expr::*;
-pub use hanabi_serde::{CpuValueDef, SpawnerDef};
+pub use hanabi_serde::{CpuValueDef, CpuVecDef, SpawnerDef, SpawnerPreset};
 pub use migrate::*;
 pub use modifiers::*;
 pub use particles::*;

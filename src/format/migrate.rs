@@ -112,6 +112,7 @@ fn migrate_effect(effect: EffectEditor, warnings: &mut Vec<String>) -> ParticleE
     ));
     render_modifiers.push(RenderModifierEditor::Orient(OrientModifierEditor {
         mode: OrientModeDef::AlongVelocity,
+        rotation_expr: None,
     }));
 
     ParticleEffectDef {
@@ -121,5 +122,6 @@ fn migrate_effect(effect: EffectEditor, warnings: &mut Vec<String>) -> ParticleE
         init_modifiers,
         update_modifiers,
         render_modifiers,
+        ..Default::default()
     }
 }

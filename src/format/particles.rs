@@ -24,6 +24,11 @@ pub enum ModifierEditor {
     LinearDragModifier(LinearDragModifierEditor),
     EmitSpawnEventModifier(EmitSpawnEventModifierEditor),
     ConformToSphereModifier(ConformToSphereModifierEditor),
+    SetPositionCone3d(SetPositionCone3dModifierEditor),
+    RadialAccel(RadialAccelModifierEditor),
+    TangentAccel(TangentAccelModifierEditor),
+    KillSphere(KillSphereModifierEditor),
+    KillAabb(KillAabbModifierEditor),
 }
 
 impl ModifierEditor {
@@ -58,6 +63,11 @@ impl ModifierEditor {
             ModifierEditor::ConformToSphereModifier(n) => {
                 ProducedModifier::ConformToSphere(n.produce(writer))
             }
+            ModifierEditor::SetPositionCone3d(n) => ProducedModifier::SetPositionCone3d(n.produce(writer)),
+            ModifierEditor::RadialAccel(n) => ProducedModifier::RadialAccel(n.produce(writer)),
+            ModifierEditor::TangentAccel(n) => ProducedModifier::TangentAccel(n.produce(writer)),
+            ModifierEditor::KillSphere(n) => ProducedModifier::KillSphere(n.produce(writer)),
+            ModifierEditor::KillAabb(n) => ProducedModifier::KillAabb(n.produce(writer)),
         }
     }
 }
@@ -70,6 +80,11 @@ pub enum RenderModifierEditor {
     ParticleTexture(ParticleTextureModifierEditor),
     /// Explicit in v2 projects; v1 `produce()` always adds it.
     Orient(OrientModifierEditor),
+    SetColor(SetColorModifierEditor),
+    SetSize(SetSizeModifierEditor),
+    Flipbook(FlipbookModifierEditor),
+    Round(RoundModifierEditor),
+    ScreenSpaceSize(ScreenSpaceSizeModifierEditor),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -85,6 +100,11 @@ enum ProducedModifier {
     LinearDragModifier(LinearDragModifier),
     EmitSpawnEventModifier(EmitSpawnEventModifier),
     ConformToSphere(ConformToSphereModifier),
+    SetPositionCone3d(SetPositionCone3dModifier),
+    RadialAccel(RadialAccelModifier),
+    TangentAccel(TangentAccelModifier),
+    KillSphere(KillSphereModifier),
+    KillAabb(KillAabbModifier),
 }
 
 /// One particle effect of a v1 project (`OmagariProject`).
@@ -185,8 +205,9 @@ impl EffectEditor {
             match editor_wrapper {
                 RenderModifierEditor::SizeOverLifetime(editor) => e = e.render(editor.produce()),
                 RenderModifierEditor::ColorOverLifetime(editor) => e = e.render(editor.produce()),
-                // v1 always adds texture sampling and orientation below.
-                RenderModifierEditor::ParticleTexture(_) | RenderModifierEditor::Orient(_) => {}
+                // v1 always adds texture sampling and orientation below; the
+                // other render modifiers did not exist in v1.
+                _ => {}
             }
         }
 
@@ -265,6 +286,11 @@ impl ModifierEditor {
             ProducedModifier::LinearDragModifier(m) => Box::new(m),
             ProducedModifier::EmitSpawnEventModifier(m) => Box::new(m),
             ProducedModifier::ConformToSphere(m) => Box::new(m),
+            ProducedModifier::SetPositionCone3d(m) => Box::new(m),
+            ProducedModifier::RadialAccel(m) => Box::new(m),
+            ProducedModifier::TangentAccel(m) => Box::new(m),
+            ProducedModifier::KillSphere(m) => Box::new(m),
+            ProducedModifier::KillAabb(m) => Box::new(m),
         }
     }
 
@@ -288,6 +314,11 @@ impl ModifierEditor {
                 &m.attraction_accel_expr,
                 &m.max_attraction_speed_expr,
             ],
+            ModifierEditor::SetPositionCone3d(m) => vec![&m.height_expr, &m.base_radius_expr, &m.top_radius_expr],
+            ModifierEditor::RadialAccel(m) => vec![&m.origin_expr, &m.accel_expr],
+            ModifierEditor::TangentAccel(m) => vec![&m.origin_expr, &m.axis_expr, &m.accel_expr],
+            ModifierEditor::KillSphere(m) => vec![&m.center_expr, &m.radius_expr],
+            ModifierEditor::KillAabb(m) => vec![&m.center_expr, &m.half_size_expr],
         }
     }
 
@@ -311,6 +342,13 @@ impl ModifierEditor {
                 &mut m.attraction_accel_expr,
                 &mut m.max_attraction_speed_expr,
             ],
+            ModifierEditor::SetPositionCone3d(m) => {
+                vec![&mut m.height_expr, &mut m.base_radius_expr, &mut m.top_radius_expr]
+            }
+            ModifierEditor::RadialAccel(m) => vec![&mut m.origin_expr, &mut m.accel_expr],
+            ModifierEditor::TangentAccel(m) => vec![&mut m.origin_expr, &mut m.axis_expr, &mut m.accel_expr],
+            ModifierEditor::KillSphere(m) => vec![&mut m.center_expr, &mut m.radius_expr],
+            ModifierEditor::KillAabb(m) => vec![&mut m.center_expr, &mut m.half_size_expr],
         }
     }
 
@@ -328,12 +366,64 @@ impl ModifierEditor {
             ModifierEditor::LinearDragModifier(_) => "LinearDragModifier",
             ModifierEditor::EmitSpawnEventModifier(_) => "EmitSpawnEventModifier",
             ModifierEditor::ConformToSphereModifier(_) => "ConformToSphereModifier",
+            ModifierEditor::SetPositionCone3d(_) => "SetPositionCone3d",
+            ModifierEditor::RadialAccel(_) => "RadialAccel",
+            ModifierEditor::TangentAccel(_) => "TangentAccel",
+            ModifierEditor::KillSphere(_) => "KillSphere",
+            ModifierEditor::KillAabb(_) => "KillAabb",
         }
+    }
+
+    /// The lists (init, update) the modifier may be in: bevy_hanabi's
+    /// `Modifier::context()`, except `SetPositionCone3d`, which bevy_hanabi
+    /// allows in update too although its code reads the spawner transform
+    /// that only the init shader has.
+    pub fn contexts(&self) -> ModifierContext {
+        let (init, update) = (ModifierContext::Init, ModifierContext::Update);
+        match self {
+            ModifierEditor::SetAttribute(_)
+            | ModifierEditor::SetPositionCircle(_)
+            | ModifierEditor::SetPositionSphere(_)
+            | ModifierEditor::SetVelocityCircle(_)
+            | ModifierEditor::SetVelocitySphere(_)
+            | ModifierEditor::SetVelocityTangent(_) => init | update,
+            ModifierEditor::InheritAttribute(_) | ModifierEditor::SetPositionCone3d(_) => init,
+            ModifierEditor::AccelModifier(_)
+            | ModifierEditor::LinearDragModifier(_)
+            | ModifierEditor::EmitSpawnEventModifier(_)
+            | ModifierEditor::ConformToSphereModifier(_)
+            | ModifierEditor::RadialAccel(_)
+            | ModifierEditor::TangentAccel(_)
+            | ModifierEditor::KillSphere(_)
+            | ModifierEditor::KillAabb(_) => update,
+        }
+    }
+
+    /// A default modifier of every kind, in menu order.
+    pub fn all_defaults() -> Vec<ModifierEditor> {
+        vec![
+            ModifierEditor::SetAttribute(default()),
+            ModifierEditor::InheritAttribute(default()),
+            ModifierEditor::SetPositionCircle(default()),
+            ModifierEditor::SetPositionSphere(default()),
+            ModifierEditor::SetPositionCone3d(default()),
+            ModifierEditor::SetVelocityCircle(default()),
+            ModifierEditor::SetVelocitySphere(default()),
+            ModifierEditor::SetVelocityTangent(default()),
+            ModifierEditor::AccelModifier(default()),
+            ModifierEditor::RadialAccel(default()),
+            ModifierEditor::TangentAccel(default()),
+            ModifierEditor::LinearDragModifier(default()),
+            ModifierEditor::ConformToSphereModifier(default()),
+            ModifierEditor::KillSphere(default()),
+            ModifierEditor::KillAabb(default()),
+            ModifierEditor::EmitSpawnEventModifier(default()),
+        ]
     }
 
     /// Whether v1 `EffectEditor::produce()` used this modifier in the init
     /// list (`init == true`) or in the update list. v1 silently dropped the
-    /// others.
+    /// others (and every kind added after v1).
     pub(crate) fn v1_accepts(&self, init: bool) -> bool {
         let init_kind = matches!(
             self,
@@ -345,7 +435,85 @@ impl ModifierEditor {
                 | ModifierEditor::SetVelocityCircle(_)
                 | ModifierEditor::SetVelocitySphere(_)
         );
-        init_kind == init
+        let update_kind = matches!(
+            self,
+            ModifierEditor::AccelModifier(_)
+                | ModifierEditor::LinearDragModifier(_)
+                | ModifierEditor::EmitSpawnEventModifier(_)
+                | ModifierEditor::ConformToSphereModifier(_)
+        );
+        if init { init_kind } else { update_kind }
+    }
+}
+
+impl RenderModifierEditor {
+    /// Name of the modifier kind, as written in project files.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            RenderModifierEditor::SizeOverLifetime(_) => "SizeOverLifetime",
+            RenderModifierEditor::ColorOverLifetime(_) => "ColorOverLifetime",
+            RenderModifierEditor::ParticleTexture(_) => "ParticleTexture",
+            RenderModifierEditor::Orient(_) => "Orient",
+            RenderModifierEditor::SetColor(_) => "SetColor",
+            RenderModifierEditor::SetSize(_) => "SetSize",
+            RenderModifierEditor::Flipbook(_) => "Flipbook",
+            RenderModifierEditor::Round(_) => "Round",
+            RenderModifierEditor::ScreenSpaceSize(_) => "ScreenSpaceSize",
+        }
+    }
+
+    /// The modifier's expressions (evaluated when particles are drawn).
+    pub fn exprs(&self) -> Vec<&ExprWriterEditor> {
+        match self {
+            RenderModifierEditor::Orient(m) => m.rotation_expr.iter().collect(),
+            RenderModifierEditor::Round(m) => vec![&m.roundness_expr],
+            _ => vec![],
+        }
+    }
+
+    /// The modifier's expressions, mutable.
+    pub fn exprs_mut(&mut self) -> Vec<&mut ExprWriterEditor> {
+        match self {
+            RenderModifierEditor::Orient(m) => m.rotation_expr.iter_mut().collect(),
+            RenderModifierEditor::Round(m) => vec![&mut m.roundness_expr],
+            _ => vec![],
+        }
+    }
+
+    /// A default modifier of every kind, in menu order.
+    pub fn all_defaults() -> Vec<RenderModifierEditor> {
+        vec![
+            RenderModifierEditor::ColorOverLifetime(default()),
+            RenderModifierEditor::SetColor(default()),
+            RenderModifierEditor::SizeOverLifetime(default()),
+            RenderModifierEditor::SetSize(default()),
+            RenderModifierEditor::ScreenSpaceSize(default()),
+            RenderModifierEditor::ParticleTexture(default()),
+            RenderModifierEditor::Flipbook(default()),
+            RenderModifierEditor::Round(default()),
+            RenderModifierEditor::Orient(default()),
+        ]
+    }
+
+    /// Builds the bevy_hanabi render modifier. `texture_grid` is the layer
+    /// texture's sprite-sheet grid (for Flipbook).
+    pub fn produce_boxed(
+        &self,
+        writer: &EffectWriter,
+        texture_grid: Option<(u32, u32)>,
+        warnings: &mut Vec<String>,
+    ) -> Box<dyn RenderModifier> {
+        match self {
+            RenderModifierEditor::SizeOverLifetime(m) => Box::new(m.produce()),
+            RenderModifierEditor::ColorOverLifetime(m) => Box::new(m.produce()),
+            RenderModifierEditor::ParticleTexture(m) => Box::new(m.produce(writer)),
+            RenderModifierEditor::Orient(m) => Box::new(m.produce(writer)),
+            RenderModifierEditor::SetColor(m) => Box::new(m.produce()),
+            RenderModifierEditor::SetSize(m) => Box::new(m.produce()),
+            RenderModifierEditor::Flipbook(m) => Box::new(m.produce(texture_grid, warnings)),
+            RenderModifierEditor::Round(m) => Box::new(m.produce(writer)),
+            RenderModifierEditor::ScreenSpaceSize(m) => Box::new(m.produce()),
+        }
     }
 }
 
@@ -365,17 +533,90 @@ pub enum AlphaModeDef {
     Opaque,
 }
 
+impl AlphaModeDef {
+    pub fn to_hanabi(self, writer: &EffectWriter) -> bevy_hanabi::AlphaMode {
+        match self {
+            AlphaModeDef::Blend => bevy_hanabi::AlphaMode::Blend,
+            AlphaModeDef::Premultiply => bevy_hanabi::AlphaMode::Premultiply,
+            AlphaModeDef::Add => bevy_hanabi::AlphaMode::Add,
+            AlphaModeDef::Multiply => bevy_hanabi::AlphaMode::Multiply,
+            AlphaModeDef::Mask(cutoff) => bevy_hanabi::AlphaMode::Mask(writer.lit(cutoff).expr()),
+            AlphaModeDef::Opaque => bevy_hanabi::AlphaMode::Opaque,
+        }
+    }
+}
+
+/// When particle positions follow their velocity (bevy_hanabi's
+/// `MotionIntegration`).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MotionIntegrationDef {
+    /// `position += velocity × dt` after the update modifiers (bevy_hanabi's
+    /// default).
+    #[default]
+    PostUpdate,
+    /// The same, before the update modifiers.
+    PreUpdate,
+    /// No automatic movement: positions only change when a modifier sets
+    /// them (expression-driven paths, ribbons). Also silences bevy_hanabi's
+    /// "missing VELOCITY" warning on layers that never move.
+    None,
+}
+
+impl From<MotionIntegrationDef> for MotionIntegration {
+    fn from(value: MotionIntegrationDef) -> Self {
+        match value {
+            MotionIntegrationDef::PostUpdate => MotionIntegration::PostUpdate,
+            MotionIntegrationDef::PreUpdate => MotionIntegration::PreUpdate,
+            MotionIntegrationDef::None => MotionIntegration::None,
+        }
+    }
+}
+
+/// When bevy_hanabi simulates a layer (its `SimulationCondition`).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SimulationConditionDef {
+    /// Only while visible (bevy_hanabi's default; cheapest).
+    #[default]
+    WhenVisible,
+    /// Also while hidden or off screen, so the effect is up to date when it
+    /// comes back into view.
+    Always,
+}
+
+impl From<SimulationConditionDef> for SimulationCondition {
+    fn from(value: SimulationConditionDef) -> Self {
+        match value {
+            SimulationConditionDef::WhenVisible => SimulationCondition::WhenVisible,
+            SimulationConditionDef::Always => SimulationCondition::Always,
+        }
+    }
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
 /// The particle effect of a v2 particle layer: everything that becomes one
 /// bevy_hanabi [`EffectAsset`].
 ///
 /// Unlike v1 [`EffectEditor`], nothing is hard-coded: texture sampling and
 /// orientation are ordinary render modifiers, blending is `alpha_mode`.
+/// Settings added in P2b are only written when they differ from bevy_hanabi's
+/// defaults.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct ParticleEffectDef {
     pub capacity: u32,
     pub spawner: SpawnerDef,
     pub alpha_mode: AlphaModeDef,
+    #[serde(skip_serializing_if = "is_default")]
+    pub motion_integration: MotionIntegrationDef,
+    #[serde(skip_serializing_if = "is_default")]
+    pub simulation_condition: SimulationConditionDef,
+    /// Seed of the GPU random numbers: the same seed gives the same random
+    /// values (reproducible looks); `None` = bevy_hanabi's default (0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prng_seed: Option<u32>,
     pub init_modifiers: Vec<ModifierEditor>,
     pub update_modifiers: Vec<ModifierEditor>,
     pub render_modifiers: Vec<RenderModifierEditor>,
@@ -389,6 +630,9 @@ impl Default for ParticleEffectDef {
             capacity: 16384,
             spawner: SpawnerDef::default(),
             alpha_mode: AlphaModeDef::Blend,
+            motion_integration: MotionIntegrationDef::default(),
+            simulation_condition: SimulationConditionDef::default(),
+            prng_seed: None,
             init_modifiers: Vec::new(),
             update_modifiers: Vec::new(),
             render_modifiers: vec![
@@ -417,42 +661,42 @@ impl ParticleEffectDef {
         params: &[ParamDef],
         warnings: &mut Vec<String>,
     ) -> EffectAsset {
+        self.produce_with_grid(name, simulation_space, params, None, warnings)
+    }
+
+    /// [`ParticleEffectDef::produce`] with the sprite-sheet grid
+    /// `(rows, columns)` of the layer's texture, used by a Flipbook render
+    /// modifier without a grid of its own.
+    pub fn produce_with_grid(
+        &self,
+        name: &str,
+        simulation_space: SimulationSpace,
+        params: &[ParamDef],
+        texture_grid: Option<(u32, u32)>,
+        warnings: &mut Vec<String>,
+    ) -> EffectAsset {
         let writer = EffectWriter::with_params(params);
 
         let mut init_modifiers = Vec::new();
         for m in self.init_modifiers.iter() {
-            init_modifiers.push((m.kind_name(), m.produce_boxed(&writer)));
+            init_modifiers.push((m.kind_name(), m.contexts(), m.produce_boxed(&writer)));
         }
         let mut update_modifiers = Vec::new();
         for m in self.update_modifiers.iter() {
-            update_modifiers.push((m.kind_name(), m.produce_boxed(&writer)));
+            update_modifiers.push((m.kind_name(), m.contexts(), m.produce_boxed(&writer)));
         }
 
         let mut uses_texture = false;
+        let mut render_warnings = Vec::new();
         let mut render_modifiers: Vec<Box<dyn RenderModifier>> = Vec::new();
         for m in self.render_modifiers.iter() {
-            render_modifiers.push(match m {
-                RenderModifierEditor::SizeOverLifetime(m) => Box::new(m.produce()),
-                RenderModifierEditor::ColorOverLifetime(m) => Box::new(m.produce()),
-                RenderModifierEditor::ParticleTexture(m) => {
-                    uses_texture = true;
-                    Box::new(m.produce(&writer))
-                }
-                RenderModifierEditor::Orient(m) => Box::new(m.produce()),
-            });
+            uses_texture |= matches!(m, RenderModifierEditor::ParticleTexture(_));
+            render_modifiers.push(m.produce_boxed(&writer, texture_grid, &mut render_warnings));
         }
-
-        let alpha_mode = match self.alpha_mode {
-            AlphaModeDef::Blend => bevy_hanabi::AlphaMode::Blend,
-            AlphaModeDef::Premultiply => bevy_hanabi::AlphaMode::Premultiply,
-            AlphaModeDef::Add => bevy_hanabi::AlphaMode::Add,
-            AlphaModeDef::Multiply => bevy_hanabi::AlphaMode::Multiply,
-            AlphaModeDef::Mask(cutoff) => bevy_hanabi::AlphaMode::Mask(writer.lit(cutoff).expr()),
-            AlphaModeDef::Opaque => bevy_hanabi::AlphaMode::Opaque,
-        };
+        let alpha_mode = self.alpha_mode.to_hanabi(&writer);
 
         let (mut module, writer_warnings) = writer.finish();
-        for warning in writer_warnings {
+        for warning in writer_warnings.into_iter().chain(render_warnings) {
             warnings.push(format!("[{}] {}", name, warning));
         }
         if uses_texture {
@@ -462,14 +706,19 @@ impl ParticleEffectDef {
         let mut e = EffectAsset::new(self.capacity, self.spawner.to_settings(), module)
             .with_alpha_mode(alpha_mode)
             .with_simulation_space(simulation_space)
+            .with_motion_integration(self.motion_integration.into())
+            .with_simulation_condition(self.simulation_condition.into())
             .with_name(name);
+        if let Some(seed) = self.prng_seed {
+            e.prng_seed = seed;
+        }
 
         for (context, list, label) in [
             (ModifierContext::Init, init_modifiers, "init"),
             (ModifierContext::Update, update_modifiers, "update"),
         ] {
-            for (kind, modifier) in list {
-                if modifier.context().contains(context) {
+            for (kind, allowed, modifier) in list {
+                if allowed.contains(context) && modifier.context().contains(context) {
                     e = e.add_modifier(context, modifier);
                 } else {
                     warnings.push(format!(
@@ -517,21 +766,23 @@ impl ParticleEffectDef {
         names
     }
 
-    /// Every expression of its init and update modifiers.
+    /// Every expression of its init, update and render modifiers.
     pub fn exprs(&self) -> Vec<&ExprWriterEditor> {
         self.init_modifiers
             .iter()
             .chain(self.update_modifiers.iter())
             .flat_map(|m| m.exprs())
+            .chain(self.render_modifiers.iter().flat_map(|m| m.exprs()))
             .collect()
     }
 
-    /// Every expression of its init and update modifiers, mutable.
+    /// Every expression of its init, update and render modifiers, mutable.
     pub fn exprs_mut(&mut self) -> Vec<&mut ExprWriterEditor> {
         self.init_modifiers
             .iter_mut()
             .chain(self.update_modifiers.iter_mut())
             .flat_map(|m| m.exprs_mut())
+            .chain(self.render_modifiers.iter_mut().flat_map(|m| m.exprs_mut()))
             .collect()
     }
 
@@ -563,5 +814,27 @@ impl ParticleEffectDef {
             }
         }
         lifetime
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ModifierEditor::contexts` is bevy_hanabi's `Modifier::context()`,
+    /// except the documented SetPositionCone3d exception.
+    #[test]
+    fn contexts_follow_hanabi() {
+        for m in ModifierEditor::all_defaults() {
+            let writer = EffectWriter::new();
+            let hanabi = m.produce_boxed(&writer).context();
+            match m {
+                ModifierEditor::SetPositionCone3d(_) => {
+                    assert_eq!(hanabi, ModifierContext::Init | ModifierContext::Update);
+                    assert_eq!(m.contexts(), ModifierContext::Init);
+                }
+                _ => assert_eq!(m.contexts(), hanabi, "{}", m.kind_name()),
+            }
+        }
     }
 }

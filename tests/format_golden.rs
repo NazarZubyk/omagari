@@ -158,7 +158,7 @@ fn export_v2(project: &ProjectV2) -> ExportedProject {
             name: layer.name.clone(),
             parent: layer.parent.clone(),
             texture_index,
-            effect_asset: layer.produce(&project.parameters, &mut warnings),
+            effect_asset: layer.produce_in(project, &mut warnings),
         });
         assert!(warnings.is_empty(), "{}: {:?}", layer.name, warnings);
     }
