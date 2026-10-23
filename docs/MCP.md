@@ -36,18 +36,21 @@ Claude ──MCP (stdio)──▶ omagari --mcp ──writes──▶ saved_effe
    claude mcp add omagari -- C:/bevy/omagari/omagari/target/release/omagari.exe --mcp --root C:/bevy/omagari/omagari
    ```
 
-   **Exports** go to the game assets folder's `vfx/` when one is configured (the editor's **⚙ GAME ASSETS** menu, stored in `omagari_settings.ron`; or `--game-assets <dir>` / `OMAGARI_GAME_ASSETS`, which the MCP server reads too), else to `exported_effects/`; `export_project`'s `copy_to` copies them anywhere else.
+   **Exports** go to the game assets folder's `vfx/` when one is configured (the editor's **⚙ SETTINGS** window, stored in `omagari_settings.ron`; or `--game-assets <dir>` / `OMAGARI_GAME_ASSETS`, which the MCP server reads too), else to `exported_effects/`; `export_project`'s `copy_to` copies them anywhere else.
 
 3. To watch effects, open the editor with `start.bat` (or `cargo run --release --features editor`) and leave it open next to Claude. You don't start the MCP server yourself; Claude Code starts it when needed.
 
    The editor picks up preview requests every quarter second. If it isn't running, a request waits and loads the next time the editor starts.
 
-   Effects play inside a big light gray cube (40 units wide) with a 1-unit grid on every face (darker lines every 5 units) and small axes at the spawn point (X red, Y green, Z blue), so you keep your orientation while rotating and can judge sizes. Two toolbar buttons change the scene:
+   Effects play inside a big light gray cube (40 units wide) with a 1-unit grid on every face (darker lines every 5 units) and small axes at the spawn point (X red, Y green, Z blue), so you keep your orientation while rotating and can judge sizes. The toolbar and the **PREVIEW** tab change the scene:
 
-   - **STAGE** sets where the effect plays: **AIR** (middle of the room, nothing nearby; you see everything, including particles that fall), **FLOOR** (the floor is right at the spawn point, like ground in a game; particles below it are hidden) and **OBJECT** (a rock about 2 units wide sits on the spawn point, for shields, barriers and auras). Claude can also choose the stage when it asks for a preview.
+   - **STAGE** sets where the effect plays: **AIR** (middle of the room, nothing nearby; you see everything, including particles that fall), **FLOOR** (the floor is right at the spawn point, like ground in a game; particles below it are hidden) and **OBJECT** (a rock about 2 units wide sits on the spawn point, for shields, barriers and auras). Claude can also choose the stage when it asks for a preview. The stage is saved in the project (its `preview` block).
+   - **CAMERA**: **ORBIT** is the free camera; **GAME** shows the effect like the game's isometric camera (orthographic, 16 m visible height, following the target). Its values live in `omagari_settings.ron` and are edited in ⚙ SETTINGS.
    - **BG** cycles through a light room, a dark room and black. Glow is easier to judge on dark or black.
-   - **⟳ MOTION** moves the effect's target: off, in a circle (radius) or back and forth (distance), at a speed in m/s (3.6 = a running character). `Local` layers stay on the moving target, `Global` layers leave a trail. The setting is saved in the project (its `preview` block); Claude can also set it when it asks for a preview.
-   - **⚓ SOCKETS & FIT** edits the project's sockets (named points on the target: a node/bone name of the game's model, or none = the target's origin, plus an offset) and its size fit (none, target scale, or target height for a reference height). A layer's **Attach** setting picks the target, a socket, or a segment between two sockets. The editor's target has no model, so sockets on a node show at the target's origin.
+   - **Target motion** (PREVIEW tab) moves the effect's target: off, in a circle (radius) or back and forth (distance), at a speed in m/s (3.6 = a running character). `Local` layers stay on the moving target, `Global` layers leave a trail. The setting is saved in the project (its `preview` block); Claude can also set it when it asks for a preview.
+   - The **⚓ SOCKETS & FIT** tab edits the project's sockets (named points on the target: a node/bone name of the game's model, or none = the target's origin, plus an offset) and its size fit (none, target scale, or target height for a reference height). A layer's **Attach** setting picks the target, a socket, or a segment between two sockets. The editor's target has no model, so sockets on a node show at the target's origin.
+
+   While you edit by hand, the preview rebuilds a moment after each change (**Live** in the bottom bar), Ctrl+Z / Ctrl+Y undo and redo, and the layer list and the Problems list show the same checks Claude runs (`check_project`).
 
 ## Using it
 
@@ -69,7 +72,7 @@ Claude reads the guide, starts from a recipe or a bundled example, saves the pro
 
 Every layer in a project plays at the same point, so layered effects (a flash, sparks, smoke) go into one project as separate root layers.
 
-**Unsaved edits:** a preview replaces what the editor has open. Save your own work in the editor before asking Claude to preview.
+**Unsaved edits:** a preview replaces what the editor has open. If the open project has unsaved changes, the editor asks first (Save / Don't save / Cancel). The editor's Problems list and the layer badges show the same checks as `check_project`, updated as you edit.
 
 ## What Claude gets instead of a picture
 

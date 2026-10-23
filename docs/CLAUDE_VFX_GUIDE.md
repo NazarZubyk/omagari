@@ -77,7 +77,7 @@ Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` 
 - `Local`: particles move with the target. Use it for anything that should stay on the character: auras, shields, orbiting sparks, status effects. It is the default.
 - `Global`: particles stay where they were emitted, so a moving target leaves a trail behind. Use it for smoke trails, footstep dust, embers left behind. A looping `Global` layer with long-lived particles leaves a long trail: `analyze_project` estimates it as target speed (3.6 m/s, or the preview motion's speed) × lifetime and warns from 1 s of lifetime.
 
-`analyze_project` assumes a still target, where both spaces look the same. In the editor, the toolbar's ⟳ MOTION (or `preview_in_editor(..., motion)`) moves the target so the user sees the difference.
+`analyze_project` assumes a still target, where both spaces look the same. In the editor, the PREVIEW tab's target motion (or `preview_in_editor(..., motion)`) moves the target so the user sees the difference.
 
 ## Attach
 
@@ -662,7 +662,7 @@ Made for a 1.8 m character: the socket sits 1 m up, particles start at the feet 
 - `floor`: the floor is at y = 0, under the spawn point, like ground in a game. Particles below y = 0 are hidden; `analyze_project` warns about that.
 - `object`: a rock about 2 units wide (radius ~1, 1.6 tall) is centered on the spawn point and rests on the floor. Use it for shields, barriers, auras and hit effects on a body; particles inside the rock are hidden.
 
-Pick the stage that matches how the game uses the effect. The toolbar's ⟳ MOTION (or `preview_in_editor(..., motion: {"type": "circle", "radius": 3.0, "speed": 3.6})`, also `back_and_forth` with `distance`, or `none`) moves the target, so the user sees whether layers stay on a running character (`Local`) or trail behind (`Global`); the setting is saved in the project's `preview` block. The BG button switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow. STOP stops the effect the way the game does: no new particles, live ones finish.
+Pick the stage that matches how the game uses the effect. The PREVIEW tab's target motion (or `preview_in_editor(..., motion: {"type": "circle", "radius": 3.0, "speed": 3.6})`, also `back_and_forth` with `distance`, or `none`) moves the target, so the user sees whether layers stay on a running character (`Local`) or trail behind (`Global`); the setting is saved in the project's `preview` block. The BG button (or the PREVIEW tab) switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow. STOP stops the effect the way the game does: no new particles, live ones finish. To judge how big an effect reads in the game, ask the user to switch CAMERA to GAME (the game's orthographic isometric view, 16 m visible height).
 
 **Typical values** (1 unit = 1 m):
 
