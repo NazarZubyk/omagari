@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, recipes, design, game.
 
 ## Workflow
 
@@ -18,7 +18,7 @@ The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSph
 
 ## Format
 
-A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect. All layers play at the same point, the target (the origin in the editor); Y is up.
+A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"). All layers play at the same point, the target (the origin in the editor); Y is up.
 
 ```ron
 (
@@ -74,6 +74,8 @@ Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` 
 | `visible` | `None` / `Some((param: "intensity", from: 0.6, to: 1.0, fade: 0.1))` | The layer spawns only while the parameter is in `[from, to]`, fading out over `fade` outside (section "parameters"). |
 | `texture` | `None` / `Some("asset id")` | The texture the `ParticleTexture` render modifier samples. |
 | `effect` | struct | Capacity, spawner, blending, modifiers. |
+
+The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces".
 
 **Simulation space** matters as soon as the target moves (a running character, a swung weapon):
 - `Local`: particles move with the target. Use it for anything that should stay on the character: auras, shields, orbiting sparks, status effects. It is the default.
@@ -131,7 +133,7 @@ preview: Some((
 - **Stages.** `Capsule`: a 0.7 × 1.8 m capsule whose centre is the target (a character's collider; floor 0.9 below). `Model`: the model, `root_height` metres below the target and turned to face the direction of travel (glTF +Z = forward); the capsule when no model is set or the file is missing. With `motion`, the model runs along the path.
 - **Animations.** Mixamo clips are separate files with the same skeleton, all named `"mixamo.com"`: pick the file with `animation_file` and the clip by name. They play by node names (no retargeting); the check warns when the clip's nodes are not in the model. The user pauses, loops, scrubs and changes the speed in the editor's bottom bar.
 - **Attach.** The instance is spawned on the target root, or on `attach_to` (a node of the body, or of the weapon with `target: Weapon`), like the game's `spawn_vfx(&package, entity)`. Sockets are found below it.
-- **Weapon.** A second model held by a node of the body, with a local offset (metres, ignoring the bone's scale) and rotation (degrees). It is a separate model: the own-model rule keeps body effects (fit height, later surface layers) off it. Put a weapon effect on it with `target: Weapon`, or give its sockets offsets from the hand bone without a weapon file.
+- **Weapon.** A second model held by a node of the body, with a local offset (metres, ignoring the bone's scale) and rotation (degrees). It is a separate model: the own-model rule keeps body effects (fit height, surface layers) off it. Put a weapon effect on it with `target: Weapon`, or give its sockets offsets from the hand bone without a weapon file.
 - **Checks.** With a model, `check_project` reports socket nodes, attach names, `attach_to` and the weapon node that the model does not have as errors, a clip the file does not have as an error, and a missing model file as a warning (the editor then shows the capsule).
 - `preview_in_editor(name, stage: "model", model: "anim/tpose.glb", animation: "mixamo.com", animation_file: "anim/run.glb", attach_to: "", root_height: 0.9)` shows it. In the editor's TRIGGERS tab, "at random point" fires at a point on the model's mesh bounds and "fire at clip time" sets `animation_triggers`.
 
@@ -380,6 +382,7 @@ Built-in textures (embedded in the omagari library; the game needs no files). Us
 | `omagari://textures/spark3.png` | spark variant |
 | `omagari://textures/glow1.png` | soft glowing dot: embers, magic, fireworks, light orbs |
 | `omagari://textures/splat1.png` | splat: blood, liquid, impacts |
+| `omagari://textures/noise.png` | tileable cloudy noise (purpose `Noise`) for surface layers (section "surfaces") |
 
 They are grayscale; use `ParticleTexture((sample_mapping: ModulateOpacityFromR))` so the shape comes from the texture and the color from the color attributes.
 
@@ -396,7 +399,7 @@ Formats: **PNG** (works everywhere), **JPG** (the game needs Bevy's `jpeg` featu
 | purpose | wrap | color_space | use |
 | :-- | :-- | :-- | :-- |
 | `Sprite` | Clamp | Srgb | pictures on particles: smoke, sparks |
-| `Noise` | Repeat | Linear | tiling patterns that scroll (later: surface layers) |
+| `Noise` | Repeat | Linear | tiling patterns that scroll (surface layers) |
 | `Mask` | Clamp | Linear | black/white shapes |
 | `Gradient` | Clamp | Srgb | colour ramps |
 
@@ -407,7 +410,7 @@ Formats: **PNG** (works everywhere), **JPG** (the game needs Bevy's `jpeg` featu
 (id: "pixel", kind: Texture((path: "vfx/textures/ember.png", filter: Some(Nearest)))),
 ```
 
-**Channels.** Particle layers sample the whole texture: `Modulate` (RGBA), `ModulateRGB` or `ModulateOpacityFromR` (red only). They **cannot pick G, B or A**. For a channel-packed texture (different masks in R, G, B, A), call `extract_channel(project, asset, channel)` with `R`, `G`, `B`, `A` or `Luminance`: it writes `<name>_<channel>.png` (8-bit grayscale) next to the file (built-ins: into `vfx/textures/`) and adds it to the project as `<asset>_<channel>` with the same settings. Use it with `ParticleTexture((sample_mapping: ModulateOpacityFromR))`. Omagari's own shader layers (later phases) pick a channel per texture slot: `(asset: "pack", channel: G)`, default `Luminance`.
+**Channels.** Particle layers sample the whole texture: `Modulate` (RGBA), `ModulateRGB` or `ModulateOpacityFromR` (red only). They **cannot pick G, B or A**. For a channel-packed texture (different masks in R, G, B, A), call `extract_channel(project, asset, channel)` with `R`, `G`, `B`, `A` or `Luminance`: it writes `<name>_<channel>.png` (8-bit grayscale) next to the file (built-ins: into `vfx/textures/`) and adds it to the project as `<asset>_<channel>` with the same settings. Use it with `ParticleTexture((sample_mapping: ModulateOpacityFromR))`. Surface layers (Omagari's own shader) pick a channel per texture slot: `(asset: "pack", channel: G)`, default `Luminance`, so they need no extraction.
 
 The user sees the same in the editor's ASSETS tab: thumbnails, an R / G / B / A view, the settings, rename (updates the layers), delete (refused while a layer uses the asset), extract channel, add built-in, and import by button or by dropping files on the window.
 
@@ -423,6 +426,49 @@ A child layer (with `parent: Some("name")`) spawns particles at its parent's par
 6. Give parent and child the same `simulation_space`.
 
 `read_project("examples/fireworks")` is a complete rocket → trail sparkles + explosion example.
+
+## Surfaces
+
+A **surface layer** draws Omagari's effect shader **over the target's own model**: a glowing skin, scrolling poison veins, frost creeping up the legs, an energy shell with thickness. The model and its materials are never changed: the runtime adds copies of the model's meshes (the same mesh and skin, so they move with every animation frame) and draws the effect on them. A weapon held in the hand is a separate model and is not covered (put another instance on the weapon). Surface layers have no particles: `analyze_project` describes them in words instead of simulating them.
+
+```ron
+Surface((
+    name: "skin",                       // unique among all layers
+    targets: AllMeshes,                 // AllMeshes | Meshes(["Beta_Surface"]) | Materials(["Beta_HighLimbsGeoSG3"])
+    material: (
+        blend: Add,                     // Blend (covers by opacity) | Add (adds light, never darkens)
+        color: Const((0.6, 0.1, 1.0, 0.6)), // linear RGBA; above 1 glows with bloom
+        opacity: Const(1.0),            // × the colour's alpha
+        emissive: Const(1.5),           // brightness multiplier
+        noise_a: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(3.0), scroll: Const((0.0, 0.25)), strength: Const(0.8))),
+        noise_b: None,                  // a second noise, multiplied in
+        rim: Some((color: Const((1.0, 0.5, 1.0, 1.0)), power: Const(2.5), intensity: Const(1.5))),
+        pulse: Some((frequency: Const(0.8), amount: Const(0.3))),
+        flash: Some(Param("flash", [(0.0, 0.0), (1.0, 1.0)])),
+        dissolve: None,                 // Some((threshold, edge_width, edge_color))
+        fill: None,                     // Some((axis: Y, from, to, softness))
+        mask: None,                     // Some((texture, mapping, scale, strength))
+    ),
+    shells: [(offset: 0.0), (offset: 0.02, opacity: 0.5, noise_offset: 0.37)],
+    fade: (in: 0.3, out: 0.6),          // seconds; the game's stop waits for `out`
+    visible: None,                      // a parameter range, like particle layers
+))
+```
+
+- **Every value is a binding** (section "parameters"): `Const(x)` or a curve over a number parameter `Param("power", [(0.0, a), (1.0, b)])`. A colour can also be a Color parameter itself: `color: Param("tint", [])`. Scroll is a pair: `Const((x, y))`, curve keys `(0.0, (0.0, 0.1))`.
+- **targets**: names from `describe_model` (a mesh entity is `<mesh>.<material>`, e.g. `Beta_Surface.Beta_HighLimbsGeoSG3`; `Meshes` takes a mesh name or a mesh entity name, `Materials` a material name). With a preview model the check reports names the model does not have as errors; without one they are notes.
+- **shells** give volume: each shell is a copy pushed `offset` metres outward along the surface (× the size fit). One shell at 0 = a coloured skin; 2–3 shells at 1–4 cm = a thick, soft glow around the body (use `Add` and fainter outer shells, `noise_offset` so their patterns differ). Negative offsets are hidden inside the model and offsets above 0.1 m float away (both warn). An empty list draws nothing.
+- **noise** (`noise_a`, `noise_b`): a texture slot `(asset: "id", channel: R | G | B | A | Luminance)` (default Luminance; a channel-packed texture can feed several slots). `mapping: Triplanar` projects it from three sides in the model's **rest pose**, so the pattern **sticks to the body** while it runs (`scale` = repeats per metre); `Uv` uses the mesh's own UVs (`scale` = repeats per UV square). `scroll` moves it (squares per second; on Triplanar `y` runs along the body, so `(0.0, 0.3)` with scale 3 crawls ~0.1 m/s). `strength` 0..1 shapes colour and opacity. The built-in `omagari://textures/noise.png` (purpose `Noise`) is a tileable cloudy noise; `import_asset` brings others.
+- **rim**: a fresnel glow on the edges seen from the camera (`power` 1 = wide and soft, 5 = thin outline; `intensity` above 1 blooms). The classic aura outline.
+- **pulse**: the opacity breathes between `1 − amount` and 1, `frequency` times per second.
+- **flash**: 0 = nothing, 1 = three times as bright and half-way to opaque. Bind it to a parameter that a trigger pulses: `triggers: [(name: "tick", pulses: [(param: "flash", to: 1.0, decay: 0.35)])]` flashes the skin on every damage tick.
+- **dissolve**: the surface breaks up where noise A (else B) is below `threshold` (0 = whole, 1 = gone) with a glowing edge `edge_width` wide in `edge_color`. Bind the threshold to a parameter to burn the layer in or away. Needs a noise (warns otherwise).
+- **fill**: shows the layer only on a band of the model along an `axis` of its rest pose (`Y` = up for glTF models): 0 = the low end (feet), 1 = the high end (head), `softness` the soft edge. `from: Const(0.0), to: Param("frost", [(0.0, 0.0), (1.0, 1.0)])` = frost rising from the feet as the game raises `frost`.
+- **mask**: a texture whose value multiplies the opacity (same slot and mapping as noise).
+- **blend**: `Blend` for colour skins and frost; `Add` for glows and energy. A `Blend` layer that covers with opacity ≥ 0.95 hides the model under it (the check warns): keep the colour's alpha around 0.4–0.8 or add noise.
+- **fade** in when the instance starts, out when the game stops it; a `restart` during the fade out fades back in. Surface layers loop: a package with one does not finish by itself.
+
+The editor's 🎨 Surface layer (➕ ADD) has every value with tooltips, a texture picker with the channel, a target picker from the preview model and a shell list (presets "skin" and "thick glow"). Preview surface layers on the `capsule` stage, or on `model` with the game's character (`preview_in_editor(name, stage: "model", model: "anim/tpose.glb", animation: "mixamo.com", animation_file: "anim/run.glb", root_height: 0.9)`). Recipes "Status skin", "Energy shell" and "Frost from the feet up" show the common uses.
 
 ## Recipes
 
@@ -1194,6 +1240,108 @@ Put the package on the weapon or the struck character and call `vfx.trigger_at(i
 
 Made for a 1.8 m character: the socket sits 1 m up, particles start at the feet (0.9 m below the socket) and rise ~1.2 m. On a 4 m enemy the whole aura is scaled × 2.2.
 
+### Status skin (surface: scrolling noise, rim, flash on tick)
+
+```ron
+(
+    version: 2,
+    parameters: [
+        (name: "flash", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.0),
+    ],
+    triggers: [
+        (name: "tick", pulses: [(param: "flash", to: 1.0, decay: 0.35)]),
+    ],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Surface((
+            name: "poison_skin",
+            targets: AllMeshes,
+            material: (
+                blend: Blend,
+                color: Const((0.55, 0.08, 0.95, 0.7)),
+                opacity: Const(1.0),
+                emissive: Const(1.5),
+                noise_a: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(3.0), scroll: Const((0.0, 0.25)), strength: Const(0.85), contrast: Const(2.5))),
+                rim: Some((color: Const((1.0, 0.45, 1.0, 0.8)), power: Const(2.5), intensity: Const(1.5))),
+                pulse: Some((frequency: Const(0.8), amount: Const(0.25))),
+                flash: Some(Param("flash", [(0.0, 0.0), (1.0, 1.0)])),
+            ),
+            shells: [(offset: 0.0)],
+            fade: (in: 0.3, out: 0.6),
+        )),
+    ],
+    preview: Some((stage: Capsule, auto_triggers: [("tick", 1.0)])),
+)
+```
+
+A purple skin over the whole body: cloudy noise crawling up the body (it sticks to the limbs while the character runs), a glowing pink rim, a slow breathing, and a bright flash on every `vfx.trigger(instance, "tick")` (a damage tick). The model shows through (opacity ~0.4 on average). Preview on `capsule`, or on `model` with the game's character.
+
+### Energy shell (surface: three additive shells with volume)
+
+```ron
+(
+    version: 2,
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Surface((
+            name: "energy",
+            targets: AllMeshes,
+            material: (
+                blend: Add,
+                color: Const((0.2, 0.8, 2.0, 0.5)),
+                opacity: Const(1.0),
+                emissive: Const(1.5),
+                noise_a: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(4.0), scroll: Const((0.1, 0.6)), strength: Const(0.9), contrast: Const(2.0))),
+                noise_b: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(1.5), scroll: Const((0.0, -0.3)), strength: Const(0.5))),
+                rim: Some((color: Const((0.5, 1.5, 3.0, 0.6)), power: Const(1.5), intensity: Const(1.5))),
+                pulse: Some((frequency: Const(1.2), amount: Const(0.3))),
+            ),
+            shells: [
+                (offset: 0.004, opacity: 0.7),
+                (offset: 0.016, opacity: 0.4, noise_offset: 0.37),
+                (offset: 0.03, opacity: 0.2, noise_offset: 0.74),
+            ],
+            fade: (in: 0.25, out: 0.5),
+        )),
+    ],
+    preview: Some((stage: Capsule)),
+)
+```
+
+A cyan energy field with thickness: three copies of the body 0.5, 2 and 3.5 cm outside the skin, each fainter, with two noises moving against each other and a bright rim, so the silhouette glows ~3.5 cm wide. Additive: it brightens the model and never hides it. Looks best with bloom (GAME camera, dark backdrop).
+
+### Frost from the feet up (surface: fill driven by a parameter)
+
+```ron
+(
+    version: 2,
+    parameters: [
+        (name: "frost", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.5),
+    ],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Surface((
+            name: "frost",
+            targets: AllMeshes,
+            material: (
+                blend: Blend,
+                color: Const((0.7, 0.9, 1.0, 0.75)),
+                opacity: Const(1.0),
+                emissive: Const(1.2),
+                noise_a: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(6.0), scroll: Const((0.0, 0.0)), strength: Const(0.6))),
+                rim: Some((color: Const((0.8, 0.95, 1.0, 0.6)), power: Const(3.0), intensity: Const(1.2))),
+                fill: Some((axis: Y, from: Const(0.0), to: Param("frost", [(0.0, 0.0), (1.0, 1.0)]), softness: Const(0.08))),
+            ),
+            shells: [(offset: 0.003)],
+            fade: (in: 0.2, out: 0.8),
+        )),
+    ],
+    preview: Some((stage: Capsule, params: [("frost", Float(0.5))])),
+)
+```
+
+Pale blue frost covering the model from the feet up to `frost` × its height (0 = none, 0.5 = up to the hips, 1 = all), with a soft edge and a still, crystalline noise. The game raises `frost` with `vfx.set_param(instance, "frost", value)`; smoothing 0.5 s makes it creep. The PARAMETERS tab's slider (or "animate") shows it rising.
+
 ## Design
 
 **Scale.** Everything is in world units and seconds. The editor camera starts 5 units from the origin and shows about ±2 units; `analyze_project` says when an effect is bigger. Size the effect to the user's game, not to the editor view.
@@ -1248,6 +1396,10 @@ Pick the stage that matches how the game uses the effect. The PREVIEW tab's targ
 | leaves a trail / should stay on the character | `simulation_space` (`Global` trails, `Local` follows) |
 | should grow / change with something in the game | a parameter (section "parameters") read with `Mix(..., Param("name"))`, a `rate` curve or a `visible` range |
 | should react to an event (hit, tick, swing) | a trigger: an `OnTrigger` burst layer or a pulse (section "triggers") |
+| the body itself should glow / change colour / look poisoned or frozen | a surface layer (section "surfaces"): colour, noise, rim |
+| the glow on the body is too thin / flat | more shells with larger offsets (1–4 cm), `blend: Add`, a stronger rim |
+| the pattern on the body is too busy / too coarse | noise `scale` (repeats per metre) and `strength`; slower `scroll` |
+| the model disappears under the effect | lower the surface colour's alpha / opacity, add noise, or use `blend: Add` |
 
 ## Game
 
@@ -1272,5 +1424,7 @@ vfx.trigger_at(instance, "hit", TriggerArgs::at(contact).with_direction(normal))
 Tell the user which parameter and trigger names (and value ranges) the game must use; the game maps its own rules to them. Unknown names are ignored with one warning. Parameter values survive hot reloads.
 
 One-shot packages (every root layer `OnStart` with a finite `cycle_count`) finish and clean up by themselves; looping ones run until `stop`. Despawning the target removes its instances (and sends `VfxFinished`). Sockets with a `node` need that node name in the target's hierarchy (section "attach"). Editing the package file while the game runs updates running instances (hot reload, when the game enables Bevy's file watcher).
+
+Surface layers draw on the meshes under the instance's target that belong to its own model (a weapon's glTF scene in the hand is skipped; mark other separate parts with `VfxSeparateModel`); spawn the package on the character's root entity. The effect shader is embedded in the library: the game adds no shader files.
 
 Built-in textures need nothing; other textures must exist at their path under the game's `assets/` folder (`import_asset` puts them there). JPG textures need Bevy's `jpeg` feature in the game. The game camera needs `Hdr` and `Bloom` for colors above 1.0 to glow. The game can also load `*.omagari.ron` projects directly.
