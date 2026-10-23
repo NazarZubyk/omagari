@@ -72,6 +72,10 @@ impl UiProvider for RenderModifierEditor {
         match self {
             RenderModifierEditor::SizeOverLifetime(n) => n.draw_ui(app, ui, index),
             RenderModifierEditor::ColorOverLifetime(n) => n.draw_ui(app, ui, index),
+            // Only v2 projects have these; the editor gets their UI when it
+            // switches to v2 (v1 effects always sample the texture and orient
+            // along velocity).
+            RenderModifierEditor::ParticleTexture(_) | RenderModifierEditor::Orient(_) => {}
         }
     }
 }

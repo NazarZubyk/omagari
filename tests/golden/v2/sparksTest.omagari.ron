@@ -1,0 +1,89 @@
+(
+    version: 2,
+    parameters: [],
+    triggers: [],
+    assets: [
+        (
+            id: "spark1",
+            kind: Texture((
+                path: "omagari://textures/spark1.png",
+                purpose: Sprite,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+    ],
+    fit: None,
+    layers: [
+        Particles((
+            name: "spark",
+            parent: None,
+            attach: Target,
+            simulation_space: Global,
+            play: Loop,
+            texture: Some("spark1"),
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 16384,
+                spawner: (
+                    count: Single(500.0),
+                    spawn_duration: Single(1.0),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Float(1.5),
+                    )),
+                    SetAttribute((
+                        attr: "size",
+                        attr_expr: Float(0.05),
+                    )),
+                    SetPositionSphere((
+                        center_expr: Vec3((0.0, 0.0, 0.0)),
+                        radius_expr: Float(0.2),
+                        dimension: Surface,
+                    )),
+                    SetVelocitySphere((
+                        center_expr: Vec3((0.0, 0.0, 0.0)),
+                        speed_expr: Float(2.0),
+                    )),
+                ],
+                update_modifiers: [
+                    AccelModifier((
+                        accel_expr: Operator(Subtract(Operator(Multiply(RandVec3, Vec3((2.0, 2.0, 2.0)))), Vec3((-0.0, -3.0, -0.0)))),
+                    )),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.0, (0.0, 4.0, 4.0, 0.0)),
+                                (0.1, (0.0, 4.0, 4.0, 1.0)),
+                                (0.3, (4.0, 4.0, 0.0, 1.0)),
+                                (0.6, (4.0, 0.0, 0.0, 0.0)),
+                                (1.0, (4.0, 0.0, 0.0, 0.0)),
+                            ],
+                        ),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+    ],
+    sockets: [],
+)

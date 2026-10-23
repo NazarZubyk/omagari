@@ -1,0 +1,257 @@
+(
+    version: 2,
+    parameters: [],
+    triggers: [],
+    assets: [
+        (
+            id: "cloud2",
+            kind: Texture((
+                path: "omagari://textures/cloud2.png",
+                purpose: Sprite,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+        (
+            id: "glow1",
+            kind: Texture((
+                path: "omagari://textures/glow1.png",
+                purpose: Sprite,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+    ],
+    fit: None,
+    layers: [
+        Particles((
+            name: "poison_mist",
+            parent: None,
+            attach: Target,
+            simulation_space: Global,
+            play: Loop,
+            texture: Some("cloud2"),
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 64,
+                spawner: (
+                    count: Single(24.0),
+                    spawn_duration: Single(1.0),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((
+                        attr: "age",
+                        attr_expr: Float(0.0),
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Operator(Uniform(Float(0.9), Float(1.3))),
+                    )),
+                    SetPositionCircle((
+                        center_expr: Operator(Vec3(Float(0.0), Operator(Uniform(Float(-0.75), Float(0.55))), Float(0.0))),
+                        axis_expr: Vec3((0.0, 1.0, 0.0)),
+                        radius_expr: Operator(Uniform(Float(0.28), Float(0.4))),
+                        dimension: Surface,
+                    )),
+                    SetVelocityTangent((
+                        origin_expr: Vec3((0.0, 0.0, 0.0)),
+                        axis_expr: Vec3((0.0, 1.0, 0.0)),
+                        speed_expr: Operator(Uniform(Float(0.25), Float(0.45))),
+                    )),
+                ],
+                update_modifiers: [
+                    AccelModifier((
+                        accel_expr: Vec3((0.0, 0.25, 0.0)),
+                    )),
+                    LinearDragModifier((
+                        drag_expr: Float(0.6),
+                    )),
+                ],
+                render_modifiers: [
+                    SizeOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.0, (0.22, 0.22, 0.22)),
+                                (1.0, (0.45, 0.45, 0.45)),
+                            ],
+                        ),
+                    )),
+                    ColorOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.0, (0.9, 0.12, 1.4, 0.0)),
+                                (0.25, (0.9, 0.12, 1.4, 0.3)),
+                                (0.7, (0.6, 0.08, 1.0, 0.2)),
+                                (1.0, (0.4, 0.05, 0.7, 0.0)),
+                            ],
+                        ),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+        Particles((
+            name: "poison_bubbles",
+            parent: None,
+            attach: Target,
+            simulation_space: Global,
+            play: Loop,
+            texture: Some("glow1"),
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 32,
+                spawner: (
+                    count: Single(16.0),
+                    spawn_duration: Single(1.0),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((
+                        attr: "age",
+                        attr_expr: Float(0.0),
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Operator(Uniform(Float(0.6), Float(1.0))),
+                    )),
+                    SetAttribute((
+                        attr: "size",
+                        attr_expr: Operator(Uniform(Float(0.04), Float(0.08))),
+                    )),
+                    SetPositionCircle((
+                        center_expr: Operator(Vec3(Float(0.0), Operator(Uniform(Float(-0.8), Float(0.5))), Float(0.0))),
+                        axis_expr: Vec3((0.0, 1.0, 0.0)),
+                        radius_expr: Operator(Uniform(Float(0.3), Float(0.42))),
+                        dimension: Surface,
+                    )),
+                    SetAttribute((
+                        attr: "velocity",
+                        attr_expr: Operator(Vec3(Operator(Uniform(Float(-0.12), Float(0.12))), Operator(Uniform(Float(0.35), Float(0.7))), Operator(Uniform(Float(-0.12), Float(0.12))))),
+                    )),
+                ],
+                update_modifiers: [
+                    AccelModifier((
+                        accel_expr: Operator(Vec3(Operator(Uniform(Float(-1.5), Float(1.5))), Float(0.0), Operator(Uniform(Float(-1.5), Float(1.5))))),
+                    )),
+                    LinearDragModifier((
+                        drag_expr: Float(1.0),
+                    )),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.0, (1.6, 0.25, 2.6, 0.0)),
+                                (0.15, (1.6, 0.25, 2.6, 0.9)),
+                                (0.85, (1.2, 0.18, 2.0, 0.8)),
+                                (1.0, (2.5, 0.6, 3.5, 0.0)),
+                            ],
+                        ),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+        Particles((
+            name: "poison_drips",
+            parent: None,
+            attach: Target,
+            simulation_space: Global,
+            play: Loop,
+            texture: Some("glow1"),
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 16,
+                spawner: (
+                    count: Single(6.0),
+                    spawn_duration: Single(1.0),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((
+                        attr: "age",
+                        attr_expr: Float(0.0),
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Operator(Uniform(Float(0.35), Float(0.5))),
+                    )),
+                    SetAttribute((
+                        attr: "size",
+                        attr_expr: Operator(Uniform(Float(0.03), Float(0.05))),
+                    )),
+                    SetPositionCircle((
+                        center_expr: Operator(Vec3(Float(0.0), Operator(Uniform(Float(-0.3), Float(0.4))), Float(0.0))),
+                        axis_expr: Vec3((0.0, 1.0, 0.0)),
+                        radius_expr: Float(0.36),
+                        dimension: Surface,
+                    )),
+                    SetAttribute((
+                        attr: "velocity",
+                        attr_expr: Vec3((0.0, -0.3, 0.0)),
+                    )),
+                ],
+                update_modifiers: [
+                    AccelModifier((
+                        accel_expr: Vec3((0.0, -6.0, 0.0)),
+                    )),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.0, (0.8, 0.1, 1.3, 0.0)),
+                                (0.1, (0.8, 0.1, 1.3, 0.9)),
+                                (0.8, (0.6, 0.08, 1.0, 0.8)),
+                                (1.0, (0.6, 0.08, 1.0, 0.0)),
+                            ],
+                        ),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+    ],
+    sockets: [],
+)

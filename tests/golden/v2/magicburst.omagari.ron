@@ -1,0 +1,104 @@
+(
+    version: 2,
+    parameters: [],
+    triggers: [],
+    assets: [
+        (
+            id: "spark3",
+            kind: Texture((
+                path: "omagari://textures/spark3.png",
+                purpose: Sprite,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+    ],
+    fit: None,
+    layers: [
+        Particles((
+            name: "Magic",
+            parent: None,
+            attach: Target,
+            simulation_space: Global,
+            play: OnStart,
+            texture: Some("spark3"),
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 16384,
+                spawner: (
+                    count: Single(2500.0),
+                    spawn_duration: Single(0.05),
+                    period: Single(0.0),
+                    cycle_count: 1,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((
+                        attr: "age",
+                        attr_expr: Float(0.0),
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Operator(Uniform(Float(0.6), Float(4.3))),
+                    )),
+                    SetPositionCircle((
+                        center_expr: Vec3((0.0, 0.0, 0.0)),
+                        axis_expr: Vec3((0.0, 1.0, 0.0)),
+                        radius_expr: Float(0.2),
+                        dimension: Surface,
+                    )),
+                    SetVelocityCircle((
+                        center_expr: Vec3((0.0, 0.0, 0.0)),
+                        axis_expr: Vec3((0.0, 1.0, 0.0)),
+                        speed_expr: Float(0.5),
+                    )),
+                    SetVelocityTangent((
+                        origin_expr: Vec3((0.0, 0.0, 0.0)),
+                        axis_expr: Vec3((0.0, 1.0, 0.0)),
+                        speed_expr: Operator(Uniform(Float(0.2), Float(1.0))),
+                    )),
+                ],
+                update_modifiers: [
+                    AccelModifier((
+                        accel_expr: Operator(Subtract(Operator(Multiply(RandVec3, Vec3((2.0, 2.0, 2.0)))), Vec3((1.0, 1.0, 1.0)))),
+                    )),
+                ],
+                render_modifiers: [
+                    SizeOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.3, (0.1, 0.1, 0.1)),
+                                (1.0, (1.0, 1.0, 1.0)),
+                            ],
+                        ),
+                    )),
+                    ColorOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.0, (0.0, 4.0, 4.0, 0.0)),
+                                (0.1, (0.0, 4.0, 4.0, 1.0)),
+                                (0.3, (4.0, 0.0, 0.0, 0.22)),
+                                (0.6, (4.0, 2.2, 4.15, 0.0)),
+                                (1.0, (4.0, 6.57, 4.35, 0.0)),
+                            ],
+                        ),
+                        blend: None,
+                        mask: None,
+                    )),
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+    ],
+    sockets: [],
+)

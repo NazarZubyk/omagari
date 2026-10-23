@@ -1,5 +1,11 @@
-//! The Omagari project format (`*.omagari.ron`): the serializable effect data
-//! model and `produce()`, which builds bevy_hanabi [`EffectAsset`]s from it.
+//! The Omagari project format: the serializable effect data model and
+//! `produce()`, which builds bevy_hanabi [`EffectAsset`]s from it.
+//!
+//! - [`ProjectV2`]: the current format (`*.omagari.ron` projects and
+//!   `*.vfx.ron` packages). [`ProjectV2::from_ron_str`] also reads v1 files and
+//!   migrates them ([`migrate_v1`]).
+//! - [`OmagariProject`]: the v1 format, still used by the editor and MCP until
+//!   they switch to v2.
 //!
 //! This module has no UI code. The editor's egui widgets for these types live
 //! in the `omagari` binary, so games can load and build projects with the
@@ -12,15 +18,21 @@ use serde::{Deserialize, Serialize};
 use crate::{ExportedEffect, ExportedProject};
 
 mod expr;
+pub mod hanabi_serde;
+mod migrate;
 mod modifiers;
 mod particles;
+mod project;
 
 pub use expr::*;
+pub use hanabi_serde::{CpuValueDef, SpawnerDef};
+pub use migrate::*;
 pub use modifiers::*;
 pub use particles::*;
+pub use project::*;
 
-/// An editor project: a list of particle effects, saved as `*.omagari.ron`.
-#[derive(Resource, Serialize, Deserialize, Default)]
+/// A v1 editor project: a list of particle effects, saved as `*.omagari.ron`.
+#[derive(Resource, Serialize, Deserialize, Default, Clone)]
 pub struct OmagariProject {
     pub effects: Vec<EffectEditor>,
 }

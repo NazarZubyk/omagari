@@ -6,6 +6,8 @@ use bevy_hanabi::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::hanabi_serde;
+
 pub const ALL_ATTRS: [(Attribute, &str); 39] = [
     (Attribute::ID, "ID"),
     (Attribute::PARTICLE_COUNTER, "Particle Counter"),
@@ -77,8 +79,8 @@ pub enum ExprOperatorEditor {
         ExprWriterEditor,
     ),
     Pack4x8UNorm(ExprWriterEditor),
-    Attr(Attribute),
-    ParentAttr(Attribute),
+    Attr(#[serde(with = "hanabi_serde::attribute")] Attribute),
+    ParentAttr(#[serde(with = "hanabi_serde::attribute")] Attribute),
     Normalized(ExprWriterEditor),
 }
 
@@ -144,6 +146,58 @@ impl ExprWriterEditor {
             ExprWriterEditor::Time => writer.time(),
             ExprWriterEditor::Placeholder => writer.lit(0.0),
             ExprWriterEditor::Age => writer.attr(Attribute::AGE),
+        }
+    }
+}
+
+impl Default for ExprWriterEditor {
+    fn default() -> Self {
+        ExprWriterEditor::Placeholder
+    }
+}
+
+impl ExprWriterEditor {
+    /// Smallest and largest value of a scalar expression, when they are known
+    /// without simulating (literals, random values and arithmetic on them).
+    pub fn scalar_range(&self) -> Option<(f32, f32)> {
+        match self {
+            ExprWriterEditor::Placeholder => Some((0.0, 0.0)),
+            ExprWriterEditor::Float(v) => Some((*v, *v)),
+            ExprWriterEditor::U32(v) => Some((*v as f32, *v as f32)),
+            ExprWriterEditor::RandFloat => Some((0.0, 1.0)),
+            ExprWriterEditor::Operator(op) => op.scalar_range(),
+            _ => None,
+        }
+    }
+}
+
+impl ExprOperatorEditor {
+    /// See [`ExprWriterEditor::scalar_range`].
+    pub fn scalar_range(&self) -> Option<(f32, f32)> {
+        let both = |a: &ExprWriterEditor, b: &ExprWriterEditor| Some((a.scalar_range()?, b.scalar_range()?));
+        match self {
+            ExprOperatorEditor::Uniform(a, b) => {
+                let ((a0, a1), (b0, b1)) = both(a, b)?;
+                Some((a0.min(b0), a1.max(b1)))
+            }
+            ExprOperatorEditor::Add(a, b) => {
+                let ((a0, a1), (b0, b1)) = both(a, b)?;
+                Some((a0 + b0, a1 + b1))
+            }
+            ExprOperatorEditor::Subtract(a, b) => {
+                let ((a0, a1), (b0, b1)) = both(a, b)?;
+                Some((a0 - b1, a1 - b0))
+            }
+            ExprOperatorEditor::Multiply(a, b) => {
+                let ((a0, a1), (b0, b1)) = both(a, b)?;
+                let products = [a0 * b0, a0 * b1, a1 * b0, a1 * b1];
+                Some((
+                    products.iter().copied().fold(f32::INFINITY, f32::min),
+                    products.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+                ))
+            }
+            ExprOperatorEditor::Sin(_) | ExprOperatorEditor::Cos(_) => Some((-1.0, 1.0)),
+            _ => None,
         }
     }
 }
