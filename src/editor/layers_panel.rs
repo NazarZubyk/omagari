@@ -39,7 +39,15 @@ pub fn layers_panel(ui: &mut egui::Ui, project: &ProjectV2, session: &mut Editor
                     session.actions.push(Action::AddParticlesLayer);
                     ui.close();
                 }
-                ui.add_enabled(false, egui::Button::new("Surface, shape, trail, light… (later phases)"));
+                if ui
+                    .button("🎨 Surface layer")
+                    .on_hover_text("Omagari's effect shader over the target's model (glowing skin, scrolling noise, rim, shells with volume)")
+                    .clicked()
+                {
+                    session.actions.push(Action::AddSurfaceLayer);
+                    ui.close();
+                }
+                ui.add_enabled(false, egui::Button::new("Shape, trail, light… (later phases)"));
             })
             .response
             .on_hover_text("Add a layer");
@@ -129,6 +137,7 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
         let icon = match layer {
             LayerDef::Particles(p) if p.parent.is_some() => "·✨",
             LayerDef::Particles(_) => "✨",
+            LayerDef::Surface(_) => "🎨",
         };
         let mut text = RichText::new(format!("{} {}", icon, name));
         if !shows {
@@ -139,6 +148,10 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
                 Some(parent) => format!("Particles layer, spawned by \"{}\". Right-click for more.", parent),
                 None => "Particles layer. Right-click for more.".to_string(),
             },
+            LayerDef::Surface(s) => format!(
+                "Surface layer: effect shader over the target's meshes, {} shell(s). Right-click for more.",
+                s.shells.len()
+            ),
         });
         if response.clicked() {
             session.actions.push(Action::SelectLayer(index));

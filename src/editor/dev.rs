@@ -69,6 +69,27 @@ pub struct DevOptions {
     pub focus: bool,
     /// `--backdrop light|dark|black`.
     pub backdrop: Option<Backdrop>,
+    /// `--orbit <yaw>,<pitch>,<distance>`: the orbit camera's angles
+    /// (degrees) and distance (metres) around its focus.
+    pub orbit: Option<(f32, f32, f32)>,
+    /// `--screenshot-crop <x>,<y>,<w>,<h>`: saves only this part of the
+    /// window (physical pixels), for close-ups.
+    pub crop: Option<(u32, u32, u32, u32)>,
+    /// `--stop-at <frame>`: stops the preview instance (like STOP) at this
+    /// frame, to check the fade out.
+    pub stop_at: Option<u32>,
+    /// `--fire <trigger>`: fires a trigger a few frames before the
+    /// screenshot.
+    pub fire: Option<String>,
+    /// `--focus-node <name>`: the orbit camera looks at this node of the
+    /// preview model (e.g. `mixamorig:Hips`) instead of the target.
+    pub focus_node: Option<String>,
+}
+
+/// Parses `a,b,c,...` into exactly `n` numbers.
+fn numbers<T: std::str::FromStr>(text: &str, n: usize) -> Option<Vec<T>> {
+    let values: Vec<T> = text.split(',').map(|v| v.trim().parse().ok()).collect::<Option<_>>()?;
+    (values.len() == n).then_some(values)
 }
 
 fn parse_tab(name: &str) -> Option<RightTab> {
@@ -167,6 +188,24 @@ impl DevOptions {
                     });
                 }
                 "--screenshot" => options.screenshot = Some(PathBuf::from(value()?)),
+                "--orbit" => {
+                    let text = value()?;
+                    let v = numbers::<f32>(&text, 3)
+                        .ok_or_else(|| format!("--orbit {}: use <yaw>,<pitch>,<distance>, e.g. 30,10,2.5", text))?;
+                    options.orbit = Some((v[0], v[1], v[2]));
+                }
+                "--screenshot-crop" => {
+                    let text = value()?;
+                    let v = numbers::<u32>(&text, 4)
+                        .ok_or_else(|| format!("--screenshot-crop {}: use <x>,<y>,<w>,<h> in pixels", text))?;
+                    options.crop = Some((v[0], v[1], v[2], v[3]));
+                }
+                "--stop-at" => {
+                    let text = value()?;
+                    options.stop_at = Some(text.parse().map_err(|_| format!("--stop-at {}: not a frame number", text))?);
+                }
+                "--fire" => options.fire = Some(value()?),
+                "--focus-node" => options.focus_node = Some(value()?),
                 "--screenshot-after" => {
                     let frames = value()?;
                     options.screenshot_after =
@@ -226,10 +265,45 @@ pub fn run_dev_options(
     mut res: ResMut<EffectResource>,
     mut model: ResMut<ModelPreview>,
     mut backdrop: ResMut<Backdrop>,
+    mut orbits: Query<&mut bevy_panorbit_camera::PanOrbitCamera>,
+    nodes: Query<(&Name, &GlobalTransform)>,
     mut frame: Local<u32>,
     mut exit: MessageWriter<AppExit>,
 ) {
     *frame += 1;
+    let at = options.screenshot_after.max(4);
+    if let Some((yaw, pitch, distance)) = options.orbit {
+        if *frame == 5 || *frame + 1 == at {
+            for mut orbit in orbits.iter_mut() {
+                orbit.target_yaw = yaw.to_radians();
+                orbit.target_pitch = pitch.to_radians();
+                orbit.target_radius = distance;
+                orbit.yaw = Some(orbit.target_yaw);
+                orbit.pitch = Some(orbit.target_pitch);
+                orbit.radius = Some(distance);
+                orbit.force_update = true;
+            }
+        }
+    }
+    if let Some(node) = &options.focus_node {
+        if *frame + 1 == at || *frame + 3 == at {
+            if let Some((_, global)) = nodes.iter().find(|(n, _)| n.as_str() == node) {
+                for mut orbit in orbits.iter_mut() {
+                    orbit.target_focus = global.translation();
+                    orbit.focus = global.translation();
+                    orbit.force_update = true;
+                }
+            }
+        }
+    }
+    if options.stop_at == Some(*frame) {
+        session.actions.push(Action::Stop);
+    }
+    if let Some(trigger) = &options.fire {
+        if *frame + 6 == at {
+            session.actions.push(Action::FireTrigger { name: trigger.clone(), random_point: false });
+        }
+    }
     if *frame == 3 {
         let opened = options.open_file_name().filter(|name| res.context.filename.as_ref() == Some(name));
         if let Some(name) = opened.filter(|_| options.import.is_empty()) {
@@ -256,7 +330,7 @@ pub fn run_dev_options(
         session.focus_camera = true;
     }
     let Some(path) = options.screenshot.clone() else { return };
-    let at = options.screenshot_after.max(4);
+    let crop = options.crop;
     if *frame == at {
         info!("dev: taking a screenshot to {}", path.display());
         commands
@@ -267,7 +341,13 @@ pub fn run_dev_options(
                     .clone()
                     .try_into_dynamic()
                     .map_err(|e| e.to_string())
-                    .and_then(|image| image.to_rgb8().save(&path).map_err(|e| e.to_string()));
+                    .and_then(|image| {
+                        let image = match crop {
+                            Some((x, y, w, h)) => image.crop_imm(x, y, w, h),
+                            None => image,
+                        };
+                        image.to_rgb8().save(&path).map_err(|e| e.to_string())
+                    });
                 match result {
                     Ok(()) => eprintln!("omagari: screenshot saved to {}", path.display()),
                     Err(e) => eprintln!("omagari: cannot save the screenshot {}: {}", path.display(), e),

@@ -8,10 +8,12 @@ use omagari::format::{LayerDef, ProjectV2};
 use super::assets::{assets_tab, TexturePreviews};
 use super::camera::PreviewCamera;
 use super::effect::draw_particles_layer;
+use super::surface::draw_surface_layer;
 use super::model::ModelPreview;
 use super::model_panel::{hierarchy_tab, model_section, target_model_info};
 use super::package::{motion_panel, sockets_and_fit_panel};
 use super::params_panel::{parameters_tab, triggers_tab};
+use super::hints;
 use super::problems::{message_list, subject_box, ACCENT};
 use super::scene::{Backdrop, Stage};
 use super::session::{EditorSession, RightTab};
@@ -48,7 +50,10 @@ pub fn right_panel(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| match session.tab {
-            RightTab::Layer => layer_tab(ui, project, session, app),
+            RightTab::Layer => {
+                let info = target_model_info(project, game_assets);
+                layer_tab(ui, project, session, app, info.as_deref())
+            }
             RightTab::SocketsFit => {
                 let info = target_model_info(project, game_assets);
                 sockets_and_fit_panel(ui, project, model, info.as_deref());
@@ -75,7 +80,13 @@ pub fn right_panel(
         });
 }
 
-fn layer_tab(ui: &mut egui::Ui, project: &mut ProjectV2, session: &mut EditorSession, app: &mut AppContext) {
+fn layer_tab(
+    ui: &mut egui::Ui,
+    project: &mut ProjectV2,
+    session: &mut EditorSession,
+    app: &mut AppContext,
+    model: Option<&crate::model_info::ModelInfo>,
+) {
     let Some(index) = session.selected.filter(|&i| i < project.layers.len()) else {
         ui.add_space(8.0);
         ui.label(RichText::new("Select a layer on the left, or ➕ ADD one.").weak());
@@ -94,6 +105,18 @@ fn layer_tab(ui: &mut egui::Ui, project: &mut ProjectV2, session: &mut EditorSes
             subject_box(ui, session, &name);
             ui.add_space(4.0);
             draw_particles_layer(layer, assets, parameters, app, ui, index as u64);
+        }
+        LayerDef::Surface(layer) => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🎨 SURFACE LAYER").color(ACCENT).strong()).on_hover_text(hints::SURFACE);
+                if !session.view.shows(&name) {
+                    ui.label(RichText::new("(hidden in the preview)").weak());
+                }
+            });
+            ui.label(RichText::new(hints::SURFACE).weak().small());
+            subject_box(ui, session, &name);
+            ui.add_space(4.0);
+            draw_surface_layer(layer, assets, parameters, app, ui, index as u64, model);
         }
     }
 }

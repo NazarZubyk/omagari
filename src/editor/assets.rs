@@ -23,7 +23,7 @@ use bevy_egui::{EguiTextureHandle, EguiUserTextures};
 use image::RgbaImage;
 use omagari::format::{
     builtin_texture_path, AssetKind, ChannelDef, ProjectV2, TextureColorSpace, TextureFilter, TexturePurpose,
-    TextureWrap, PARTICLE_TEXTURES,
+    TextureWrap, BUILTIN_NOISE_TEXTURE, PARTICLE_TEXTURES,
 };
 
 use super::actions::Action;
@@ -413,17 +413,21 @@ pub fn assets_tab(
             session.actions.push(Action::OpenImportDialog);
         }
         ui.menu_button("➕ BUILT-IN", |ui| {
-            for builtin in PARTICLE_TEXTURES.iter() {
-                let path = builtin_texture_path(builtin.filename);
+            let labels = PARTICLE_TEXTURES
+                .iter()
+                .map(|t| (t.filename, t.ui_label))
+                .chain(std::iter::once((BUILTIN_NOISE_TEXTURE, "Noise")));
+            for (filename, ui_label) in labels {
+                let path = builtin_texture_path(filename);
                 let present = project.assets.iter().any(|a| library::texture_path(a) == path);
-                let button = egui::Button::new(format!("{} ({})", builtin.ui_label, builtin.filename));
+                let button = egui::Button::new(format!("{} ({})", ui_label, filename));
                 let response = ui.add_enabled(!present, button).on_hover_text(if present {
                     "Already in this project"
                 } else {
                     "Built into Omagari: the game needs no file"
                 });
                 if response.clicked() {
-                    session.actions.push(Action::AddBuiltinTexture(builtin.filename.to_string()));
+                    session.actions.push(Action::AddBuiltinTexture(filename.to_string()));
                     ui.close();
                 }
             }

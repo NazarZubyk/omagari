@@ -120,6 +120,27 @@ pub fn apply_preview_commands(
                         let id = project.layers.get(layer.layer_index)?.as_particles()?.texture.as_ref()?;
                         Some((layer.texture.clone()?, project.texture(id)?.clone()))
                     })
+                    .chain(package.surface_layers.iter().flat_map(|layer| {
+                        let slots = layer.def.material.texture_slots();
+                        // `textures` holds noise A, noise B, mask; the slots
+                        // list only the parts that are on, in that order.
+                        let on = [
+                            layer.def.material.noise_a.is_some(),
+                            layer.def.material.noise_b.is_some(),
+                            layer.def.material.mask.is_some(),
+                        ];
+                        let mut slots = slots.into_iter();
+                        let mut pairs = Vec::new();
+                        for (handle, on) in layer.textures.iter().zip(on) {
+                            let slot = if on { slots.next() } else { None };
+                            if let (Some(handle), Some((_, slot))) = (handle, slot) {
+                                if let Some(def) = project.texture(&slot.asset) {
+                                    pairs.push((handle.clone(), def.clone()));
+                                }
+                            }
+                        }
+                        pairs
+                    }))
                     .collect();
                 // The previous package is dropped with its handle once its
                 // instances are gone.

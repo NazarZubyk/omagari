@@ -26,6 +26,7 @@ pub mod scene;
 pub mod session;
 pub mod settings_panel;
 pub mod shortcuts;
+pub mod surface;
 pub mod toolbar;
 pub mod ui;
 
