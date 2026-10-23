@@ -389,3 +389,28 @@ fn hanabi_contexts_are_enforced() {
     assert_eq!(burst.preset(), Some(SpawnerPreset::Burst));
     assert_eq!(SpawnerDef::default().preset(), Some(SpawnerPreset::Rate));
 }
+
+/// The Position preset "random point on segment with radius" builds for a
+/// Segment layer: it reads both runtime segment properties and bevy_hanabi
+/// generates its shaders.
+#[test]
+fn segment_with_radius_preset_generates_shaders() {
+    let mut layer = ParticlesLayerDef {
+        name: "blade".into(),
+        attach: AttachDef::Segment { from: "base".into(), to: "tip".into() },
+        ..default()
+    };
+    layer.effect.init_modifiers.push(ModifierEditor::SetAttribute(segment_point_with_radius(0.05)));
+    let mut project = ProjectV2::default();
+    project.layers.push(LayerDef::Particles(layer.clone()));
+    let mut warnings = Vec::new();
+    let effect = layer.produce_in(&project, &mut warnings);
+    assert!(warnings.is_empty(), "{:?}", warnings);
+    let reads = layer.effect.properties_read();
+    assert!(reads.iter().any(|p| p == "segment_a") && reads.iter().any(|p| p == "segment_b"), "{:?}", reads);
+    let properties: Vec<&str> = effect.properties().iter().map(|p| p.name()).collect();
+    assert!(properties.contains(&"segment_a") && properties.contains(&"segment_b"), "{:?}", properties);
+    if let Err(e) = EffectShaderSources::generate(&effect, None, 0) {
+        panic!("shader generation failed: {}", e);
+    }
+}

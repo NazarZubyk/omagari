@@ -343,7 +343,7 @@ impl ProjectV2 {
     }
 
     /// Renames the trigger `from` to `to` and every reference to it (`play:
-    /// OnTrigger`, preview auto triggers). Fails when `to` is empty or taken,
+    /// OnTrigger`, preview auto and animation triggers). Fails when `to` is empty or taken,
     /// or `from` does not exist.
     pub fn rename_trigger(&mut self, from: &str, to: &str) -> Result<(), String> {
         let to = to.trim();
@@ -371,7 +371,7 @@ impl ProjectV2 {
             }
         }
         if let Some(preview) = &mut self.preview {
-            for (name, _) in preview.auto_triggers.iter_mut() {
+            for (name, _) in preview.auto_triggers.iter_mut().chain(preview.animation_triggers.iter_mut()) {
                 if name == from {
                     *name = to.to_string();
                 }
@@ -1078,21 +1078,54 @@ impl ParticlesLayerDef {
 // --- editor preview ----------------------------------------------------------
 
 /// Editor-only preview settings.
+///
+/// The model fields (P3) are written only when they are not their default,
+/// so older files and editors are unaffected.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct PreviewDef {
     pub stage: PreviewStage,
     pub camera: PreviewCamera,
-    /// glTF model path (game assets folder).
+    /// glTF model of the `Model` stage (`.glb` / `.gltf`, path in the game
+    /// assets folder). Without one the stage shows the capsule.
     pub model: Option<String>,
+    /// Animation clip: its name in the glTF file (`Gltf::named_animations`,
+    /// e.g. Mixamo's `"mixamo.com"`) or `"Animation<index>"`.
     pub animation: Option<String>,
     pub animation_speed: f32,
-    /// Node of the model the preview instance is attached to.
+    /// Node of the target model the preview instance is attached to (the
+    /// game's target entity); `None` = the target model's root.
     pub attach_to: Option<String>,
     pub params: Vec<(String, ParamValue)>,
     pub motion: Option<PreviewMotion>,
     /// `(trigger, every N seconds)`.
     pub auto_triggers: Vec<(String, f32)>,
+    /// Height of the preview target (the game's entity root) above the
+    /// model's origin, metres: the model is placed this much below the target
+    /// (e.g. 0.9 for a player root 0.9 m above the feet). 0 = the target is
+    /// the model's origin.
+    #[serde(skip_serializing_if = "is_default")]
+    pub root_height: f32,
+    /// glTF file the animation clip is taken from (game assets folder), e.g.
+    /// a Mixamo clip exported without skin; `None` = the model's own file.
+    /// Clips play on nodes with the same names (no retargeting).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub animation_file: Option<String>,
+    /// `(trigger, clip time in seconds)`: fired each time the animation
+    /// passes that time (every loop), e.g. at the hit frame of a swing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub animation_triggers: Vec<(String, f32)>,
+    /// Which preview model is the instance target; `attach_to` names a node
+    /// of that model.
+    #[serde(skip_serializing_if = "is_default")]
+    pub target: PreviewTargetModel,
+    /// A second model (a weapon) attached to a node of the first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<PreviewWeaponDef>,
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 impl Default for PreviewDef {
@@ -1107,7 +1140,78 @@ impl Default for PreviewDef {
             params: Vec::new(),
             motion: None,
             auto_triggers: Vec::new(),
+            root_height: 0.0,
+            animation_file: None,
+            animation_triggers: Vec::new(),
+            target: PreviewTargetModel::Body,
+            weapon: None,
         }
+    }
+}
+
+impl PreviewDef {
+    /// The glTF file the animation clip comes from: `animation_file`, else
+    /// the model.
+    pub fn animation_source(&self) -> Option<&str> {
+        self.animation_file.as_deref().or(self.model.as_deref())
+    }
+
+    /// Whether the stage shows a model (`Model` with a model path).
+    pub fn shows_model(&self) -> bool {
+        self.stage == PreviewStage::Model && self.model.is_some()
+    }
+}
+
+/// The preview model the instance is attached to.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PreviewTargetModel {
+    /// The character (`model`, or the capsule).
+    #[default]
+    Body,
+    /// The weapon model (`weapon`).
+    Weapon,
+}
+
+/// A second preview model (a weapon) held by a node of the first, e.g.
+/// `(model: "weapons/sword.glb", node: Some("mixamorig:RightHand"))`.
+/// The weapon is a separate model: effects on the body do not cover it.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct PreviewWeaponDef {
+    /// glTF file in the game assets folder.
+    pub model: String,
+    /// Node of the body model that holds it; `None` = the preview target.
+    pub node: Option<String>,
+    /// Local offset from the node, metres (in the node's axes, ignoring the
+    /// node's scale).
+    pub offset: Vec3,
+    /// Local rotation, degrees (X, then Y, then Z).
+    pub rotation: Vec3,
+    /// Uniform scale.
+    pub scale: f32,
+}
+
+impl Default for PreviewWeaponDef {
+    fn default() -> Self {
+        PreviewWeaponDef {
+            model: String::new(),
+            node: None,
+            offset: Vec3::ZERO,
+            rotation: Vec3::ZERO,
+            scale: 1.0,
+        }
+    }
+}
+
+impl PreviewWeaponDef {
+    /// The weapon's rotation from `rotation` (degrees, XYZ).
+    pub fn quat(&self) -> Quat {
+        Quat::from_euler(
+            EulerRot::XYZ,
+            self.rotation.x.to_radians(),
+            self.rotation.y.to_radians(),
+            self.rotation.z.to_radians(),
+        )
     }
 }
 
@@ -1117,7 +1221,9 @@ pub enum PreviewStage {
     Air,
     Floor,
     Object,
+    /// A 0.7 × 1.8 m capsule (origin at its centre) standing on the floor.
     Capsule,
+    /// `preview.model` standing on the floor (the capsule without a model).
     Model,
 }
 
@@ -1182,6 +1288,49 @@ impl PreviewMotion {
 mod tests {
     use super::*;
     use crate::format::*;
+
+    /// The P3 preview fields default when missing and are written only when
+    /// set, so older files (and the goldens) are unchanged.
+    #[test]
+    fn preview_model_fields_default_and_round_trip() {
+        let old: ProjectV2 = ProjectV2::from_ron_str(r#"(version: 2, preview: Some((stage: Model, model: Some("a.glb"))))"#).unwrap();
+        let preview = old.preview.clone().unwrap();
+        assert_eq!(preview.root_height, 0.0);
+        assert_eq!(preview.animation_file, None);
+        assert!(preview.animation_triggers.is_empty());
+        assert_eq!(preview.target, PreviewTargetModel::Body);
+        assert_eq!(preview.weapon, None);
+        assert_eq!(preview.animation_source(), Some("a.glb"));
+        assert!(preview.shows_model());
+        let text = old.to_ron_string().unwrap();
+        for field in ["root_height", "animation_file", "animation_triggers", "target", "weapon"] {
+            assert!(!text.contains(field), "{} written: {}", field, text);
+        }
+
+        let full = r#"(version: 2, preview: Some((
+            stage: Model, model: Some("anim/tpose.glb"), root_height: 0.9,
+            animation: Some("mixamo.com"), animation_file: Some("anim/run.glb"),
+            animation_triggers: [("swing", 0.3)], attach_to: Some("Grip"), target: Weapon,
+            weapon: Some((model: "sword.glb", node: Some("mixamorig:RightHand"), rotation: (0.0, 90.0, 0.0))),
+        )))"#;
+        let project = ProjectV2::from_ron_str(full).unwrap();
+        let preview = project.preview.clone().unwrap();
+        assert_eq!(preview.animation_source(), Some("anim/run.glb"));
+        let weapon = preview.weapon.clone().unwrap();
+        assert_eq!((weapon.scale, weapon.offset), (1.0, Vec3::ZERO), "weapon defaults");
+        assert!((weapon.quat() * Vec3::X - Vec3::NEG_Z).length() < 1e-5, "90° around Y");
+        let again = ProjectV2::from_ron_str(&project.to_ron_string().unwrap()).unwrap();
+        assert_eq!(again.preview, project.preview);
+        assert!(!PreviewDef { stage: PreviewStage::Capsule, model: Some("a.glb".into()), ..default() }.shows_model());
+
+        // Renaming a trigger renames the preview's animation triggers.
+        let mut project = ProjectV2::from_ron_str(
+            r#"(version: 2, triggers: [(name: "swing")], preview: Some((animation_triggers: [("swing", 0.3)])))"#,
+        )
+        .unwrap();
+        project.rename_trigger("swing", "slash").unwrap();
+        assert_eq!(project.preview.unwrap().animation_triggers, vec![("slash".to_string(), 0.3)]);
+    }
 
     #[test]
     fn preview_motion_paths() {

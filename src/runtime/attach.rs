@@ -78,10 +78,10 @@ pub fn local_scale(world: Vec3, parent: Vec3) -> Vec3 {
     Vec3::new(div(world.x, parent.x), div(world.y, parent.y), div(world.z, parent.z))
 }
 
-/// Height (world Y extent) of local boxes `(min, max)` placed by their
+/// World bounds `(min, max)` of local boxes `(min, max)` placed by their
 /// transforms. `None` without boxes.
-pub fn world_height(boxes: impl IntoIterator<Item = (Vec3, Vec3, GlobalTransform)>) -> Option<f32> {
-    let mut range: Option<(f32, f32)> = None;
+pub fn world_bounds(boxes: impl IntoIterator<Item = (Vec3, Vec3, GlobalTransform)>) -> Option<(Vec3, Vec3)> {
+    let mut range: Option<(Vec3, Vec3)> = None;
     for (min, max, transform) in boxes {
         for i in 0..8 {
             let corner = Vec3::new(
@@ -89,14 +89,20 @@ pub fn world_height(boxes: impl IntoIterator<Item = (Vec3, Vec3, GlobalTransform
                 if i & 2 == 0 { min.y } else { max.y },
                 if i & 4 == 0 { min.z } else { max.z },
             );
-            let y = transform.transform_point(corner).y;
+            let p = transform.transform_point(corner);
             range = Some(match range {
-                None => (y, y),
-                Some((lo, hi)) => (lo.min(y), hi.max(y)),
+                None => (p, p),
+                Some((lo, hi)) => (lo.min(p), hi.max(p)),
             });
         }
     }
-    range.map(|(lo, hi)| hi - lo)
+    range
+}
+
+/// Height (world Y extent) of local boxes `(min, max)` placed by their
+/// transforms. `None` without boxes.
+pub fn world_height(boxes: impl IntoIterator<Item = (Vec3, Vec3, GlobalTransform)>) -> Option<f32> {
+    world_bounds(boxes).map(|(lo, hi)| hi.y - lo.y)
 }
 
 /// World position of a socket on `node`: the node's position plus the offset
@@ -105,6 +111,15 @@ pub fn world_height(boxes: impl IntoIterator<Item = (Vec3, Vec3, GlobalTransform
 pub fn socket_world_position(node: &GlobalTransform, instance_scale: Vec3, offset: Vec3) -> Vec3 {
     let (_, rotation, translation) = node.to_scale_rotation_translation();
     translation + rotation * (offset * instance_scale)
+}
+
+/// The socket offset that puts a socket on `node` at `world`: the inverse
+/// of [`socket_world_position`] (used to drag sockets in the editor).
+pub fn socket_offset_for(node: &GlobalTransform, instance_scale: Vec3, world: Vec3) -> Vec3 {
+    let (_, rotation, translation) = node.to_scale_rotation_translation();
+    let local = rotation.inverse() * (world - translation);
+    let div = |v: f32, s: f32| if s.abs() > 1e-6 { v / s } else { v };
+    Vec3::new(div(local.x, instance_scale.x), div(local.y, instance_scale.y), div(local.z, instance_scale.z))
 }
 
 /// A world position in a layer's simulation space, the space position
@@ -401,8 +416,9 @@ pub struct FitState {
 }
 
 /// Local bounds `(min, max)` of a mesh entity: its `Aabb` when Bevy computed
-/// one, else from the mesh asset.
-fn mesh_bounds(aabb: Option<&Aabb>, mesh: Option<&Mesh>) -> Option<(Vec3, Vec3)> {
+/// one (skinned glTF meshes get one that follows the animation), else from
+/// the mesh asset.
+pub fn mesh_bounds(aabb: Option<&Aabb>, mesh: Option<&Mesh>) -> Option<(Vec3, Vec3)> {
     if let Some(aabb) = aabb {
         return Some((Vec3::from(aabb.min()), Vec3::from(aabb.max())));
     }
@@ -525,6 +541,8 @@ mod tests {
         .unwrap();
         // From y = 0 to y = 3.
         assert!((h - 3.0).abs() < 1e-5, "{}", h);
+        let (lo, hi) = world_bounds([(unit.0, unit.1, GlobalTransform::from_xyz(1.0, 0.5, 0.0))]).unwrap();
+        assert!((lo - Vec3::new(0.5, 0.0, -0.5)).length() < 1e-5 && (hi - Vec3::new(1.5, 1.0, 0.5)).length() < 1e-5);
     }
 
     #[test]
@@ -538,6 +556,11 @@ mod tests {
         // turns with the node (+X becomes +Y).
         let p = socket_world_position(&node, Vec3::splat(2.0), Vec3::X);
         assert!((p - Vec3::new(1.0, 4.0, 0.0)).length() < 1e-5, "{}", p);
+        // Dragging a socket to a world point gives back the offset.
+        let offset = Vec3::new(0.3, -0.2, 0.5);
+        let world = socket_world_position(&node, Vec3::new(2.0, 1.0, 0.5), offset);
+        let back = socket_offset_for(&node, Vec3::new(2.0, 1.0, 0.5), world);
+        assert!((back - offset).length() < 1e-5, "{}", back);
 
         let layer = GlobalTransform::from(Transform::from_xyz(1.0, 0.0, 0.0).with_scale(Vec3::splat(2.0)));
         let local = to_simulation_space(Vec3::new(3.0, 2.0, 0.0), &layer, SimulationSpaceDef::Local);
