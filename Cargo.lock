@@ -4323,6 +4323,7 @@ dependencies = [
  "bevy_egui",
  "bevy_hanabi",
  "bevy_panorbit_camera",
+ "gltf",
  "image",
  "rand 0.9.5",
  "regex",

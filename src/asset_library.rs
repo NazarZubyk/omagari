@@ -390,7 +390,14 @@ pub fn extract_channel_asset(
 /// size in bytes), sorted; hidden folders are skipped and at most `limit`
 /// files are listed.
 pub fn scan_textures(game_root: &Path, limit: usize) -> Vec<(String, u64)> {
-    fn walk(dir: &Path, root: &Path, depth: usize, limit: usize, out: &mut Vec<(String, u64)>) {
+    scan_files(game_root, limit, is_texture_file)
+}
+
+/// Files under the game assets folder that `keep` accepts: relative paths
+/// with `/` and sizes in bytes, sorted, hidden entries skipped, at most
+/// `limit`.
+pub fn scan_files(game_root: &Path, limit: usize, keep: fn(&Path) -> bool) -> Vec<(String, u64)> {
+    fn walk(dir: &Path, root: &Path, depth: usize, limit: usize, keep: fn(&Path) -> bool, out: &mut Vec<(String, u64)>) {
         let Ok(entries) = fs::read_dir(dir) else { return };
         let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
         entries.sort_by_key(|e| e.file_name());
@@ -405,9 +412,9 @@ pub fn scan_textures(game_root: &Path, limit: usize) -> Vec<(String, u64)> {
             }
             if path.is_dir() {
                 if depth < 8 {
-                    walk(&path, root, depth + 1, limit, out);
+                    walk(&path, root, depth + 1, limit, keep, out);
                 }
-            } else if is_texture_file(&path) {
+            } else if keep(&path) {
                 if let Ok(relative) = path.strip_prefix(root) {
                     let relative = relative.to_string_lossy().replace('\\', "/");
                     out.push((relative, entry.metadata().map(|m| m.len()).unwrap_or(0)));
@@ -416,7 +423,7 @@ pub fn scan_textures(game_root: &Path, limit: usize) -> Vec<(String, u64)> {
         }
     }
     let mut out = Vec::new();
-    walk(game_root, game_root, 0, limit, &mut out);
+    walk(game_root, game_root, 0, limit, keep, &mut out);
     out
 }
 
