@@ -1,0 +1,40 @@
+// P4 demo (guide recipe "Energy shell"): three additive shells 0.5, 2 and
+// 3.5 cm outside the Y Bot's skin give a cyan energy field with thickness.
+// The preview uses anim/tpose.glb running with anim/run.glb (the MODEL stage
+// shows the capsule without those files).
+(
+    version: 2,
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Surface((
+            name: "energy",
+            targets: AllMeshes,
+            material: (
+                blend: Add,
+                color: Const((0.2, 0.8, 2.0, 0.5)),
+                opacity: Const(1.0),
+                emissive: Const(1.5),
+                noise_a: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(4.0), scroll: Const((0.1, 0.6)), strength: Const(0.9), contrast: Const(2.0))),
+                noise_b: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(1.5), scroll: Const((0.0, -0.3)), strength: Const(0.5))),
+                rim: Some((color: Const((0.5, 1.5, 3.0, 0.6)), power: Const(1.5), intensity: Const(1.5))),
+                pulse: Some((frequency: Const(1.2), amount: Const(0.3))),
+            ),
+            shells: [
+                (offset: 0.004, opacity: 0.7),
+                (offset: 0.016, opacity: 0.4, noise_offset: 0.37),
+                (offset: 0.03, opacity: 0.2, noise_offset: 0.74),
+            ],
+            fade: (in: 0.25, out: 0.5),
+        )),
+    ],
+    preview: Some((
+        stage: Model,
+        camera: Game,
+        model: Some("anim/tpose.glb"),
+        animation: Some("mixamo.com"),
+        animation_speed: 1.0,
+        motion: Some(Circle(radius: 3.0, speed: 3.6)),
+        root_height: 0.9,
+        animation_file: Some("anim/run.glb"),
+    )),
+)
