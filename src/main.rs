@@ -15,21 +15,17 @@ use bevy_egui::{
 use bevy_hanabi::prelude::*;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
-use ron::ser::PrettyConfig;
+use omagari::format::*;
 use std::fs::File;
 use std::io::Write;
 
 mod controller;
-mod effect;
-mod expr;
-mod helpers;
+mod editor;
 mod mcp;
-mod modifiers;
 
 use crate::controller::*;
-use crate::effect::*;
-use crate::expr::*;
-use crate::helpers::*;
+use crate::editor::helpers::*;
+use crate::editor::AppContext;
 
 fn main() {
     // `omagari --mcp` runs the headless MCP server for AI agents instead of the editor.
@@ -429,13 +425,6 @@ fn poll_preview_requests(
     }
 }
 
-#[derive(Default)]
-struct AppContext {
-    expr_clipboard: Option<ExprWriterEditor>,
-    visible_effects: Vec<String>,
-    filename: Option<String>,
-}
-
 fn app_ui(
     mut commands: Commands,
     mut contexts: EguiContexts,
@@ -550,11 +539,7 @@ fn app_ui(
                         .add_enabled(filename_okay, egui::Button::new("⮋ SAVE"))
                         .clicked()
                     {
-                        let ron_string = ron::ser::to_string_pretty(
-                            *project.clone().borrow(),
-                            PrettyConfig::new().new_line("\n".to_string()),
-                        )
-                        .unwrap();
+                        let ron_string = project.borrow().to_ron_string().unwrap();
 
                         let file_path = Folder::SavedEffects.full_file_path(filename);
                         if let Ok(mut file) = File::create(file_path) {

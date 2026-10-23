@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::controller::{Folder, OmagariProject};
+use omagari::format::{OmagariProject, PARTICLE_TEXTURES};
+
+use crate::controller::Folder;
 
 pub mod analysis;
 
@@ -404,7 +406,7 @@ fn read(path: &Path) -> Result<String, String> {
 }
 
 fn parse_project(text: &str) -> Result<OmagariProject, String> {
-    ron::from_str::<OmagariProject>(text).map_err(|e| format!("RON parse error: {}", e))
+    OmagariProject::from_ron_str(text).map_err(|e| format!("RON parse error: {}", e))
 }
 
 fn load_from_args(args: &Value) -> Result<(OmagariProject, String), String> {
@@ -425,7 +427,7 @@ fn texture_list(project: &OmagariProject) -> String {
         .iter()
         .filter_map(|e| e.texture_index())
         .map(|t| {
-            let file = crate::effect::PARTICLE_TEXTURES
+            let file = PARTICLE_TEXTURES
                 .get(t)
                 .map(|t| t.filename)
                 .unwrap_or("?");

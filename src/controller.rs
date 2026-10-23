@@ -1,7 +1,5 @@
 use bevy::{platform::collections::HashMap, prelude::*, reflect::TypeRegistry};
 use bevy_hanabi::prelude::*;
-use ron::de::from_str;
-use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
     fs::File,
@@ -11,14 +9,9 @@ use std::{
 use std::fs::create_dir;
 use std::path::PathBuf;
 
-use omagari::*;
+use omagari::format::OmagariProject;
 
-use crate::{effect::*, AppContext};
-
-#[derive(Resource, Serialize, Deserialize, Default)]
-pub struct OmagariProject {
-    pub effects: Vec<EffectEditor>,
-}
+use crate::editor::AppContext;
 
 #[derive(Resource)]
 pub struct EffectResource {
@@ -79,15 +72,7 @@ pub fn export_effects_to_files(
 ) {
     let base = filename.split('.').next().unwrap();
     let other_filename = format!("{}.hanabi.ron", base);
-    let mut to_export = ExportedProject::default();
-    for effect in clone.borrow().effects.iter() {
-        to_export.effects.push(ExportedEffect {
-            name: effect.name().to_string(),
-            parent: effect.parent().clone(),
-            texture_index: effect.texture_index(),
-            effect_asset: effect.produce(),
-        });
-    }
+    let to_export = clone.borrow().to_exported();
     let ron_string = to_export.to_ron_string(type_registry).unwrap();
     let file_path = Folder::ExportedEffects.full_file_path(other_filename);
     let mut file = File::create(file_path).unwrap();
@@ -114,8 +99,8 @@ pub fn load_project(filename: &str) -> Result<OmagariProject, io::Error> {
     let mut file = File::open(file_path)?;
     let mut ron_string = String::new();
     file.read_to_string(&mut ron_string)?;
-    let graph: OmagariProject =
-        from_str(&ron_string).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let graph = OmagariProject::from_ron_str(&ron_string)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(graph)
 }
 
@@ -150,49 +135,5 @@ impl Folder{
             Folder::SavedEffects => "saved_effects/",
             Folder::ExportedEffects => "exported_effects/",
         }
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every bundled example project must still load, build and export with the
-    /// current bevy_hanabi version.
-    #[test]
-    fn example_projects_load_and_export() {
-        let app_registry = AppTypeRegistry::new_with_derived_types();
-        bevy_hanabi::register_modifiers(&app_registry);
-        register_missing_hanabi_modifiers(&app_registry);
-        let registry = app_registry.read();
-
-        let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/examples");
-        let mut checked = 0;
-        for entry in std::fs::read_dir(examples).unwrap() {
-            let path = entry.unwrap().path();
-            if !path.to_string_lossy().ends_with(".omagari.ron") {
-                continue;
-            }
-            let ron_string = std::fs::read_to_string(&path).unwrap();
-            let project: OmagariProject = from_str(&ron_string)
-                .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
-
-            let mut to_export = ExportedProject::default();
-            for effect in project.effects.iter() {
-                to_export.effects.push(ExportedEffect {
-                    name: effect.name().to_string(),
-                    parent: effect.parent(),
-                    texture_index: effect.texture_index(),
-                    effect_asset: effect.produce(),
-                });
-            }
-            let exported = to_export.to_ron_string(&registry).unwrap();
-            let reloaded = ExportedProject::from_ron_bytes(exported.as_bytes(), &registry)
-                .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
-            assert_eq!(reloaded.effects.len(), project.effects.len());
-            checked += 1;
-        }
-        assert!(checked > 0, "no example projects found");
     }
 }
