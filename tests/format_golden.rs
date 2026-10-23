@@ -1,7 +1,7 @@
 //! Golden tests for the project format in `omagari::format`.
 //!
-//! `tests/golden/` holds, for every bundled example (`examples/`) and every
-//! frozen input (`tests/golden/inputs/`):
+//! `tests/golden/` holds, for every frozen v1 input (`tests/golden/inputs/`:
+//! v1 copies of the bundled examples plus two saved projects):
 //! - `<name>.hanabi.ron`: the export, built with `produce()`;
 //! - `<name>.resaved.omagari.ron`: the project as the editor saves it.
 //!
@@ -9,6 +9,9 @@
 //! library, so any change in produced effects or in the `*.omagari.ron` format
 //! shows up here. Run with `OMAGARI_UPDATE_GOLDEN=1` to rewrite them after an
 //! intended change.
+//!
+//! The bundled examples (`examples/`) are the migrated v2 goldens
+//! (`tests/golden/v2/<name>.omagari.ron`) of their v1 inputs.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,7 +25,7 @@ const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 /// (name, path) of every project with goldens.
 fn inputs() -> Vec<(String, PathBuf)> {
     let mut inputs = Vec::new();
-    for dir in ["examples", "tests/golden/inputs"] {
+    for dir in ["tests/golden/inputs"] {
         for entry in fs::read_dir(Path::new(ROOT).join(dir)).unwrap() {
             let path = entry.unwrap().path();
             let file = path.file_name().unwrap().to_string_lossy().to_string();
@@ -260,4 +263,31 @@ fn v2_wrong_list_modifier_warns() {
     assert!(warnings[1].contains("InheritAttribute cannot be used in the update list"));
     assert_eq!(effect.init_modifiers().count(), 0);
     assert_eq!(effect.update_modifiers().count(), 0);
+}
+
+/// The bundled examples are v2 and identical to the migrated goldens of their
+/// v1 inputs, so they produce the same effects as the v1 examples did.
+#[test]
+fn examples_are_migrated_goldens() {
+    let mut checked = 0;
+    for entry in fs::read_dir(Path::new(ROOT).join("examples")).unwrap() {
+        let path = entry.unwrap().path();
+        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let Some(name) = file.strip_suffix(".omagari.ron") else {
+            continue;
+        };
+        let text = read(&path);
+        assert!(text.contains("version: 2"), "{} is not a v2 project", path.display());
+        let (project, warnings) = load_v2(&path);
+        assert!(warnings.is_empty(), "{}: {:?}", path.display(), warnings);
+        assert_eq!(project.to_ron_string().unwrap(), text, "{} is not saved as the editor saves", path.display());
+        assert_eq!(text, read(&golden_path(&format!("v2/{}.omagari.ron", name))), "{}", path.display());
+        assert!(
+            golden_path("inputs").join(&file).exists(),
+            "{} has no v1 input in tests/golden/inputs/",
+            path.display()
+        );
+        checked += 1;
+    }
+    assert!(checked >= 4, "only {} examples found", checked);
 }

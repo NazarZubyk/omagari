@@ -206,7 +206,7 @@ fn loader_reads_v1_project_and_builtin_textures() {
     app.add_plugins((
         MinimalPlugins,
         AssetPlugin {
-            file_path: "examples".to_string(),
+            file_path: "tests/golden/inputs".to_string(),
             ..default()
         },
         ImagePlugin::default(),
