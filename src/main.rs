@@ -4,6 +4,7 @@ use std::path::Path;
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::Hdr;
 use bevy::prelude::*;
+use bevy::window::WindowResolution;
 use bevy_egui::{EguiGlobalSettings, EguiPlugin, PrimaryEguiContext};
 use bevy_hanabi::prelude::*;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
@@ -17,6 +18,7 @@ mod mcp;
 mod settings;
 
 use crate::controller::*;
+use crate::editor::dev::{self, DevOptions};
 use crate::editor::scene::Backdrop;
 use crate::editor::session::window_title;
 use crate::editor::EditorPlugin;
@@ -29,8 +31,23 @@ fn main() {
         return;
     }
 
+    let args: Vec<String> = std::env::args().collect();
+    let dev_options = match DevOptions::parse(&args) {
+        Ok(options) => options,
+        Err(e) => {
+            eprintln!("omagari: {}", e);
+            std::process::exit(2);
+        }
+    };
     let game_assets = GameAssets::from_environment();
     let settings = OmagariSettings::load(Path::new(SETTINGS_FILE));
+    let mut window = Window {
+        title: window_title(None, false),
+        ..default()
+    };
+    if let Some((width, height)) = dev_options.window_size {
+        window.resolution = WindowResolution::new(width, height).with_scale_factor_override(1.0);
+    }
     let mut app = App::new();
     // Asset sources must exist before `AssetPlugin` (in `DefaultPlugins`).
     game_assets.register_source(&mut app);
@@ -38,11 +55,9 @@ fn main() {
         .insert_resource(settings.render)
         .insert_resource(ClearColor(Backdrop::default().clear_color()))
         .insert_resource(ProjectV2::default())
+        .insert_resource(dev_options)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: window_title(None, false),
-                ..default()
-            }),
+            primary_window: Some(window),
             // Closing asks about unsaved changes first (`handle_close_requests`).
             close_when_requested: false,
             ..default()
@@ -55,7 +70,8 @@ fn main() {
         .init_resource::<PreviewState>()
         .init_resource::<EffectResource>()
         .add_plugins(EditorPlugin)
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, dev::queue_startup_actions))
+        .add_systems(Update, dev::run_dev_options)
         .run();
 }
 
