@@ -19,7 +19,8 @@ use serde::{de::IgnoredAny, Deserialize, Deserializer, Serialize};
 use super::expr::ExprWriterEditor;
 use super::migrate::migrate_v1;
 use super::particles::ParticleEffectDef;
-use super::surface::SurfaceLayerDef;
+use super::shape::ShapeLayerDef;
+use super::surface::{EffectMaterialDef, SurfaceLayerDef};
 use super::OmagariProject;
 
 /// The format version written by this library.
@@ -139,13 +140,15 @@ impl ProjectV2 {
     }
 
     /// Names of the layers that use the asset `id` (particle textures,
-    /// texture slots of surface layers).
+    /// texture slots of surface and shape layers).
     pub fn asset_users(&self, id: &str) -> Vec<String> {
         self.layers
             .iter()
             .filter(|l| match l {
                 LayerDef::Particles(p) => p.texture.as_deref() == Some(id),
-                LayerDef::Surface(s) => s.material.texture_slots().iter().any(|(_, slot)| slot.asset == id),
+                LayerDef::Surface(_) | LayerDef::Shape(_) => {
+                    l.material().is_some_and(|m| m.texture_slots().iter().any(|(_, slot)| slot.asset == id))
+                }
             })
             .map(|l| l.name().to_string())
             .collect()
@@ -177,8 +180,8 @@ impl ProjectV2 {
                         p.texture = Some(to.to_string());
                     }
                 }
-                LayerDef::Surface(s) => {
-                    for slot in s.material.texture_slots_mut() {
+                LayerDef::Surface(_) | LayerDef::Shape(_) => {
+                    for slot in layer.material_mut().into_iter().flat_map(|m| m.texture_slots_mut()) {
                         if slot.asset == from {
                             slot.asset = to.to_string();
                         }
@@ -250,6 +253,14 @@ impl ProjectV2 {
             .filter_map(|(i, l)| l.as_surface().map(|s| (i, s)))
     }
 
+    /// The shape layers, with their index in `layers`.
+    pub fn shape_layers(&self) -> impl Iterator<Item = (usize, &ShapeLayerDef)> {
+        self.layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| l.as_shape().map(|s| (i, s)))
+    }
+
     /// The parameter with this name.
     pub fn param(&self, name: &str) -> Option<&ParamDef> {
         self.parameters.iter().find(|p| p.name == name)
@@ -296,6 +307,23 @@ impl ProjectV2 {
                 users.push(format!("layer \"{}\" ({})", layer.name, what.join(", ")));
             }
         }
+        for (_, layer) in self.shape_layers() {
+            let mut what: Vec<&str> = Vec::new();
+            for (value, param) in layer.binding_params() {
+                if param == name && !what.contains(&value) {
+                    what.push(value);
+                }
+            }
+            if layer.visible.as_ref().is_some_and(|v| v.param == name) {
+                what.push("visible");
+            }
+            if matches!(&layer.play, PlayDef::While(p, _) if p == name) {
+                what.push("play While");
+            }
+            if !what.is_empty() {
+                users.push(format!("layer \"{}\" ({})", layer.name, what.join(", ")));
+            }
+        }
         for trigger in self.triggers.iter() {
             if trigger.pulses.iter().any(|p| p.param == name) {
                 users.push(format!("trigger \"{}\" (pulse)", trigger.name));
@@ -309,11 +337,12 @@ impl ProjectV2 {
         self.particle_layers()
             .filter(|(_, l)| l.play.trigger() == Some(name))
             .map(|(_, l)| l.name.clone())
+            .chain(self.shape_layers().filter(|(_, l)| l.play.trigger() == Some(name)).map(|(_, l)| l.name.clone()))
             .collect()
     }
 
     /// Renames the parameter `from` to `to` and every reference to it:
-    /// expressions, `rate`, `visible`, `play: While`, surface material
+    /// expressions, `rate`, `visible`, `play: While`, surface and shape
     /// bindings, pulses and the preview values. Fails when `to` is empty or taken, or `from` does not exist.
     pub fn rename_param(&mut self, from: &str, to: &str) -> Result<(), String> {
         let to = to.trim();
@@ -334,6 +363,9 @@ impl ProjectV2 {
         param.name = to.to_string();
         for layer in self.layers.iter_mut() {
             if let LayerDef::Surface(s) = layer {
+                s.rename_param(from, to);
+            }
+            if let LayerDef::Shape(s) = layer {
                 s.rename_param(from, to);
             }
             let Some(layer) = layer.as_particles_mut() else { continue };
@@ -398,8 +430,12 @@ impl ProjectV2 {
             .ok_or_else(|| format!("no trigger \"{}\"", from))?;
         trigger.name = to.to_string();
         for layer in self.layers.iter_mut() {
-            let Some(layer) = layer.as_particles_mut() else { continue };
-            if let PlayDef::OnTrigger(name) = &mut layer.play {
+            let play = match layer {
+                LayerDef::Particles(p) => &mut p.play,
+                LayerDef::Shape(s) => &mut s.play,
+                LayerDef::Surface(_) => continue,
+            };
+            if let PlayDef::OnTrigger(name) = play {
                 if name == from {
                     *name = to.to_string();
                 }
@@ -604,11 +640,14 @@ pub struct PulseDef {
     pub decay: f32,
 }
 
-/// A layer value: a constant, or a piecewise linear curve over a parameter.
+/// A layer value: a constant, a piecewise linear curve over a parameter, or
+/// a curve over the layer's **age** (seconds since the layer started, or
+/// since its trigger last played it).
 ///
 /// ```ron
 /// Const(20.0)
 /// Param("intensity", [(0.0, 10.0), (1.0, 30.0)])
+/// Age([(0.0, 0.2), (0.6, 3.0)])
 /// ```
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub enum Binding<T> {
@@ -616,6 +655,10 @@ pub enum Binding<T> {
     /// Parameter name and `(parameter value, layer value)` keys, sorted by
     /// parameter value. Outside the keys the nearest key's value is used.
     Param(String, Vec<(f32, T)>),
+    /// `(age in seconds, layer value)` keys, sorted by age: the layer's age
+    /// is the time since it started (a one-shot or triggered layer: since it
+    /// last (re)started). Outside the keys the nearest key's value is used.
+    Age(Vec<(f32, T)>),
 }
 
 impl<T: Default> Default for Binding<T> {
@@ -625,39 +668,66 @@ impl<T: Default> Default for Binding<T> {
 }
 
 impl<T> Binding<T> {
-    /// The parameter a curve reads, `None` for a constant.
+    /// The parameter a curve reads, `None` for a constant or an age curve.
     pub fn param(&self) -> Option<&str> {
         match self {
-            Binding::Const(_) => None,
+            Binding::Const(_) | Binding::Age(_) => None,
             Binding::Param(name, _) => Some(name),
         }
     }
+
+    /// Whether the value is a curve over the layer's age.
+    pub fn reads_age(&self) -> bool {
+        matches!(self, Binding::Age(_))
+    }
+
+    /// The keys of a curve (over a parameter or the age); `None` for a
+    /// constant.
+    pub fn keys(&self) -> Option<&[(f32, T)]> {
+        match self {
+            Binding::Const(_) => None,
+            Binding::Param(_, keys) | Binding::Age(keys) => Some(keys),
+        }
+    }
+}
+
+/// The value of piecewise linear `keys` at `x` (flat outside the keys);
+/// `None` without keys.
+pub fn curve_value<T>(keys: &[(f32, T)], x: f32) -> Option<T>
+where
+    T: Copy + Add<Output = T> + Mul<f32, Output = T>,
+{
+    let (first, last) = (keys.first()?, keys.last()?);
+    if x <= first.0 {
+        return Some(first.1);
+    }
+    for pair in keys.windows(2) {
+        let ((x0, v0), (x1, v1)) = (pair[0], pair[1]);
+        if x <= x1 {
+            let t = if x1 > x0 { (x - x0) / (x1 - x0) } else { 1.0 };
+            return Some(v0 * (1.0 - t) + v1 * t);
+        }
+    }
+    Some(last.1)
 }
 
 impl<T> Binding<T>
 where
     T: Copy + Add<Output = T> + Mul<f32, Output = T>,
 {
-    /// Evaluates the binding; `param` returns a parameter's current value.
-    /// `None` if the parameter is unknown or the curve has no keys.
+    /// Evaluates the binding at age 0; `param` returns a parameter's current
+    /// value. `None` if the parameter is unknown or the curve has no keys.
+    /// Use [`Binding::evaluate_at`] where the layer's age is known.
     pub fn evaluate(&self, param: impl FnOnce(&str) -> Option<f32>) -> Option<T> {
+        self.evaluate_at(param, 0.0)
+    }
+
+    /// Evaluates the binding for a layer of `age` seconds.
+    pub fn evaluate_at(&self, param: impl FnOnce(&str) -> Option<f32>, age: f32) -> Option<T> {
         match self {
             Binding::Const(v) => Some(*v),
-            Binding::Param(name, keys) => {
-                let x = param(name)?;
-                let (first, last) = (keys.first()?, keys.last()?);
-                if x <= first.0 {
-                    return Some(first.1);
-                }
-                for pair in keys.windows(2) {
-                    let ((x0, v0), (x1, v1)) = (pair[0], pair[1]);
-                    if x <= x1 {
-                        let t = if x1 > x0 { (x - x0) / (x1 - x0) } else { 1.0 };
-                        return Some(v0 * (1.0 - t) + v1 * t);
-                    }
-                }
-                Some(last.1)
-            }
+            Binding::Param(name, keys) => curve_value(keys, param(name)?),
+            Binding::Age(keys) => curve_value(keys, age),
         }
     }
 }
@@ -1000,14 +1070,16 @@ impl VisibleRangeDef {
 
 // --- layers ------------------------------------------------------------------
 
-/// One visual part of a package. More kinds (shape, trail, ...) are added
-/// as new variants.
+/// One visual part of a package. More kinds (trail, ...) are added as new
+/// variants.
 #[derive(Serialize, Deserialize, Clone)]
 pub enum LayerDef {
     Particles(ParticlesLayerDef),
     /// Omagari's effect shader over the target's own meshes (see
     /// [`SurfaceLayerDef`]).
     Surface(SurfaceLayerDef),
+    /// A simple 3D shape with the effect shader (see [`ShapeLayerDef`]).
+    Shape(ShapeLayerDef),
 }
 
 impl LayerDef {
@@ -1015,6 +1087,7 @@ impl LayerDef {
         match self {
             LayerDef::Particles(p) => &p.name,
             LayerDef::Surface(s) => &s.name,
+            LayerDef::Shape(s) => &s.name,
         }
     }
 
@@ -1022,14 +1095,57 @@ impl LayerDef {
         match self {
             LayerDef::Particles(p) => &mut p.name,
             LayerDef::Surface(s) => &mut s.name,
+            LayerDef::Shape(s) => &mut s.name,
         }
     }
 
-    /// `"particles"` / `"surface"`.
+    /// `"particles"` / `"surface"` / `"shape"`.
     pub fn kind_name(&self) -> &'static str {
         match self {
             LayerDef::Particles(_) => "particles",
             LayerDef::Surface(_) => "surface",
+            LayerDef::Shape(_) => "shape",
+        }
+    }
+
+    /// Where a particle or shape layer is attached (surface layers cover the
+    /// target's meshes instead).
+    pub fn attach(&self) -> Option<&AttachDef> {
+        match self {
+            LayerDef::Particles(p) => Some(&p.attach),
+            LayerDef::Surface(_) => None,
+            LayerDef::Shape(s) => Some(&s.attach),
+        }
+    }
+
+    /// The effect material of a surface or shape layer.
+    pub fn material(&self) -> Option<&EffectMaterialDef> {
+        match self {
+            LayerDef::Particles(_) => None,
+            LayerDef::Surface(s) => Some(&s.material),
+            LayerDef::Shape(s) => Some(&s.material),
+        }
+    }
+
+    pub fn material_mut(&mut self) -> Option<&mut EffectMaterialDef> {
+        match self {
+            LayerDef::Particles(_) => None,
+            LayerDef::Surface(s) => Some(&mut s.material),
+            LayerDef::Shape(s) => Some(&mut s.material),
+        }
+    }
+
+    pub fn as_shape(&self) -> Option<&ShapeLayerDef> {
+        match self {
+            LayerDef::Shape(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_shape_mut(&mut self) -> Option<&mut ShapeLayerDef> {
+        match self {
+            LayerDef::Shape(s) => Some(s),
+            _ => None,
         }
     }
 
@@ -1560,6 +1676,37 @@ mod tests {
 
         assert_eq!(p.unique_param_name("power"), "power2");
         assert_eq!(p.unique_trigger_name("boom"), "boom");
+    }
+
+    #[test]
+    fn age_bindings_evaluate_and_old_bindings_stay_as_they_were() {
+        let age: Binding<f32> = ron::from_str("Age([(0.0, 1.0), (2.0, 3.0)])").unwrap();
+        assert!(age.reads_age() && age.param().is_none());
+        assert_eq!(age.evaluate_at(|_| None, 1.0), Some(2.0));
+        assert_eq!(age.evaluate_at(|_| None, 5.0), Some(3.0), "flat past the last key");
+        assert_eq!(age.evaluate(|_| None), Some(1.0), "evaluate = age 0");
+        assert_eq!(age.keys().map(|k| k.len()), Some(2));
+        assert_eq!(ron::to_string(&age).unwrap(), "Age([(0.0,1.0),(2.0,3.0)])");
+        // The parameter form is unchanged (old files, goldens).
+        let param: Binding<f32> = ron::from_str(r#"Param("x", [(0.0, 1.0), (1.0, 3.0)])"#).unwrap();
+        assert_eq!(param.evaluate_at(|_| Some(0.5), 99.0), Some(2.0), "a parameter curve ignores the age");
+        assert_eq!(ron::to_string(&param).unwrap(), r#"Param("x",[(0.0,1.0),(1.0,3.0)])"#);
+        assert!(!param.reads_age());
+        let colour: Binding<Vec4> = ron::from_str("Age([(0.0, (1.0, 0.0, 0.0, 1.0)), (1.0, (0.0, 0.0, 1.0, 1.0))])").unwrap();
+        assert_eq!(evaluate_color_at(&colour, &|_| None, 0.5), Some(Vec4::new(0.5, 0.0, 0.5, 1.0)));
+        let empty: Binding<f32> = Binding::Age(Vec::new());
+        assert_eq!(empty.evaluate_at(|_| None, 1.0), None);
+
+        // A material's age curves.
+        let m: EffectMaterialDef = ron::from_str(
+            r#"(opacity: Age([(0.0, 1.0), (0.5, 0.0)]), fill: Some((axis: U, to: Age([(0.0, 0.0), (0.2, 1.0)]))), emissive: Param("p", [(0.0, 1.0)]))"#,
+        )
+        .unwrap();
+        assert_eq!(m.age_bindings(), vec![("opacity", 0.5), ("fill.to", 0.2)]);
+        assert_eq!(m.binding_params(), vec![("emissive", "p")]);
+        let v = m.evaluate_at(&|_| None, 0.1);
+        assert!((v.opacity - 0.8).abs() < 1e-6 && (v.fill.unwrap().2 - 0.5).abs() < 1e-6);
+        assert_eq!(m.evaluate(&|_| None).opacity, 1.0);
     }
 
     #[test]

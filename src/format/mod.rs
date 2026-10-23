@@ -24,6 +24,7 @@ mod migrate;
 mod modifiers;
 mod particles;
 mod project;
+mod shape;
 mod surface;
 
 pub use expr::*;
@@ -32,6 +33,7 @@ pub use migrate::*;
 pub use modifiers::*;
 pub use particles::*;
 pub use project::*;
+pub use shape::*;
 pub use surface::*;
 
 /// A v1 editor project: a list of particle effects, saved as `*.omagari.ron`.
