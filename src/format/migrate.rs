@@ -23,6 +23,21 @@ pub fn builtin_texture_path(file: &str) -> String {
     format!("{}{}", BUILTIN_TEXTURES_PREFIX, file)
 }
 
+/// The built-in tileable noise (grayscale fractal noise, 256 × 256) for
+/// Omagari's own shaders (surface layers). Not one of the v1 particle
+/// textures.
+pub const BUILTIN_NOISE_TEXTURE: &str = "noise.png";
+
+/// The purpose a built-in texture is added with: `Noise` for the noise, else
+/// `Sprite`.
+pub fn builtin_texture_purpose(file: &str) -> TexturePurpose {
+    if file == BUILTIN_NOISE_TEXTURE {
+        TexturePurpose::Noise
+    } else {
+        TexturePurpose::Sprite
+    }
+}
+
 /// Migrates a v1 project. `warnings` receives a line for everything that does
 /// not carry over (modifiers v1 dropped, unknown texture indices).
 pub fn migrate_v1(project: OmagariProject, warnings: &mut Vec<String>) -> ProjectV2 {

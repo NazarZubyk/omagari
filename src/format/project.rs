@@ -19,6 +19,7 @@ use serde::{de::IgnoredAny, Deserialize, Deserializer, Serialize};
 use super::expr::ExprWriterEditor;
 use super::migrate::migrate_v1;
 use super::particles::ParticleEffectDef;
+use super::surface::SurfaceLayerDef;
 use super::OmagariProject;
 
 /// The format version written by this library.
@@ -137,12 +138,14 @@ impl ProjectV2 {
         })
     }
 
-    /// Names of the layers that use the asset `id`.
+    /// Names of the layers that use the asset `id` (particle textures,
+    /// texture slots of surface layers).
     pub fn asset_users(&self, id: &str) -> Vec<String> {
         self.layers
             .iter()
             .filter(|l| match l {
                 LayerDef::Particles(p) => p.texture.as_deref() == Some(id),
+                LayerDef::Surface(s) => s.material.texture_slots().iter().any(|(_, slot)| slot.asset == id),
             })
             .map(|l| l.name().to_string())
             .collect()
@@ -172,6 +175,13 @@ impl ProjectV2 {
                 LayerDef::Particles(p) => {
                     if p.texture.as_deref() == Some(from) {
                         p.texture = Some(to.to_string());
+                    }
+                }
+                LayerDef::Surface(s) => {
+                    for slot in s.material.texture_slots_mut() {
+                        if slot.asset == from {
+                            slot.asset = to.to_string();
+                        }
                     }
                 }
             }
@@ -232,6 +242,14 @@ impl ProjectV2 {
             .filter_map(|(i, l)| l.as_particles().map(|p| (i, p)))
     }
 
+    /// The surface layers, with their index in `layers`.
+    pub fn surface_layers(&self) -> impl Iterator<Item = (usize, &SurfaceLayerDef)> {
+        self.layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| l.as_surface().map(|s| (i, s)))
+    }
+
     /// The parameter with this name.
     pub fn param(&self, name: &str) -> Option<&ParamDef> {
         self.parameters.iter().find(|p| p.name == name)
@@ -264,6 +282,20 @@ impl ProjectV2 {
                 users.push(format!("layer \"{}\" ({})", layer.name, what.join(", ")));
             }
         }
+        for (_, layer) in self.surface_layers() {
+            let mut what: Vec<&str> = Vec::new();
+            for (value, param) in layer.material.binding_params() {
+                if param == name && !what.contains(&value) {
+                    what.push(value);
+                }
+            }
+            if layer.visible.as_ref().is_some_and(|v| v.param == name) {
+                what.push("visible");
+            }
+            if !what.is_empty() {
+                users.push(format!("layer \"{}\" ({})", layer.name, what.join(", ")));
+            }
+        }
         for trigger in self.triggers.iter() {
             if trigger.pulses.iter().any(|p| p.param == name) {
                 users.push(format!("trigger \"{}\" (pulse)", trigger.name));
@@ -281,8 +313,8 @@ impl ProjectV2 {
     }
 
     /// Renames the parameter `from` to `to` and every reference to it:
-    /// expressions, `rate`, `visible`, `play: While`, pulses and the preview
-    /// values. Fails when `to` is empty or taken, or `from` does not exist.
+    /// expressions, `rate`, `visible`, `play: While`, surface material
+    /// bindings, pulses and the preview values. Fails when `to` is empty or taken, or `from` does not exist.
     pub fn rename_param(&mut self, from: &str, to: &str) -> Result<(), String> {
         let to = to.trim();
         if to.is_empty() {
@@ -301,6 +333,9 @@ impl ProjectV2 {
             .ok_or_else(|| format!("no parameter \"{}\"", from))?;
         param.name = to.to_string();
         for layer in self.layers.iter_mut() {
+            if let LayerDef::Surface(s) = layer {
+                s.rename_param(from, to);
+            }
             let Some(layer) = layer.as_particles_mut() else { continue };
             for e in layer.effect.exprs_mut() {
                 e.visit_mut(&mut |e| {
@@ -738,10 +773,9 @@ impl TexturePurpose {
     }
 }
 
-/// A texture input of Omagari's own shaders (surface, shape, trail,
-/// afterimage and distortion layers, from P4 on): the asset and the channel
+/// A texture input of Omagari's own shaders (surface layers now; shape,
+/// trail, afterimage and distortion layers later): the asset and the channel
 /// the shader reads, so one channel-packed texture can feed several slots.
-/// Not used by the runtime yet.
 ///
 /// ```ron
 /// (asset: "noise_pack", channel: G)
@@ -966,29 +1000,64 @@ impl VisibleRangeDef {
 
 // --- layers ------------------------------------------------------------------
 
-/// One visual part of a package. More kinds (surface, shape, trail, ...) are
-/// added as new variants.
+/// One visual part of a package. More kinds (shape, trail, ...) are added
+/// as new variants.
 #[derive(Serialize, Deserialize, Clone)]
 pub enum LayerDef {
     Particles(ParticlesLayerDef),
+    /// Omagari's effect shader over the target's own meshes (see
+    /// [`SurfaceLayerDef`]).
+    Surface(SurfaceLayerDef),
 }
 
 impl LayerDef {
     pub fn name(&self) -> &str {
         match self {
             LayerDef::Particles(p) => &p.name,
+            LayerDef::Surface(s) => &s.name,
+        }
+    }
+
+    pub fn name_mut(&mut self) -> &mut String {
+        match self {
+            LayerDef::Particles(p) => &mut p.name,
+            LayerDef::Surface(s) => &mut s.name,
+        }
+    }
+
+    /// `"particles"` / `"surface"`.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            LayerDef::Particles(_) => "particles",
+            LayerDef::Surface(_) => "surface",
         }
     }
 
     pub fn as_particles(&self) -> Option<&ParticlesLayerDef> {
         match self {
             LayerDef::Particles(p) => Some(p),
+            _ => None,
         }
     }
 
     pub fn as_particles_mut(&mut self) -> Option<&mut ParticlesLayerDef> {
         match self {
             LayerDef::Particles(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub fn as_surface(&self) -> Option<&SurfaceLayerDef> {
+        match self {
+            LayerDef::Surface(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_surface_mut(&mut self) -> Option<&mut SurfaceLayerDef> {
+        match self {
+            LayerDef::Surface(s) => Some(s),
+            _ => None,
         }
     }
 }
