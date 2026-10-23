@@ -13,6 +13,7 @@ use super::attach::to_simulation_space;
 use super::instance::{VfxInstance, VfxLayerState, VfxState};
 use super::package::VfxPackage;
 use super::params::VfxWarnOnce;
+use super::shape::ShapeLayerState;
 use crate::format::{PlayDef, SimulationSpaceDef};
 
 /// What a trigger carries (`trigger_at`): an optional world position and
@@ -78,7 +79,8 @@ impl TriggerArgs {
 
 /// Applies the triggers fired since the last frame on running instances:
 /// pulses start, `OnTrigger` layers get a burst queued (played by
-/// [`drive_layer_spawners`] once their spawner exists). Triggers wait while
+/// [`drive_layer_spawners`] once their spawner exists), `OnTrigger` shape
+/// layers start over (with the payload position). Triggers wait while
 /// the instance is starting (so `spawn_vfx` + `trigger_at` in one frame
 /// works) and are dropped while it stops.
 pub(crate) fn apply_triggers(
@@ -86,6 +88,7 @@ pub(crate) fn apply_triggers(
     mut warned: ResMut<VfxWarnOnce>,
     mut instances: Query<&mut VfxInstance>,
     mut layers: Query<&mut VfxLayerState>,
+    mut shapes: Query<&mut ShapeLayerState>,
 ) {
     for mut instance in instances.iter_mut() {
         if instance.triggers.is_empty() {
@@ -102,7 +105,7 @@ pub(crate) fn apply_triggers(
         let Some(package) = packages.get(&instance.package) else { continue };
         // While the layers are being rebuilt (package replaced, hot reload)
         // the burst waits for the new ones.
-        if instance.layers.is_empty() || instance.rebuild || !instance.params.is_synced(instance.package.id()) {
+        if instance.has_no_layers() || instance.rebuild || !instance.params.is_synced(instance.package.id()) {
             continue;
         }
         let instance = &mut *instance;
@@ -127,6 +130,17 @@ pub(crate) fn apply_triggers(
                 if fires {
                     if let Ok(mut state) = layers.get_mut(entity) {
                         state.burst = Some(args);
+                    }
+                }
+            }
+            for (index, &entity) in instance.shapes.iter().enumerate() {
+                let fires = package
+                    .shape_layers
+                    .get(index)
+                    .is_some_and(|l| l.def.play.trigger() == Some(name.as_str()));
+                if fires {
+                    if let Ok(mut state) = shapes.get_mut(entity) {
+                        state.pending_trigger = Some(args);
                     }
                 }
             }
@@ -195,12 +209,14 @@ pub(crate) fn drive_layer_spawners(
                     }
                     spawner.reset();
                     spawner.active = true;
+                    state.age = 0.0;
                 }
                 PlayDef::While(param, threshold) => {
                     let on = instance.params.float(param).is_some_and(|v| v >= *threshold);
                     let Some(spawner) = spawner.as_mut() else { continue };
                     if on && !state.while_on {
                         spawner.reset();
+                        state.age = 0.0;
                     }
                     if spawner.active != on {
                         spawner.active = on;

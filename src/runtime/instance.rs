@@ -26,6 +26,7 @@ use bevy_hanabi::prelude::*;
 use super::attach::{FitState, SocketAttach};
 use super::package::{apply_texture_settings_to, VfxPackage};
 use super::params::{sync_instance, ParamState, VfxWarnOnce};
+use super::shape::{spawn_shape_layer, ShapeLayerState};
 use super::surface::{SurfaceLayerState, VfxSurfaceLayer};
 use super::triggers::TriggerArgs;
 use crate::format::{AttachDef, ParamValue};
@@ -182,6 +183,11 @@ pub struct VfxInstance {
     pub(crate) layers: Vec<Entity>,
     /// Surface layer entities, in the order of the package's surface layers.
     pub(crate) surfaces: Vec<Entity>,
+    /// Shape layer entities, in the order of the package's shape layers.
+    pub(crate) shapes: Vec<Entity>,
+    /// Counts restarts (`restart` while stopping): layers that keep their
+    /// own clock (age, one-shot shapes) start over when it changes.
+    pub(crate) generation: u32,
     /// Layers of an earlier build (hot reload, package replaced): emitting
     /// stopped, despawned when the seconds run out.
     pub(crate) retired: Vec<(Entity, f32)>,
@@ -207,6 +213,8 @@ impl VfxInstance {
             lifecycle: VfxLifecycle::default(),
             layers: Vec::new(),
             surfaces: Vec::new(),
+            shapes: Vec::new(),
+            generation: 0,
             retired: Vec::new(),
             rebuild: false,
             linger: 0.0,
@@ -264,6 +272,22 @@ impl VfxInstance {
         &self.surfaces
     }
 
+    /// Shape layer entities, in the order of [`VfxPackage::shape_layers`].
+    /// Empty until the package has loaded.
+    pub fn shape_layers(&self) -> &[Entity] {
+        &self.shapes
+    }
+
+    /// How often the instance was restarted (`restart` while stopping).
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// Whether no layer of any kind has been spawned yet.
+    pub(crate) fn has_no_layers(&self) -> bool {
+        self.layers.is_empty() && self.surfaces.is_empty() && self.shapes.is_empty()
+    }
+
     /// Layers of an earlier build that are fading out.
     pub fn retired_layers(&self) -> impl Iterator<Item = Entity> + '_ {
         self.retired.iter().map(|(e, _)| *e)
@@ -294,6 +318,11 @@ pub struct VfxLayerState {
     pub while_on: bool,
     /// Fraction of a particle carried over to the next frame.
     pub remainder: f32,
+    /// Seconds since the layer started, or since its last burst / `While`
+    /// switch-on (what `Age` bindings read).
+    pub age: f32,
+    /// The instance's restart count this state was made for.
+    pub generation: u32,
 }
 
 impl Default for VfxLayerState {
@@ -304,6 +333,8 @@ impl Default for VfxLayerState {
             burst: None,
             while_on: false,
             remainder: 0.0,
+            age: 0.0,
+            generation: 0,
         }
     }
 }
@@ -394,7 +425,7 @@ impl VfxControl<'_, '_> {
         if !inst.lifecycle.is_stopping() {
             return inst.lifecycle.is_alive();
         }
-        if inst.layers.is_empty() && inst.surfaces.is_empty() {
+        if inst.has_no_layers() {
             // Stopped before it started: start over.
             inst.lifecycle = VfxLifecycle::default();
             return true;
@@ -402,6 +433,7 @@ impl VfxControl<'_, '_> {
         let package = self.packages.get(&inst.package);
         let auto_finish = package.and_then(|p| p.auto_finish);
         inst.lifecycle.restart(auto_finish);
+        inst.generation = inst.generation.wrapping_add(1);
         for (index, &layer) in inst.layers.iter().enumerate() {
             // OnTrigger / While layers are switched by their trigger or
             // parameter, never by a restart.
@@ -499,7 +531,7 @@ impl VfxControl<'_, '_> {
             return false;
         }
         inst.package = package;
-        if inst.layers.is_empty() && inst.surfaces.is_empty() {
+        if inst.has_no_layers() {
             inst.lifecycle = VfxLifecycle::default();
         } else {
             inst.lifecycle.restart(None);
@@ -538,6 +570,7 @@ pub(crate) fn start_instances(
     packages: Res<Assets<VfxPackage>>,
     mut instances: Query<(Entity, &mut VfxInstance)>,
     surfaces: Query<(&Name, &SurfaceLayerState)>,
+    shapes: Query<(&Name, &ShapeLayerState)>,
 ) {
     for (entity, mut instance) in instances.iter_mut() {
         let rebuilding = instance.rebuild && instance.state() == VfxState::Running;
@@ -635,6 +668,24 @@ pub(crate) fn start_instances(
             commands.entity(e).try_despawn();
         }
         instance.surfaces = surface_layers;
+
+        // Shape layers too; a looping shape of the same name keeps its fade
+        // level (one-shots start over, like particle bursts).
+        let old_shapes: Vec<Entity> = instance.shapes.drain(..).collect();
+        let mut shape_layers = Vec::with_capacity(package.shape_layers.len());
+        for (index, layer) in package.shape_layers.iter().enumerate() {
+            let level = old_shapes
+                .iter()
+                .filter_map(|&e| shapes.get(e).ok())
+                .find(|(name, _)| name.as_str() == layer.name())
+                .map(|(_, state)| state.player.level)
+                .unwrap_or(0.0);
+            shape_layers.push(spawn_shape_layer(&mut commands, entity, index, layer, &package.project, level));
+        }
+        for e in old_shapes {
+            commands.entity(e).try_despawn();
+        }
+        instance.shapes = shape_layers;
         instance.linger = package.stop_duration();
         instance.rebuild = false;
         if rebuilding {
@@ -680,13 +731,13 @@ pub(crate) fn reload_instances(
                     apply_texture_settings_to(&mut images, handle, def);
                 }
             }
-            for layer in package.surface_layers.iter() {
+            for (material, textures) in package.material_textures() {
                 let slots = [
-                    layer.def.material.noise_a.as_ref().map(|n| &n.texture),
-                    layer.def.material.noise_b.as_ref().map(|n| &n.texture),
-                    layer.def.material.mask.as_ref().map(|m| &m.texture),
+                    material.noise_a.as_ref().map(|n| &n.texture),
+                    material.noise_b.as_ref().map(|n| &n.texture),
+                    material.mask.as_ref().map(|m| &m.texture),
                 ];
-                for (handle, slot) in layer.textures.iter().zip(slots) {
+                for (handle, slot) in textures.iter().zip(slots) {
                     let (Some(handle), Some(slot)) = (handle, slot) else { continue };
                     if let Some(def) = package.project.texture(&slot.asset) {
                         apply_texture_settings_to(&mut images, handle, def);
@@ -751,6 +802,7 @@ pub(crate) fn on_instance_removed(
         .iter()
         .copied()
         .chain(instance.surfaces.iter().copied())
+        .chain(instance.shapes.iter().copied())
         .chain(instance.retired_layers())
     {
         commands.entity(layer).try_despawn();

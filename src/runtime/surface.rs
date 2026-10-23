@@ -63,6 +63,10 @@ pub struct SurfaceLayerState {
     pub rest_bounds: Option<(Vec3, Vec3)>,
     /// World metres per rest-pose unit of the covered skinned meshes.
     pub rest_scale: f32,
+    /// Seconds since the layer started (what `Age` bindings read; a restart
+    /// sets it back to 0).
+    pub age: f32,
+    generation: u32,
     scanned: bool,
     hidden: bool,
 }
@@ -306,7 +310,7 @@ pub fn surface_uniforms(
     lookup: &dyn Fn(&str) -> Option<crate::format::ParamValue>,
     fit_scale: f32,
 ) -> Vec<EffectUniforms> {
-    let values = prepared.def.material.evaluate(lookup);
+    let values = prepared.def.material.evaluate_at(lookup, state.age);
     let textures = [prepared.textures[0].is_some(), prepared.textures[1].is_some(), prepared.textures[2].is_some()];
     prepared
         .def
@@ -320,6 +324,7 @@ pub fn surface_uniforms(
                 fit_scale,
                 rest_scale: state.rest_scale,
                 rest_bounds: state.rest_bounds,
+                billboard: false,
             };
             EffectUniforms::new(&values, &inputs, textures)
         })
@@ -347,6 +352,12 @@ pub(crate) fn update_surface_materials(
             continue;
         }
         let running = matches!(instance.state(), VfxState::Running | VfxState::Starting);
+        if state.generation != instance.generation {
+            state.generation = instance.generation;
+            state.age = 0.0;
+        } else {
+            state.age += dt;
+        }
         state.level = prepared.def.fade.step(state.level, running, dt);
         state.visibility = match &prepared.def.visible {
             Some(visible) => instance.params.float(&visible.param).map(|v| visible.factor(v)).unwrap_or(1.0),

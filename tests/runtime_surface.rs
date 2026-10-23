@@ -330,3 +330,34 @@ fn a_replaced_package_rebuilds_overlays_and_keeps_the_fade() {
     let states = surface_states(&app, instance);
     assert_eq!(states[0].level, 1.0, "a rebuilt layer does not fade in again");
 }
+
+#[test]
+fn triggers_reach_packages_without_particle_layers() {
+    // A surface-only package: the trigger's pulse flashes the skin (the
+    // trigger queue used to wait for particle layers that never come).
+    let mut app = app();
+    let package = add_package(
+        &mut app,
+        r#"(
+            parameters: [(name: "flash", default: Float(0.0))],
+            triggers: [(name: "tick", pulses: [(param: "flash", to: 1.0, decay: 0.5)])],
+            layers: [Surface((name: "skin", material: (flash: Some(Param("flash", [(0.0, 0.0), (1.0, 1.0)]))), fade: (in: 0.0, out: 0.1)))],
+        )"#,
+    );
+    let model = spawn_model(&mut app);
+    let instance = spawn_vfx(&mut app, &package, model.target);
+    for _ in 0..3 {
+        app.update();
+    }
+    let flash = |app: &App| material(app, &surface_states(app, instance)[0], 0).uniforms.params.z;
+    assert_eq!(flash(&app), 0.0);
+    app.world_mut()
+        .run_system_once(move |mut vfx: VfxControl| {
+            vfx.trigger(instance, "tick");
+        })
+        .unwrap();
+    app.update();
+    let f = flash(&app);
+    assert!(f > 0.5, "the pulse reached the skin: {}", f);
+    assert!(app.world().get::<VfxInstance>(instance).unwrap().params().float("flash").unwrap() > 0.5);
+}

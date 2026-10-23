@@ -1,5 +1,6 @@
-// Omagari effect shader: surface layers (overlay copies of a model's meshes)
-// and, later, shape, trail and afterimage layers. Rust side:
+// Omagari effect shader: surface layers (overlay copies of a model's meshes),
+// shape layers (Omagari's own meshes) and, later, trail and afterimage
+// layers. Rust side:
 // `src/runtime/effect_material.rs` (`OmagariEffectMaterial`, `EffectUniforms`).
 //
 // BEVY UPGRADES: the vertex stage mirrors bevy_pbr 0.19.1
@@ -52,8 +53,9 @@ struct OmagariEffect {
     dissolve: vec4<f32>,
     // x on, y from, z to, w softness
     fill: vec4<f32>,
+    // xyz axis; w 0 = along the axis, 1 = along U, 2 = along V
     fill_axis: vec4<f32>,
-    // x low end, y length (rest-pose units)
+    // x low end, y length (rest-pose units), z 1 = quad facing the camera
     fill_range: vec4<f32>,
     // x shell offset (m), y fit scale, z depth push (m), w metres per rest unit (skinned)
     shape: vec4<f32>,
@@ -149,19 +151,32 @@ fn vertex(vertex_no_morph: Vertex) -> EffectVertexOutput {
 
 #ifdef VERTEX_NORMALS
 #ifdef SKINNED
-    let world_normal = skinning::skin_normals(world_from_local, vertex.normal);
+    var world_normal = skinning::skin_normals(world_from_local, vertex.normal);
 #else
-    let world_normal = mesh_functions::mesh_normal_local_to_world(vertex.normal, vertex_no_morph.instance_index);
+    var world_normal = mesh_functions::mesh_normal_local_to_world(vertex.normal, vertex_no_morph.instance_index);
 #endif
     let rest_normal = normalize(vertex_no_morph.normal);
 #else
-    let world_normal = vec3<f32>(0.0, 1.0, 0.0);
+    var world_normal = vec3<f32>(0.0, 1.0, 0.0);
     let rest_normal = vec3<f32>(0.0, 1.0, 0.0);
 #endif
 
     // Shells: pushed out along the skinned normal (metres, × fit).
     var world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
     world_position = vec4<f32>(world_position.xyz + world_normal * material.shape.x, 1.0);
+
+    // A quad facing the camera (shape layers): its local X runs along the
+    // view's right, Z along the view's up, around the entity's origin, with
+    // the entity's X / Z scale.
+    if material.fill_range.z > 0.5 {
+        let centre = (world_from_local * vec4<f32>(0.0, 0.0, 0.0, 1.0)).xyz;
+        let right = normalize(view.world_from_view[0].xyz);
+        let up = normalize(view.world_from_view[1].xyz);
+        let sx = length(world_from_local[0].xyz);
+        let sz = length(world_from_local[2].xyz);
+        world_position = vec4<f32>(centre + right * (vertex.position.x * sx) + up * (vertex.position.z * sz), 1.0);
+        world_normal = direction_to_camera(centre);
+    }
     out.world_position = world_position;
     out.world_normal = world_normal;
     // Drawn a little closer to the camera along the view ray (same pixel):
@@ -179,6 +194,12 @@ fn vertex(vertex_no_morph: Vertex) -> EffectVertexOutput {
     out.rest_position = rest * (rest_scale / max(material.shape.y, 0.0001));
     out.rest_normal = rest_normal;
     out.fill_coord = (dot(rest, material.fill_axis.xyz) - material.fill_range.x) / max(material.fill_range.y, 0.0001);
+    // Fill along the mesh's U or V coordinate (0..1).
+    if material.fill_axis.w > 1.5 {
+        out.fill_coord = out.uv.y;
+    } else if material.fill_axis.w > 0.5 {
+        out.fill_coord = out.uv.x;
+    }
     return out;
 }
 

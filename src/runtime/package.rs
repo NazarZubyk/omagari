@@ -10,8 +10,9 @@ use bevy_hanabi::prelude::*;
 
 use super::builtin::{resolve_asset_path, resolve_asset_path_in};
 use crate::format::{
-    param_property_name, AttachDef, Binding, EffectMaterialDef, ParamKind, PlayDef, ProjectV2, SimulationSpaceDef,
-    SurfaceLayerDef, TextureAssetDef, TextureColorSpace, TextureFilter, TextureWrap, VisibleRangeDef,
+    param_property_name, AttachDef, Binding, EffectMaterialDef, ParamKind, PlayDef, ProjectV2, ShapeLayerDef,
+    SimulationSpaceDef, SurfaceLayerDef, TextureAssetDef, TextureColorSpace, TextureFilter, TextureSlotDef, TextureWrap,
+    VisibleRangeDef,
 };
 
 /// Stop duration used for a layer whose particle lifetime cannot be estimated.
@@ -27,11 +28,31 @@ pub struct VfxPackage {
     pub particle_layers: Vec<PreparedParticleLayer>,
     /// One entry per surface layer, in layer order.
     pub surface_layers: Vec<PreparedSurfaceLayer>,
+    /// One entry per shape layer, in layer order.
+    pub shape_layers: Vec<PreparedShapeLayer>,
     /// Seconds after which an instance finishes by itself: set when every
     /// root particle layer is one-shot (`play: OnStart` with a finite
-    /// `cycle_count`) and there are no surface layers; the last spawn plus
-    /// the longest particle life.
+    /// `cycle_count`), every shape layer is one-shot (`play: OnStart` with a
+    /// `duration`) and there are no surface layers; the last spawn plus the
+    /// longest particle life, or the longest shape.
     pub auto_finish: Option<f32>,
+}
+
+/// A shape layer ready to be spawned: its definition and the textures of
+/// its material's slots.
+pub struct PreparedShapeLayer {
+    /// Index of the layer in `project.layers`.
+    pub layer_index: usize,
+    pub def: ShapeLayerDef,
+    /// Textures of noise A, noise B and the mask (`None` = slot off, or its
+    /// asset is missing).
+    pub textures: [Option<Handle<Image>>; 3],
+}
+
+impl PreparedShapeLayer {
+    pub fn name(&self) -> &str {
+        &self.def.name
+    }
 }
 
 /// A surface layer ready to be spawned: its definition and the textures of
@@ -360,33 +381,24 @@ impl VfxPackage {
 
         let mut surface_layers = Vec::new();
         for (layer_index, layer) in project.surface_layers() {
-            check_surface_params(&project, layer, warnings);
-            let material: &EffectMaterialDef = &layer.material;
-            let mut slot_texture = |slot: Option<&crate::format::TextureSlotDef>, what: &str| -> Option<Handle<Image>> {
-                let slot = slot?;
-                if let Some((_, handle)) = textures.iter().find(|(t, _)| *t == slot.asset) {
-                    return Some(handle.clone());
-                }
-                let Some(def) = project.texture(&slot.asset) else {
-                    warnings.push(format!(
-                        "[{}] {} texture \"{}\" is not in the assets list; that part is off",
-                        layer.name, what, slot.asset
-                    ));
-                    return None;
-                };
-                let handle = assets.load_texture(def);
-                textures.push((slot.asset.clone(), handle.clone()));
-                Some(handle)
-            };
-            let textures = [
-                slot_texture(material.noise_a.as_ref().map(|n| &n.texture), "noise A"),
-                slot_texture(material.noise_b.as_ref().map(|n| &n.texture), "noise B"),
-                slot_texture(material.mask.as_ref().map(|m| &m.texture), "mask"),
-            ];
+            check_material_params(&project, &layer.name, &layer.material, layer.visible.as_ref(), warnings);
+            let slots = material_textures(&project, &layer.name, &layer.material, assets, &mut textures, warnings);
             surface_layers.push(PreparedSurfaceLayer {
                 layer_index,
                 def: layer.clone(),
-                textures,
+                textures: slots,
+            });
+        }
+
+        let mut shape_layers = Vec::new();
+        for (layer_index, layer) in project.shape_layers() {
+            check_material_params(&project, &layer.name, &layer.material, layer.visible.as_ref(), warnings);
+            check_shape_layer(&project, layer, warnings);
+            let slots = material_textures(&project, &layer.name, &layer.material, assets, &mut textures, warnings);
+            shape_layers.push(PreparedShapeLayer {
+                layer_index,
+                def: layer.clone(),
+                textures: slots,
             });
         }
 
@@ -417,6 +429,24 @@ impl VfxPackage {
             };
         }
 
+        // Shape layers: one-shots (OnStart with a duration) end after it;
+        // any other shape plays until the instance is stopped.
+        if !shape_layers.is_empty() {
+            let ends: Option<Vec<f32>> = shape_layers
+                .iter()
+                .map(|s| match (&s.def.play, s.def.one_shot_duration()) {
+                    (PlayDef::OnStart, Some(d)) => Some(d),
+                    _ => None,
+                })
+                .collect();
+            let shapes_end = ends.map(|e| e.into_iter().fold(0.0f32, f32::max));
+            auto_finish = match (particle_layers.is_empty(), auto_finish, shapes_end) {
+                (true, _, end) => end,
+                (false, Some(a), Some(e)) => Some(a.max(e)),
+                _ => None,
+            };
+        }
+
         // Surface layers play until the instance is stopped.
         if !surface_layers.is_empty() {
             auto_finish = None;
@@ -426,6 +456,7 @@ impl VfxPackage {
             project,
             particle_layers,
             surface_layers,
+            shape_layers,
             auto_finish,
         }
     }
@@ -437,38 +468,122 @@ impl VfxPackage {
             .iter()
             .map(|l| l.linger)
             .chain(self.surface_layers.iter().map(|l| l.def.linger()))
+            .chain(self.shape_layers.iter().map(|l| l.def.linger()))
             .fold(0.0, f32::max)
     }
 
-    /// Every texture the package's layers use (particle textures and
-    /// surface texture slots).
+    /// Every texture the package's layers use (particle textures, surface
+    /// and shape texture slots).
     pub fn textures(&self) -> impl Iterator<Item = &Handle<Image>> {
         self.particle_layers
             .iter()
             .filter_map(|l| l.texture.as_ref())
             .chain(self.surface_layers.iter().flat_map(|l| l.textures.iter().flatten()))
+            .chain(self.shape_layers.iter().flat_map(|l| l.textures.iter().flatten()))
+    }
+
+    /// Every surface and shape material with the textures of its slots
+    /// (noise A, noise B, mask), e.g. to apply changed texture settings.
+    pub fn material_textures(&self) -> Vec<(&EffectMaterialDef, &[Option<Handle<Image>>; 3])> {
+        self.surface_layers
+            .iter()
+            .map(|l| (&l.def.material, &l.textures))
+            .chain(self.shape_layers.iter().map(|l| (&l.def.material, &l.textures)))
+            .collect()
     }
 }
 
-/// Warnings for a surface layer's parameter reads: unknown names, and
-/// Color parameters where a number is needed.
-fn check_surface_params(project: &ProjectV2, layer: &SurfaceLayerDef, warnings: &mut Vec<String>) {
-    let reads = layer
-        .material
+/// Loads the textures of a material's slots (noise A, noise B, mask),
+/// sharing the handles of textures the package loaded already (`loaded`).
+fn material_textures(
+    project: &ProjectV2,
+    layer: &str,
+    material: &EffectMaterialDef,
+    assets: &mut impl PackageAssets,
+    loaded: &mut Vec<(String, Handle<Image>)>,
+    warnings: &mut Vec<String>,
+) -> [Option<Handle<Image>>; 3] {
+    let mut slot_texture = |slot: Option<&TextureSlotDef>, what: &str| -> Option<Handle<Image>> {
+        let slot = slot?;
+        if let Some((_, handle)) = loaded.iter().find(|(t, _)| *t == slot.asset) {
+            return Some(handle.clone());
+        }
+        let Some(def) = project.texture(&slot.asset) else {
+            warnings.push(format!(
+                "[{}] {} texture \"{}\" is not in the assets list; that part is off",
+                layer, what, slot.asset
+            ));
+            return None;
+        };
+        let handle = assets.load_texture(def);
+        loaded.push((slot.asset.clone(), handle.clone()));
+        Some(handle)
+    };
+    [
+        slot_texture(material.noise_a.as_ref().map(|n| &n.texture), "noise A"),
+        slot_texture(material.noise_b.as_ref().map(|n| &n.texture), "noise B"),
+        slot_texture(material.mask.as_ref().map(|m| &m.texture), "mask"),
+    ]
+}
+
+/// Warnings for a surface or shape material's parameter reads (and its
+/// `visible` range): unknown names, and Color parameters where a number is
+/// needed.
+fn check_material_params(
+    project: &ProjectV2,
+    layer: &str,
+    material: &EffectMaterialDef,
+    visible: Option<&VisibleRangeDef>,
+    warnings: &mut Vec<String>,
+) {
+    let reads = material
         .binding_params()
         .into_iter()
-        .chain(layer.visible.as_ref().map(|v| ("visible", v.param.as_str())));
+        .chain(visible.map(|v| ("visible", v.param.as_str())));
+    for (what, param) in reads {
+        match project.param(param).map(|p| p.kind()) {
+            None => warnings.push(format!(
+                "[{}] {} reads \"{}\", which is not a parameter of this package",
+                layer, what, param
+            )),
+            Some(ParamKind::Color) if !EffectMaterialDef::is_color_binding(what) => warnings.push(format!(
+                "[{}] {} reads \"{}\", a Color parameter; it needs a Float one",
+                layer, what, param
+            )),
+            _ => {}
+        }
+    }
+}
+
+/// Warnings for a shape layer's own reads: its trigger, the parameters of
+/// `scale`, `rotation_speed` and `play: While`.
+fn check_shape_layer(project: &ProjectV2, layer: &ShapeLayerDef, warnings: &mut Vec<String>) {
+    if let Some(trigger) = layer.play.trigger() {
+        if project.trigger(trigger).is_none() {
+            warnings.push(format!(
+                "[{}] plays on trigger \"{}\", which is not a trigger of this package",
+                layer.name, trigger
+            ));
+        }
+    }
+    let reads = [("scale", layer.scale.param()), ("rotation_speed", layer.rotation_speed.param())]
+        .into_iter()
+        .filter_map(|(what, param)| param.map(|p| (what, p)))
+        .chain(match &layer.play {
+            PlayDef::While(p, _) => Some(("play While", p.as_str())),
+            _ => None,
+        });
     for (what, param) in reads {
         match project.param(param).map(|p| p.kind()) {
             None => warnings.push(format!(
                 "[{}] {} reads \"{}\", which is not a parameter of this package",
                 layer.name, what, param
             )),
-            Some(ParamKind::Color) if !EffectMaterialDef::is_color_binding(what) => warnings.push(format!(
+            Some(ParamKind::Color) => warnings.push(format!(
                 "[{}] {} reads \"{}\", a Color parameter; it needs a Float one",
                 layer.name, what, param
             )),
-            _ => {}
+            Some(ParamKind::Float) => {}
         }
     }
 }

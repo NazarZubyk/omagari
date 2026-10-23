@@ -1,6 +1,6 @@
 //! [`OmagariEffectMaterial`]: Omagari's effect shader as a Bevy material.
-//! Surface layers use it on overlay copies of the target's meshes; shape,
-//! trail and afterimage layers (later) use it on their own meshes. It works
+//! Surface layers use it on overlay copies of the target's meshes, shape
+//! layers on their own meshes; trail and afterimage layers (later) too. It works
 //! on skinned, morphed and plain meshes alike: the vertex shader follows
 //! Bevy's mesh vertex shader (see `src/shaders/omagari_effect.wgsl`).
 //!
@@ -70,10 +70,12 @@ pub struct EffectUniforms {
     pub dissolve: Vec4,
     /// x on / off, y from, z to, w softness (fractions of the model).
     pub fill: Vec4,
-    /// xyz fill axis in the rest pose.
+    /// xyz fill axis in the rest pose; w = 0 along the axis, 1 along the
+    /// mesh's U coordinate, 2 along V.
     pub fill_axis: Vec4,
     /// x rest-pose coordinate of the model's low end along the axis, y the
-    /// model's length along it (rest-pose units).
+    /// model's length along it (rest-pose units); z = 1 for a quad facing
+    /// the camera (shape layers).
     pub fill_range: Vec4,
     /// x shell offset (world metres, × fit), y fit scale (instance world
     /// scale), z depth push (world metres), w world metres per rest-pose
@@ -95,6 +97,8 @@ pub struct ShellInputs {
     pub rest_scale: f32,
     /// Rest-pose bounds of the covered meshes `(min, max)`.
     pub rest_bounds: Option<(Vec3, Vec3)>,
+    /// The mesh is a quad in XZ the vertex shader turns to face the camera.
+    pub billboard: bool,
 }
 
 impl Default for ShellInputs {
@@ -106,6 +110,7 @@ impl Default for ShellInputs {
             fit_scale: 1.0,
             rest_scale: 1.0,
             rest_bounds: None,
+            billboard: false,
         }
     }
 }
@@ -184,6 +189,11 @@ impl EffectUniforms {
             Some((axis, from, to, softness)) => (Vec4::new(1.0, from, to, softness.max(0.0)), axis),
             None => (Vec4::ZERO, AxisDef::Y),
         };
+        let uv_mode = match axis {
+            AxisDef::U => 1.0,
+            AxisDef::V => 2.0,
+            _ => 0.0,
+        };
         let axis = axis.vector();
         // Without bounds: a 1.8 m model standing at the origin.
         let bounds = shell.rest_bounds.unwrap_or((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 1.8, 0.5)));
@@ -203,8 +213,8 @@ impl EffectUniforms {
             mask,
             dissolve,
             fill,
-            fill_axis: axis.extend(0.0),
-            fill_range: Vec4::new(low, length, 0.0, 0.0),
+            fill_axis: axis.extend(uv_mode),
+            fill_range: Vec4::new(low, length, if shell.billboard { 1.0 } else { 0.0 }, 0.0),
             shape: Vec4::new(shell.offset * fit, fit, DEPTH_PUSH * fit, shell.rest_scale),
         }
     }
@@ -362,6 +372,7 @@ mod tests {
             fit_scale: 2.0,
             rest_scale: 1.0,
             rest_bounds: Some((Vec3::new(-1.0, 0.0, -0.2), Vec3::new(1.0, 1.8, 0.2))),
+            billboard: false,
         };
         let u = EffectUniforms::new(&values, &shell, [true, false, false]);
         assert_eq!(u.color, Vec4::new(0.5, 0.1, 1.0, 0.6));
@@ -379,5 +390,12 @@ mod tests {
         assert!((u.fill_range.x + 1.8).abs() < 1e-5 && (u.fill_range.y - 1.8).abs() < 1e-5, "{}", u.fill_range);
         assert!((u.shape - Vec4::new(0.04, 2.0, DEPTH_PUSH * 2.0, 1.0)).length() < 1e-6, "offset and push × fit");
         assert_eq!(alpha_mode_for(values.blend), AlphaMode::Add);
+
+        // Fill along the mesh's U / V, and the camera-facing quad flag.
+        let def: EffectMaterialDef = ron::from_str(r#"(fill: Some((axis: U, to: Age([(0.0, 0.0), (0.5, 1.0)]))))"#).unwrap();
+        let u = EffectUniforms::new(&def.evaluate_at(&|_: &str| None::<ParamValue>, 0.25), &ShellInputs { billboard: true, ..default() }, [false; 3]);
+        assert_eq!(u.fill_axis, Vec4::new(0.0, 0.0, 0.0, 1.0), "U mode");
+        assert_eq!(u.fill.z, 0.5, "to over the age");
+        assert_eq!(u.fill_range.z, 1.0, "billboard");
     }
 }
