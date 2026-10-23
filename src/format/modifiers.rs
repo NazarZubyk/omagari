@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::expr::*;
+use super::hanabi_serde;
 
 pub trait ModifierProducer<T>
 where
@@ -23,8 +24,10 @@ where
     fn produce(&self) -> T;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct SetAttributeModifierEditor {
+    #[serde(with = "hanabi_serde::attribute")]
     pub attr: Attribute,
     pub attr_expr: ExprWriterEditor,
 }
@@ -47,8 +50,10 @@ impl Default for SetAttributeModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct InheritAttributeModifierEditor {
+    #[serde(with = "hanabi_serde::attribute")]
     pub attr: Attribute,
 }
 
@@ -68,7 +73,8 @@ impl Default for InheritAttributeModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct SetVelocityCircleModifierEditor {
     pub center_expr: ExprWriterEditor,
     pub axis_expr: ExprWriterEditor,
@@ -95,7 +101,8 @@ impl Default for SetVelocityCircleModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct SetVelocitySphereModifierEditor {
     pub center_expr: ExprWriterEditor,
     pub speed_expr: ExprWriterEditor,
@@ -119,7 +126,8 @@ impl Default for SetVelocitySphereModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct SetVelocityTangentModifierEditor {
     pub origin_expr: ExprWriterEditor,
     pub axis_expr: ExprWriterEditor,
@@ -149,11 +157,13 @@ impl Default for SetVelocityTangentModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct SetPositionCircleModifierEditor {
     pub center_expr: ExprWriterEditor,
     pub axis_expr: ExprWriterEditor,
     pub radius_expr: ExprWriterEditor,
+    #[serde(with = "hanabi_serde::shape_dimension")]
     pub dimension: ShapeDimension,
 }
 
@@ -179,10 +189,12 @@ impl Default for SetPositionCircleModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct SetPositionSphereModifierEditor {
     pub center_expr: ExprWriterEditor,
     pub radius_expr: ExprWriterEditor,
+    #[serde(with = "hanabi_serde::shape_dimension")]
     pub dimension: ShapeDimension,
 }
 
@@ -206,7 +218,8 @@ impl Default for SetPositionSphereModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct AccelModifierEditor {
     pub accel_expr: ExprWriterEditor,
 }
@@ -231,7 +244,8 @@ impl Default for AccelModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct LinearDragModifierEditor {
     pub drag_expr: ExprWriterEditor,
 }
@@ -252,8 +266,10 @@ impl Default for LinearDragModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct EmitSpawnEventModifierEditor {
+    #[serde(with = "hanabi_serde::event_emit_condition")]
     pub condition: EventEmitCondition,
     pub count_expr: ExprWriterEditor,
     pub child_index: u32,
@@ -279,7 +295,8 @@ impl Default for EmitSpawnEventModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct ConformToSphereModifierEditor {
     pub origin_expr: ExprWriterEditor,
     pub radius_expr: ExprWriterEditor,
@@ -314,7 +331,8 @@ impl Default for ConformToSphereModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct SizeOverLifetimeModifierEditor {
     pub gradient: GradientVec3Editor,
 }
@@ -340,10 +358,13 @@ impl Default for SizeOverLifetimeModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct ColorOverLifetimeModifierEditor {
     pub gradient: GradientVec4Editor,
+    #[serde(default, with = "hanabi_serde::option_color_blend_mode")]
     pub blend: Option<ColorBlendMode>,
+    #[serde(default, with = "hanabi_serde::option_color_blend_mask")]
     pub mask: Option<ColorBlendMask>,
 }
 
@@ -377,7 +398,8 @@ impl Default for ColorOverLifetimeModifierEditor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct GradientVec3Editor {
     pub g: Vec<(f32, Vec3)>,
 }
@@ -392,7 +414,8 @@ impl GradientVec3Editor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct GradientVec4Editor {
     pub g: Vec<(f32, Vec4)>,
 }
@@ -404,5 +427,85 @@ impl GradientVec4Editor {
             gradient.add_key(*t, *v);
         }
         gradient
+    }
+}
+
+/// How a particle texture is combined with the particle colour (bevy_hanabi's
+/// `ImageSampleMapping`).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ImageSampleMappingDef {
+    /// `color = color * texture`.
+    Modulate,
+    /// `color.rgb = color.rgb * texture.rgb`, alpha unchanged.
+    ModulateRGB,
+    /// `color.a = color.a * texture.r`: the texture's red channel is opacity.
+    #[default]
+    ModulateOpacityFromR,
+}
+
+impl From<ImageSampleMappingDef> for ImageSampleMapping {
+    fn from(value: ImageSampleMappingDef) -> Self {
+        match value {
+            ImageSampleMappingDef::Modulate => ImageSampleMapping::Modulate,
+            ImageSampleMappingDef::ModulateRGB => ImageSampleMapping::ModulateRGB,
+            ImageSampleMappingDef::ModulateOpacityFromR => ImageSampleMapping::ModulateOpacityFromR,
+        }
+    }
+}
+
+/// Samples the layer's texture (texture slot `"color"`).
+///
+/// v1 projects had this hard-coded with `ModulateOpacityFromR`; migration adds
+/// it explicitly.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct ParticleTextureModifierEditor {
+    pub sample_mapping: ImageSampleMappingDef,
+}
+
+impl ParticleTextureModifierEditor {
+    /// The texture slot expression must be written before the module is
+    /// finished, hence the writer.
+    pub fn produce(&self, writer: &ExprWriter) -> ParticleTextureModifier {
+        ParticleTextureModifier {
+            texture_slot: writer.lit(0u32).expr(),
+            sample_mapping: self.sample_mapping.into(),
+        }
+    }
+}
+
+/// How particle quads are oriented (bevy_hanabi's `OrientMode`).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum OrientModeDef {
+    /// Parallel to the camera's depth plane.
+    ParallelCameraDepthPlane,
+    /// Facing the camera position.
+    FaceCameraPosition,
+    /// Stretched along the particle velocity.
+    #[default]
+    AlongVelocity,
+}
+
+impl From<OrientModeDef> for OrientMode {
+    fn from(value: OrientModeDef) -> Self {
+        match value {
+            OrientModeDef::ParallelCameraDepthPlane => OrientMode::ParallelCameraDepthPlane,
+            OrientModeDef::FaceCameraPosition => OrientMode::FaceCameraPosition,
+            OrientModeDef::AlongVelocity => OrientMode::AlongVelocity,
+        }
+    }
+}
+
+/// Orients particles. v1 projects had `AlongVelocity` hard-coded; migration
+/// adds it explicitly.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct OrientModifierEditor {
+    pub mode: OrientModeDef,
+}
+
+impl OrientModifierEditor {
+    pub fn produce(&self) -> OrientModifier {
+        OrientModifier::new(self.mode.into())
     }
 }

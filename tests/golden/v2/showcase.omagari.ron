@@ -1,0 +1,201 @@
+(
+    version: 2,
+    parameters: [
+        (
+            name: "intensity",
+            default: Float(0.0),
+            min: 0.0,
+            max: 1.0,
+            smoothing: 0.4,
+        ),
+        (
+            name: "tint",
+            default: Color((0.65, 0.08, 0.95, 1.0)),
+            min: 0.0,
+            max: 1.0,
+            smoothing: 0.2,
+        ),
+    ],
+    triggers: [
+        (
+            name: "tick",
+            pulses: [
+                (
+                    param: "intensity",
+                    to: 1.0,
+                    decay: 0.35,
+                ),
+            ],
+        ),
+        (
+            name: "hit",
+            pulses: [],
+        ),
+    ],
+    assets: [
+        (
+            id: "mist",
+            kind: Texture((
+                path: "omagari://textures/cloud2.png",
+                purpose: Sprite,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+        (
+            id: "noise",
+            kind: Texture((
+                path: "vfx/textures/noise_perlin.png",
+                purpose: Noise,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+    ],
+    fit: Some(TargetHeight(1.8)),
+    layers: [
+        Particles((
+            name: "mist",
+            parent: None,
+            attach: Target,
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("mist"),
+            rate: Some(Param("intensity", [
+                (0.0, 10.0),
+                (1.0, 30.0),
+            ])),
+            visible: Some((
+                param: "intensity",
+                from: 0.2,
+                to: 1.0,
+                fade: 0.1,
+            )),
+            effect: (
+                capacity: 256,
+                spawner: (
+                    count: Single(20.0),
+                    spawn_duration: Single(1.0),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetPositionSphere((
+                        center_expr: Vec3((0.0, 0.0, 0.0)),
+                        radius_expr: Float(0.5),
+                        dimension: Volume,
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Operator(Uniform(Float(1.0), Float(1.5))),
+                    )),
+                    SetAttribute((
+                        attr: "velocity",
+                        attr_expr: Vec3((0.0, 0.4, 0.0)),
+                    )),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((
+                        drag_expr: Float(1.0),
+                    )),
+                    EmitSpawnEventModifier((
+                        condition: OnDie,
+                        count_expr: U32(2),
+                        child_index: 0,
+                    )),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.0, (1.0, 1.0, 1.0, 0.0)),
+                                (0.2, (1.0, 1.0, 1.0, 1.0)),
+                                (1.0, (1.0, 1.0, 1.0, 0.0)),
+                            ],
+                        ),
+                        blend: None,
+                        mask: None,
+                    )),
+                    ParticleTexture((
+                        sample_mapping: Modulate,
+                    )),
+                    Orient((
+                        mode: FaceCameraPosition,
+                    )),
+                ],
+            ),
+        )),
+        Particles((
+            name: "sparks",
+            parent: Some("mist"),
+            attach: Socket("chest"),
+            simulation_space: Global,
+            play: OnStart,
+            texture: None,
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 64,
+                spawner: (
+                    count: Single(500.0),
+                    spawn_duration: Single(1.0),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    InheritAttribute((
+                        attr: "position",
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Float(0.3),
+                    )),
+                ],
+                update_modifiers: [],
+                render_modifiers: [
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+    ],
+    sockets: [
+        (
+            name: "chest",
+            node: None,
+            offset: (0.0, 1.3, 0.1),
+        ),
+    ],
+    preview: Some((
+        stage: Capsule,
+        camera: Orbit,
+        model: None,
+        animation: None,
+        animation_speed: 1.0,
+        attach_to: None,
+        params: [
+            ("intensity", Float(0.5)),
+        ],
+        motion: Some(Circle(
+            radius: 3.0,
+            speed: 3.6,
+        )),
+        auto_triggers: [
+            ("tick", 1.0),
+        ],
+    )),
+)

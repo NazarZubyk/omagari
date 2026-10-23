@@ -1,0 +1,217 @@
+(
+    version: 2,
+    parameters: [],
+    triggers: [],
+    assets: [
+        (
+            id: "glow1",
+            kind: Texture((
+                path: "omagari://textures/glow1.png",
+                purpose: Sprite,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+    ],
+    fit: None,
+    layers: [
+        Particles((
+            name: "Rocket",
+            parent: None,
+            attach: Target,
+            simulation_space: Global,
+            play: Loop,
+            texture: Some("glow1"),
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 1,
+                spawner: (
+                    count: Single(3.0),
+                    spawn_duration: Single(0.1),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((
+                        attr: "velocity",
+                        attr_expr: Operator(Vec3(Operator(Uniform(Float(-10.0), Float(10.0))), Operator(Uniform(Float(140.0), Float(160.0))), Operator(Uniform(Float(-10.0), Float(10.0))))),
+                    )),
+                    SetAttribute((
+                        attr: "age",
+                        attr_expr: Float(0.0),
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Operator(Uniform(Float(0.8), Float(1.2))),
+                    )),
+                    SetAttribute((
+                        attr: "u32_0",
+                        attr_expr: Operator(Pack4x8UNorm(Operator(Vec4(RandFloat, RandFloat, RandFloat, Float(1.0))))),
+                    )),
+                ],
+                update_modifiers: [
+                    AccelModifier((
+                        accel_expr: Vec3((0.0, -16.0, 0.0)),
+                    )),
+                    LinearDragModifier((
+                        drag_expr: Float(4.0),
+                    )),
+                    EmitSpawnEventModifier((
+                        condition: Always,
+                        count_expr: U32(5),
+                        child_index: 0,
+                    )),
+                    EmitSpawnEventModifier((
+                        condition: OnDie,
+                        count_expr: U32(1000),
+                        child_index: 1,
+                    )),
+                ],
+                render_modifiers: [
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+        Particles((
+            name: "Sparkle",
+            parent: Some("Rocket"),
+            attach: Target,
+            simulation_space: Global,
+            play: OnStart,
+            texture: Some("glow1"),
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 1000,
+                spawner: (
+                    count: Single(1.0),
+                    spawn_duration: Single(0.0),
+                    period: Single(0.0),
+                    cycle_count: 1,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    SetAttribute((
+                        attr: "velocity",
+                        attr_expr: Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Vec3((2.0, 2.0, 2.0)))), Vec3((1.0, 1.0, 1.0)))), Vec3((12.0, 12.0, 12.0)))),
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Float(0.2),
+                    )),
+                    InheritAttribute((
+                        attr: "position",
+                    )),
+                    SetAttribute((
+                        attr: "color",
+                        attr_expr: Operator(ParentAttr("u32_0")),
+                    )),
+                ],
+                update_modifiers: [
+                    AccelModifier((
+                        accel_expr: Vec3((0.0, -16.0, 0.0)),
+                    )),
+                    LinearDragModifier((
+                        drag_expr: Float(4.0),
+                    )),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.0, (4.0, 4.0, 4.0, 1.0)),
+                                (0.8, (4.0, 4.0, 4.0, 1.0)),
+                                (1.0, (4.0, 4.0, 4.0, 0.0)),
+                            ],
+                        ),
+                        blend: Some(Modulate),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+        Particles((
+            name: "Trails",
+            parent: Some("Rocket"),
+            attach: Target,
+            simulation_space: Global,
+            play: Loop,
+            texture: Some("glow1"),
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 16384,
+                spawner: (
+                    count: Single(500.0),
+                    spawn_duration: Single(1.0),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Blend,
+                init_modifiers: [
+                    InheritAttribute((
+                        attr: "position",
+                    )),
+                    SetAttribute((
+                        attr: "velocity",
+                        attr_expr: Operator(Multiply(Operator(Normalized(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))))), Operator(Uniform(Float(40.0), Float(60.0))))),
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Float(2.08),
+                    )),
+                    SetAttribute((
+                        attr: "color",
+                        attr_expr: Operator(ParentAttr("u32_0")),
+                    )),
+                ],
+                update_modifiers: [
+                    AccelModifier((
+                        accel_expr: Vec3((0.0, -16.0, 0.0)),
+                    )),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.3, (4.0, 4.0, 0.0, 1.0)),
+                                (0.6, (4.0, 4.0, 4.0, 0.0)),
+                                (1.0, (4.0, 4.0, 4.0, 0.0)),
+                            ],
+                        ),
+                        blend: Some(Modulate),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+    ],
+    sockets: [],
+)
