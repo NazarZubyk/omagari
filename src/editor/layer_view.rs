@@ -59,8 +59,9 @@ impl LayerView {
         !self.hidden.is_empty() || !self.solo.is_empty()
     }
 
-    /// The project the preview builds: layers that don't show get an alpha
-    /// mask nothing passes, so they still simulate and spawn children.
+    /// The project the preview builds: particle layers that don't show get an
+    /// alpha mask nothing passes, so they still simulate and spawn children;
+    /// surface layers that don't show lose their shells.
     pub fn apply(&self, project: &ProjectV2) -> ProjectV2 {
         let mut project = project.clone();
         for layer in project.layers.iter_mut() {
@@ -68,6 +69,9 @@ impl LayerView {
             match layer {
                 LayerDef::Particles(p) if !shows => p.effect.alpha_mode = AlphaModeDef::Mask(HIDDEN_CUTOFF),
                 LayerDef::Particles(_) => {}
+                // A hidden surface layer draws no overlays.
+                LayerDef::Surface(s) if !shows => s.shells.clear(),
+                LayerDef::Surface(_) => {}
             }
         }
         project

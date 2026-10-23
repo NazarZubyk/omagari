@@ -148,3 +148,31 @@ pub const MESHES: &str = "Mesh entities (mesh.material) and materials of the mod
 pub const SOCKET_DRAG: &str = "Drag a socket's dot in the viewport to move it in the camera plane; or type the offset, or nudge it. Gizmos: cyan = socket, yellow = selected or segment, red = node not found.";
 pub const NUDGE: &str = "Moves the selected socket by the step along the node's axis";
 pub const SEGMENT_RADIUS: &str = "Particles start at a random point along the layer's segment (attach Segment), up to a radius (here 5 cm, edit the last number) around it: a capsule along a blade. A SetAttribute position with Mix(segment_a, segment_b, rand) + a random offset square to the segment.";
+
+// --- surface layers -------------------------------------------------------------
+
+pub const SURFACE: &str = "A surface layer draws Omagari's effect shader over the target's own meshes (copies of them, the model itself is not changed). It moves with the animation; shells give it volume.";
+pub const SURFACE_TARGETS: &str = "Which meshes of the target's model it covers: all, some meshes by name, or the meshes using some materials (names from the HIERARCHY tab or the MCP's describe_model). A weapon held in the hand is a separate model and never covered.";
+pub const SURFACE_SHELLS: &str = "Each shell is one copy of the meshes, pushed outward along the surface by Offset metres. One shell at 0 = a coloured skin; two or three at 1–4 cm = a thick, soft glow around the body.";
+pub const SHELL_OFFSET: &str = "Metres the shell sits outside the surface (scaled with the size fit). 0 = on the skin.";
+pub const SHELL_OPACITY: &str = "Opacity of this shell (× the material's). Outer shells are usually fainter.";
+pub const SHELL_NOISE_OFFSET: &str = "Shifts the noise pattern of this shell, so stacked shells do not repeat it exactly.";
+pub const SURFACE_FADE: &str = "Seconds the layer takes to appear when the effect starts (In) and to disappear when the game stops it (Out). Stopping waits for Out.";
+pub const SURFACE_BLEND: &str = "Blend: covers the model by its opacity (colour skins, frost). Add: adds light, never darkens (glows, energy).";
+pub const SURFACE_COLOR: &str = "Colour of the layer (red, green, blue, opacity; values above 1 glow with bloom). Constant, a curve over a number parameter, or a colour parameter the game sets.";
+pub const SURFACE_OPACITY: &str = "Overall opacity, 0 = invisible, 1 = as the colour says.";
+pub const SURFACE_EMISSIVE: &str = "Brightness multiplier. Above 1 the layer glows (bloom with the GAME camera).";
+pub const NOISE: &str = "A noise texture that breaks the colour and opacity into a moving pattern. Triplanar sticks to the body (needs no UVs); UV follows the mesh's own texture layout.";
+pub const NOISE_SCALE: &str = "Repeats of the texture per metre (Triplanar) or per UV square (UV). Higher = finer pattern.";
+pub const NOISE_SCROLL: &str = "How fast the pattern moves, in texture squares per second (x, y). Triplanar: y moves it along the body.";
+pub const NOISE_CONTRAST: &str = "Sharpens the pattern: 1 = the texture as it is (soft clouds), 2–4 = crisp patches and veins.";
+pub const NOISE_STRENGTH: &str = "0 = no effect, 1 = the texture fully shapes the colour and opacity.";
+pub const TEXTURE_SLOT: &str = "The texture and which of its values the shader reads: R, G, B, A (one channel of a packed texture) or Luminance (brightness, right for grayscale and colour images).";
+pub const RIM: &str = "A glow on the edges of the body as seen from the camera (fresnel): the classic outline of auras and energy skins.";
+pub const RIM_POWER: &str = "Higher = thinner rim (1 = soft and wide, 5 = a thin outline).";
+pub const RIM_INTENSITY: &str = "Brightness of the rim; above 1 it blooms.";
+pub const PULSE: &str = "A steady breathing: the opacity goes down by Amount and back, Frequency times per second.";
+pub const FLASH: &str = "A flash: 0 = nothing, 1 = three times as bright and half-way to opaque. Bind it to a parameter that a trigger pulses (TRIGGERS tab) for a hit or damage-tick flash.";
+pub const DISSOLVE: &str = "The surface breaks up where the noise (A, else B) is below Threshold, with a glowing edge. 0 = whole, 1 = gone: bind it to a parameter to make the layer appear or burn away.";
+pub const FILL: &str = "Shows the layer only on a band of the model along an axis of its rest pose: 0 = the low end (feet for Y), 1 = the high end (head). From 0 and To bound to a parameter = frost rising from the feet.";
+pub const MASK: &str = "A mask texture: where it is dark the layer is transparent.";

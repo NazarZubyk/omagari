@@ -64,7 +64,7 @@ fn set_preview_value(project: &mut ProjectV2, name: &str, value: ParamValue) {
 }
 
 /// A colour: picker (linear RGBA) plus the four numbers (above 1 = HDR glow).
-fn color_editor(ui: &mut egui::Ui, color: &mut Vec4) -> bool {
+pub fn color_editor(ui: &mut egui::Ui, color: &mut Vec4) -> bool {
     let before = *color;
     let mut rgba = egui::Rgba::from_rgba_unmultiplied(
         color.x.clamp(0.0, 1.0),

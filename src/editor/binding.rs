@@ -1,7 +1,7 @@
 //! Editor widgets for values bound to parameters: the binding editor
 //! (constant / curve over a parameter, with a key list and a small plot) and
-//! the parameter picker. Used for a particle layer's `rate`; later layer
-//! kinds use the same widget for their bindable values.
+//! the parameter picker. Used for a particle layer's `rate` and every value
+//! of a surface layer's material (numbers, scroll vectors, colours).
 
 use bevy_egui::egui;
 use omagari::format::{Binding, ParamKind};
@@ -63,30 +63,88 @@ pub fn binding_editor(
     max: f32,
     id: egui::Id,
 ) {
+    binding_editor_range(ui, binding, params, &param_range, unit, (0.0, max), 0.1, id);
+}
+
+/// [`binding_editor`] with a value range `(min, max)` and drag speed.
+#[allow(clippy::too_many_arguments)]
+pub fn binding_editor_range(
+    ui: &mut egui::Ui,
+    binding: &mut Binding<f32>,
+    params: &[(String, ParamKind)],
+    param_range: &dyn Fn(&str) -> Option<(f32, f32)>,
+    unit: &str,
+    (min, max): (f32, f32),
+    speed: f32,
+    id: egui::Id,
+) {
+    let mut value_ui = |ui: &mut egui::Ui, v: &mut f32| {
+        ui.horizontal(|ui| {
+            *v = ui_for_f32_ex(ui, *v, min, max, speed);
+            ui.label(unit);
+        });
+    };
+    binding_editor_with(ui, binding, params, param_range, false, &mut value_ui, id);
+    if let Binding::Param(name, keys) = binding {
+        let range = param_range(name);
+        curve_plot(ui, keys, range);
+    }
+}
+
+/// Edits any `Binding<T>`: a constant, a curve over a Float parameter (keys
+/// of `T`), or — for colours (`color_params`) — a Color parameter used
+/// directly (`Param(name, [])`). `value_ui` draws one value.
+pub fn binding_editor_with<T: Copy + Default>(
+    ui: &mut egui::Ui,
+    binding: &mut Binding<T>,
+    params: &[(String, ParamKind)],
+    param_range: &dyn Fn(&str) -> Option<(f32, f32)>,
+    color_params: bool,
+    value_ui: &mut dyn FnMut(&mut egui::Ui, &mut T),
+    id: egui::Id,
+) {
+    let kind_of = |name: &str| params.iter().find(|(p, _)| p == name).map(|(_, k)| *k);
+    // 0 = constant, 1 = curve over a Float parameter, 2 = a Color parameter.
+    let mode = match binding {
+        Binding::Const(_) => 0,
+        Binding::Param(name, keys) if color_params && keys.is_empty() && kind_of(name) != Some(ParamKind::Float) => 2,
+        Binding::Param(..) => 1,
+    };
+    let current = match binding {
+        Binding::Const(v) => *v,
+        Binding::Param(_, keys) => keys.first().map(|k| k.1).unwrap_or_default(),
+    };
     ui.horizontal(|ui| {
-        let constant = matches!(binding, Binding::Const(_));
-        if ui.radio(constant, "constant").on_hover_text(hints::BINDING).clicked() && !constant {
-            let value = match binding {
-                Binding::Param(_, keys) => keys.first().map(|k| k.1).unwrap_or(0.0),
-                Binding::Const(v) => *v,
-            };
-            *binding = Binding::Const(value);
+        if ui.radio(mode == 0, "constant").on_hover_text(hints::BINDING).clicked() && mode != 0 {
+            *binding = Binding::Const(current);
         }
-        if ui.radio(!constant, "curve over parameter").on_hover_text(hints::BINDING).clicked() && constant {
-            let value = match binding {
-                Binding::Const(v) => *v,
-                Binding::Param(..) => 0.0,
-            };
+        if ui.radio(mode == 1, "curve over parameter").on_hover_text(hints::BINDING).clicked() && mode != 1 {
             let name = first_float(params);
             let (lo, hi) = param_range(&name).unwrap_or((0.0, 1.0));
-            *binding = Binding::Param(name, vec![(lo, value), (hi, value)]);
+            *binding = Binding::Param(name, vec![(lo, current), (hi, current)]);
+        }
+        if color_params
+            && ui
+                .radio(mode == 2, "colour parameter")
+                .on_hover_text("The colour is a Color parameter the game sets (e.g. a tint per enemy)")
+                .clicked()
+            && mode != 2
+        {
+            let name = params
+                .iter()
+                .find(|(_, k)| *k == ParamKind::Color)
+                .map(|(n, _)| n.clone())
+                .unwrap_or_default();
+            *binding = Binding::Param(name, Vec::new());
         }
     });
     match binding {
-        Binding::Const(value) => {
+        Binding::Const(value) => value_ui(ui, value),
+        Binding::Param(name, keys) if mode == 2 => {
+            let _ = keys;
             ui.horizontal(|ui| {
-                *value = ui_for_f32_ex(ui, *value, 0.0, max, 0.1);
-                ui.label(unit);
+                ui.label("parameter");
+                color_param_picker(ui, name, params, id.with("color param"));
             });
         }
         Binding::Param(name, keys) => {
@@ -95,15 +153,44 @@ pub fn binding_editor(
                 float_param_picker(ui, name, params, id.with("param"));
             });
             let range = param_range(name);
-            keys_editor(ui, keys, range, unit, max, id.with("keys"));
-            curve_plot(ui, keys, range);
+            keys_editor(ui, keys, range, value_ui, id.with("keys"));
+            if keys.is_empty() {
+                ui.colored_label(WARN, "⚠ no keys: the curve has no value");
+            }
         }
+    }
+}
+
+/// A picker of the project's Color parameters.
+fn color_param_picker(ui: &mut egui::Ui, name: &mut String, params: &[(String, ParamKind)], id: egui::Id) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if name.is_empty() { "(pick)".to_string() } else { name.clone() })
+        .show_ui(ui, |ui| {
+            let mut any = false;
+            for (param, kind) in params {
+                if *kind == ParamKind::Color {
+                    any = true;
+                    ui.selectable_value(name, param.clone(), param);
+                }
+            }
+            if !any {
+                ui.label(egui::RichText::new("No colour parameters: add one in the PARAMETERS tab").weak());
+            }
+        });
+    if !params.iter().any(|(p, k)| p == name && *k == ParamKind::Color) {
+        ui.colored_label(WARN, "⚠").on_hover_text("No colour parameter has this name (PARAMETERS tab)");
     }
 }
 
 /// Rows of (parameter value → value), sorted by parameter value; add and
 /// remove buttons.
-fn keys_editor(ui: &mut egui::Ui, keys: &mut Vec<(f32, f32)>, range: Option<(f32, f32)>, unit: &str, max: f32, id: egui::Id) {
+fn keys_editor<T: Copy + Default>(
+    ui: &mut egui::Ui,
+    keys: &mut Vec<(f32, T)>,
+    range: Option<(f32, f32)>,
+    value_ui: &mut dyn FnMut(&mut egui::Ui, &mut T),
+    id: egui::Id,
+) {
     let mut remove = None;
     egui::Grid::new(id).num_columns(4).spacing([6.0, 2.0]).show(ui, |ui| {
         ui.label(egui::RichText::new("at").weak());
@@ -113,10 +200,7 @@ fn keys_editor(ui: &mut egui::Ui, keys: &mut Vec<(f32, f32)>, range: Option<(f32
         for (i, (x, v)) in keys.iter_mut().enumerate() {
             *x = ui_for_f32_ex(ui, *x, -1.0e6, 1.0e6, 0.01);
             ui.label("➡");
-            ui.horizontal(|ui| {
-                *v = ui_for_f32_ex(ui, *v, 0.0, max, 0.1);
-                ui.label(unit);
-            });
+            ui.horizontal(|ui| value_ui(ui, v));
             if ui.small_button("❌").on_hover_text("Remove this key").clicked() {
                 remove = Some(i);
             }
@@ -130,7 +214,7 @@ fn keys_editor(ui: &mut egui::Ui, keys: &mut Vec<(f32, f32)>, range: Option<(f32
         let (lo, hi) = range.unwrap_or((0.0, 1.0));
         let next = match keys.last() {
             Some((x, v)) => ((x + (hi - lo) * 0.25).min(hi.max(*x + 0.1)), *v),
-            None => (lo, 0.0),
+            None => (lo, T::default()),
         };
         keys.push(next);
     }
@@ -144,7 +228,6 @@ fn keys_editor(ui: &mut egui::Ui, keys: &mut Vec<(f32, f32)>, range: Option<(f32
 /// A small line plot of the curve over the parameter range.
 fn curve_plot(ui: &mut egui::Ui, keys: &[(f32, f32)], range: Option<(f32, f32)>) {
     if keys.is_empty() {
-        ui.colored_label(WARN, "⚠ no keys: the spawner's own count applies");
         return;
     }
     let binding = Binding::Param(String::new(), keys.to_vec());

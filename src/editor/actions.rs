@@ -8,11 +8,12 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 use bevy::window::WindowCloseRequested;
 
-use omagari::format::{builtin_texture_path, ChannelDef, LayerDef, ProjectV2, TexturePurpose};
+use omagari::format::{builtin_texture_path, builtin_texture_purpose, ChannelDef, LayerDef, ProjectV2};
 use omagari::runtime::resolve_asset_path_in;
 
 use super::assets::{select_asset, TexturePreviews};
 use super::effect::new_particles_layer;
+use super::surface::new_surface_layer;
 use super::helpers::ui_text;
 use super::session::{Dialog, EditorSession};
 use crate::asset_library::{self as library, ImportKind};
@@ -45,6 +46,8 @@ pub enum Action {
     Restart,
     FocusCamera,
     AddParticlesLayer,
+    /// Adds a surface layer (effect shader over the target's meshes).
+    AddSurfaceLayer,
     SelectLayer(usize),
     DuplicateLayer(usize),
     DeleteLayer(usize),
@@ -289,6 +292,12 @@ impl ActionContext<'_> {
                 self.project.layers.push(LayerDef::Particles(layer));
                 self.session.select(self.project.layers.len() - 1);
             }
+            Action::AddSurfaceLayer => {
+                let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
+                let layer = new_surface_layer(&mut self.project.assets, &names);
+                self.project.layers.push(LayerDef::Surface(layer));
+                self.session.select(self.project.layers.len() - 1);
+            }
             Action::SelectLayer(index) => {
                 if index < self.project.layers.len() {
                     self.session.select(index);
@@ -300,9 +309,8 @@ impl ActionContext<'_> {
                 };
                 let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
                 let mut copy = layer.clone();
-                match &mut copy {
-                    LayerDef::Particles(p) => p.name = copy_name(&p.name, &names),
-                }
+                let name = copy_name(copy.name(), &names);
+                *copy.name_mut() = name;
                 self.project.layers.insert(index + 1, copy);
                 self.session.select(index + 1);
             }
@@ -339,8 +347,9 @@ impl ActionContext<'_> {
             Action::AddBuiltinTexture(file) => {
                 let path = builtin_texture_path(&file);
                 let id = file.strip_suffix(".png").unwrap_or(&file).to_string();
-                match library::add_texture_asset(self.project, &path, TexturePurpose::Sprite, Some(&id))
-                    .or_else(|_| library::add_texture_asset(self.project, &path, TexturePurpose::Sprite, None))
+                let purpose = builtin_texture_purpose(&file);
+                match library::add_texture_asset(self.project, &path, purpose, Some(&id))
+                    .or_else(|_| library::add_texture_asset(self.project, &path, purpose, None))
                 {
                     Ok((asset, added)) => {
                         if added {
@@ -562,6 +571,7 @@ pub fn poll_preview_requests(mut since_last_poll: Local<f32>, time: Res<Time<Rea
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omagari::format::TexturePurpose;
 
     #[test]
     fn typed_names_become_project_file_names() {

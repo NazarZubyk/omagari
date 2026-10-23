@@ -421,7 +421,7 @@ fn ui_for_play(ui: &mut egui::Ui, play: &mut PlayDef, app: &AppContext, paramete
 }
 
 /// The visible range of a layer: off, or (parameter, from, to, fade).
-fn ui_for_visible(ui: &mut egui::Ui, visible: &mut Option<VisibleRangeDef>, app: &AppContext, parameters: &[ParamDef], id: egui::Id) {
+pub(crate) fn ui_for_visible(ui: &mut egui::Ui, visible: &mut Option<VisibleRangeDef>, app: &AppContext, parameters: &[ParamDef], id: egui::Id) {
     ui.vertical(|ui| {
         let mut on = visible.is_some();
         if ui.checkbox(&mut on, "only in a parameter range").on_hover_text(hints::VISIBLE).changed() {
