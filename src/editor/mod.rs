@@ -7,6 +7,7 @@ pub mod camera;
 pub mod dialogs;
 pub mod effect;
 pub mod expr;
+pub mod dev;
 pub mod helpers;
 pub mod hints;
 pub mod history;
