@@ -22,6 +22,50 @@ pub mod analysis;
 /// The guide served by the `guide` tool.
 pub const GUIDE: &str = include_str!("../../docs/CLAUDE_VFX_GUIDE.md");
 
+/// A recipe of the guide's "Recipes" section: a v2 project that passes
+/// `check_project` without warnings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recipe {
+    /// The `### ` title, e.g. "Spark burst (one-shot impact)".
+    pub title: String,
+    /// The project text (the first ```ron block under the title).
+    pub ron: String,
+}
+
+impl Recipe {
+    /// A project file name from the title: "Spark burst (one-shot impact)"
+    /// gives `spark_burst.omagari.ron`.
+    pub fn file_name(&self) -> String {
+        let head = self.title.split('(').next().unwrap_or_default();
+        let mut slug = String::new();
+        for c in head.trim().chars() {
+            if c.is_ascii_alphanumeric() {
+                slug.push(c.to_ascii_lowercase());
+            } else if !slug.ends_with('_') && !slug.is_empty() {
+                slug.push('_');
+            }
+        }
+        let slug = slug.trim_end_matches('_');
+        format!("{}.omagari.ron", if slug.is_empty() { "recipe" } else { slug })
+    }
+}
+
+/// The guide's recipes, in guide order (used by the editor's "New from
+/// recipe" and by the tests that keep them warning-free).
+pub fn guide_recipes() -> Vec<Recipe> {
+    let section = GUIDE.split("\n## Recipes").nth(1).unwrap_or_default();
+    let section = section.split("\n## ").next().unwrap_or_default();
+    section
+        .split("\n### ")
+        .skip(1)
+        .filter_map(|block| {
+            let title = block.lines().next()?.trim().to_string();
+            let ron = block.split("```ron\n").nth(1)?.split("```").next()?.to_string();
+            Some(Recipe { title, ron })
+        })
+        .collect()
+}
+
 /// File the running editor polls for preview requests.
 pub const PREVIEW_REQUEST_FILE: &str = ".preview_request";
 
@@ -194,10 +238,7 @@ impl Context {
     /// Folder relative texture paths are looked up in: the game assets
     /// folder, or this repository's `assets/`.
     fn assets_root(&self) -> PathBuf {
-        self.game_assets
-            .folder()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("assets"))
+        self.game_assets.assets_root()
     }
 }
 
@@ -683,8 +724,19 @@ mod tests {
 
     /// The first recipe of the guide (a v2 project).
     fn recipe() -> String {
-        let recipes = GUIDE.split("## Recipes").nth(1).unwrap();
-        recipes.split("```ron\n").nth(1).unwrap().split("```").next().unwrap().to_string()
+        guide_recipes().remove(0).ron
+    }
+
+    #[test]
+    fn recipes_have_titles_and_file_names() {
+        let recipes = guide_recipes();
+        assert!(recipes.len() >= 6, "{}", recipes.len());
+        assert_eq!(recipes[0].title, "Spark burst (one-shot impact)");
+        assert_eq!(recipes[0].file_name(), "spark_burst.omagari.ron");
+        for recipe in &recipes {
+            assert!(recipe.ron.contains("version: 2"), "{}", recipe.title);
+            assert!(crate::controller::validate_project_filename(&recipe.file_name()), "{}", recipe.file_name());
+        }
     }
 
     #[test]
