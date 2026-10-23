@@ -15,6 +15,8 @@ use omagari::format::ChannelDef;
 
 use super::actions::Action;
 use super::assets::select_asset;
+use super::model::ModelPreview;
+use super::scene::Backdrop;
 use super::session::{EditorSession, RightTab};
 use crate::controller::EffectResource;
 use crate::mcp::PreviewRequest;
@@ -46,6 +48,27 @@ pub struct DevOptions {
     pub screenshot_after: u32,
     /// `--window-size <w>x<h>` (physical pixels, scale factor 1).
     pub window_size: Option<(u32, u32)>,
+    /// `--stage air|floor|object|capsule|model`.
+    pub stage: Option<String>,
+    /// `--model <glTF path in the game assets folder>` (MODEL stage).
+    pub model: Option<String>,
+    /// `--animation <clip name>`.
+    pub animation: Option<String>,
+    /// `--animation-file <glTF path>`: the file the clip comes from.
+    pub animation_file: Option<String>,
+    /// `--attach-to <node>`: the node the instance is attached to.
+    pub attach_to: Option<String>,
+    /// `--root-height <metres>`.
+    pub root_height: Option<f32>,
+    /// `--anim-time <seconds>`: pause the animation at this clip time.
+    pub anim_time: Option<f32>,
+    /// `--motion none|circle|back_and_forth`: the preview target's motion
+    /// (default radius / distance and speed).
+    pub motion: Option<Option<omagari::format::PreviewMotion>>,
+    /// `--focus`: the orbit camera looks at the preview target.
+    pub focus: bool,
+    /// `--backdrop light|dark|black`.
+    pub backdrop: Option<Backdrop>,
 }
 
 fn parse_tab(name: &str) -> Option<RightTab> {
@@ -56,6 +79,7 @@ fn parse_tab(name: &str) -> Option<RightTab> {
         "parameters" | "params" => Some(RightTab::Parameters),
         "triggers" => Some(RightTab::Triggers),
         "assets" => Some(RightTab::Assets),
+        "hierarchy" | "model" => Some(RightTab::Hierarchy),
         _ => None,
     }
 }
@@ -84,10 +108,51 @@ impl DevOptions {
                 "--tab" => {
                     let tab = value()?;
                     options.tab = Some(parse_tab(&tab).ok_or_else(|| {
-                        format!("--tab {}: use layer, sockets, preview, parameters, triggers or assets", tab)
+                        format!("--tab {}: use layer, sockets, preview, parameters, triggers, assets or hierarchy", tab)
                     })?);
                 }
                 "--import" => options.import.push(PathBuf::from(value()?)),
+                "--stage" => {
+                    let stage = value()?;
+                    if super::scene::Stage::parse(&stage).is_none() {
+                        return Err(format!("--stage {}: use air, floor, object, capsule or model", stage));
+                    }
+                    options.stage = Some(stage);
+                }
+                "--model" => options.model = Some(value()?),
+                "--motion" => {
+                    let motion = value()?;
+                    options.motion = Some(
+                        crate::mcp::motion_from_json(&serde_json::Value::String(motion.clone()))
+                            .map_err(|e| format!("--motion {}: {}", motion, e))?,
+                    );
+                }
+                "--focus" => {
+                    options.focus = true;
+                    i += 1;
+                    continue;
+                }
+                "--backdrop" => {
+                    let name = value()?;
+                    options.backdrop = Some(
+                        Backdrop::ALL
+                            .into_iter()
+                            .find(|b| b.name().eq_ignore_ascii_case(name.trim()))
+                            .ok_or_else(|| format!("--backdrop {}: use light, dark or black", name))?,
+                    );
+                }
+                "--animation" => options.animation = Some(value()?),
+                "--animation-file" => options.animation_file = Some(value()?),
+                "--attach-to" => options.attach_to = Some(value()?),
+                "--root-height" | "--anim-time" => {
+                    let text = value()?;
+                    let number: f32 = text.parse().map_err(|_| format!("{} {}: not a number", flag, text))?;
+                    if flag == "--root-height" {
+                        options.root_height = Some(number);
+                    } else {
+                        options.anim_time = Some(number);
+                    }
+                }
                 "--asset" => options.asset = Some(value()?),
                 "--channel" => {
                     let channel = value()?;
@@ -138,6 +203,13 @@ pub fn queue_startup_actions(options: Res<DevOptions>, mut session: ResMut<Edito
         session.actions.push(Action::Preview(PreviewRequest {
             name,
             camera: options.camera.clone(),
+            stage: options.stage.clone(),
+            model: options.model.clone(),
+            animation: options.animation.clone(),
+            animation_file: options.animation_file.clone(),
+            attach_to: options.attach_to.clone(),
+            root_height: options.root_height,
+            motion: options.motion,
             ..default()
         }));
     }
@@ -152,6 +224,8 @@ pub fn run_dev_options(
     options: Res<DevOptions>,
     mut session: ResMut<EditorSession>,
     mut res: ResMut<EffectResource>,
+    mut model: ResMut<ModelPreview>,
+    mut backdrop: ResMut<Backdrop>,
     mut frame: Local<u32>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -170,6 +244,16 @@ pub fn run_dev_options(
         if let Some(channel) = options.channel {
             session.asset_view = channel;
         }
+        if let Some(b) = options.backdrop {
+            *backdrop = b;
+        }
+        if let Some(time) = options.anim_time {
+            model.seek = Some(time);
+            model.paused = true;
+        }
+    }
+    if options.focus && (*frame == 3 || *frame + 2 == options.screenshot_after.max(4)) {
+        session.focus_camera = true;
     }
     let Some(path) = options.screenshot.clone() else { return };
     let at = options.screenshot_after.max(4);
@@ -229,6 +313,23 @@ mod tests {
         assert!(DevOptions::parse(&args("--camera top")).is_err());
         assert!(DevOptions::parse(&args("--tab nope")).is_err());
         assert!(DevOptions::parse(&args("--screenshot")).is_err());
+        let o = DevOptions::parse(&args(
+            "--stage model --model anim/tpose.glb --animation mixamo.com --animation-file anim/run.glb --attach-to Hips --root-height 0.9 --anim-time 0.25 --tab hierarchy",
+        ))
+        .unwrap();
+        assert_eq!(o.stage.as_deref(), Some("model"));
+        assert_eq!(o.model.as_deref(), Some("anim/tpose.glb"));
+        assert_eq!((o.animation.as_deref(), o.animation_file.as_deref()), (Some("mixamo.com"), Some("anim/run.glb")));
+        assert_eq!((o.attach_to.as_deref(), o.root_height, o.anim_time), (Some("Hips"), Some(0.9), Some(0.25)));
+        assert_eq!(o.tab, Some(RightTab::Hierarchy));
+        assert!(DevOptions::parse(&args("--stage moon")).is_err());
+        let o = DevOptions::parse(&args("--focus --motion none --open x --backdrop Dark")).unwrap();
+        assert_eq!(o.backdrop, Some(Backdrop::DarkRoom));
+        assert!(o.focus);
+        assert_eq!(o.motion, Some(None));
+        assert_eq!(o.open.as_deref(), Some("x"));
+        assert!(DevOptions::parse(&args("--motion fly")).is_err());
+        assert!(DevOptions::parse(&args("--anim-time soon")).is_err());
         assert!(DevOptions::parse(&args("--window-size big")).is_err());
     }
 }

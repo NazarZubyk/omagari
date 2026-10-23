@@ -13,6 +13,7 @@ use omagari::format::ProjectV2;
 use super::assets::{drop_overlay, TexturePreviews};
 use super::camera::PreviewCamera;
 use super::history::Activity;
+use super::model::ModelPreview;
 use super::scene::Backdrop;
 use super::session::EditorSession;
 use super::{dialogs, inspector, layers_panel, playback, problems, settings_panel, shortcuts, toolbar};
@@ -28,6 +29,7 @@ pub struct EditorUi<'w, 's> {
     preview_state: Res<'w, PreviewState>,
     game_assets: Res<'w, GameAssets>,
     previews: ResMut<'w, TexturePreviews>,
+    model: ResMut<'w, ModelPreview>,
     backdrop: ResMut<'w, Backdrop>,
     render_settings: ResMut<'w, RenderSettings>,
     virtual_time: ResMut<'w, Time<Virtual>>,
@@ -44,6 +46,7 @@ pub fn app_ui(params: EditorUi) -> Result {
         preview_state,
         game_assets,
         mut previews,
+        mut model,
         mut backdrop,
         mut render_settings,
         mut virtual_time,
@@ -56,7 +59,7 @@ pub fn app_ui(params: EditorUi) -> Result {
     let app = &mut res.context;
 
     let typing = ctx.text_edit_focused();
-    session.activity = if ctx.egui_is_using_pointer() {
+    session.activity = if ctx.egui_is_using_pointer() || model.is_dragging() {
         Activity::Dragging
     } else if typing {
         Activity::Typing
@@ -87,7 +90,7 @@ pub fn app_ui(params: EditorUi) -> Result {
         toolbar::toolbar(ui, project, session, app, &mut scene_backdrop, &game_assets);
     });
     egui::Panel::bottom("Playback").resizable(false).show(&mut root, |ui| {
-        playback::playback_bar(ui, session, &preview_state, &mut virtual_time, app);
+        playback::playback_bar(ui, project, session, &preview_state, &mut virtual_time, app, &mut model);
     });
     egui::Panel::left("LayersPanel")
         .resizable(true)
@@ -101,9 +104,10 @@ pub fn app_ui(params: EditorUi) -> Result {
         .default_size(430.0)
         .size_range(300.0..=900.0)
         .show(&mut root, |ui| {
-            inspector::right_panel(ui, project, session, app, &mut scene_backdrop, &mut previews, &game_assets);
+            inspector::right_panel(ui, project, session, app, &mut scene_backdrop, &mut previews, &game_assets, &mut model);
         });
     let central = root.available_rect_before_wrap();
+    super::model_panel::paint_socket_labels(&root.painter_at(central), &model);
 
     dialogs::dialogs(&ctx, session, app.filename.as_deref());
     if session.settings_open {
@@ -131,6 +135,9 @@ pub fn app_ui(params: EditorUi) -> Result {
         UVec2::new(window.physical_width(), window.physical_height()),
     );
     let pointer_on_ui = ctx.egui_wants_pointer_input() || session.dialog.is_some();
+    session.pointer_on_ui = pointer_on_ui;
+    // A socket dot under the cursor takes the click (drag), not the camera.
+    let grabbed = model.grabs_pointer();
     for (mut camera, orbit) in cameras.iter_mut() {
         let changed = match (&camera.viewport, &viewport) {
             (Some(a), Some(b)) => a.physical_position != b.physical_position || a.physical_size != b.physical_size,
@@ -141,7 +148,7 @@ pub fn app_ui(params: EditorUi) -> Result {
             camera.viewport = viewport.clone();
         }
         if let Some(mut orbit) = orbit {
-            let enabled = camera.is_active && !pointer_on_ui;
+            let enabled = camera.is_active && !pointer_on_ui && !grabbed;
             if orbit.enabled != enabled {
                 orbit.enabled = enabled;
             }

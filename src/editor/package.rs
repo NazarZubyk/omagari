@@ -7,6 +7,9 @@ use omagari::format::*;
 
 use super::helpers::*;
 use super::hints;
+use super::model::ModelPreview;
+use crate::model_info::ModelInfo;
+use bevy_egui::egui::RichText;
 
 /// The preview motion of the open project (saved in its `preview` block).
 pub fn motion_panel(ui: &mut egui::Ui, project: &mut ProjectV2) {
@@ -62,8 +65,13 @@ fn speed_row(ui: &mut egui::Ui, speed: &mut f32) {
     });
 }
 
+/// Step of the socket nudge buttons, metres.
+const NUDGE_STEPS: [(f32, &str); 3] = [(0.001, "1 mm"), (0.01, "1 cm"), (0.1, "10 cm")];
+
 /// The package's sockets (named points on the target) and its size fit.
-pub fn sockets_and_fit_panel(ui: &mut egui::Ui, project: &mut ProjectV2) {
+/// `model` is the preview model the instance is on (node pickers); sockets
+/// are shown and dragged in the viewport ([`ModelPreview`]).
+pub fn sockets_and_fit_panel(ui: &mut egui::Ui, project: &mut ProjectV2, model: &mut ModelPreview, info: Option<&ModelInfo>) {
     ui.strong("Size fit").on_hover_text(hints::FIT);
     ui.label("Scales the effect to its target (Local layers only).");
     ui.horizontal_wrapped(|ui| {
@@ -93,14 +101,31 @@ pub fn sockets_and_fit_panel(ui: &mut egui::Ui, project: &mut ProjectV2) {
             ui.label("m");
         }
     });
+    if let Some((lo, hi)) = model.target_bounds {
+        ui.label(RichText::new(format!("The preview target's meshes are {:.2} m tall.", hi.y - lo.y)).weak());
+    }
     ui.separator();
-    ui.strong("Sockets").on_hover_text(hints::SOCKETS);
+    ui.horizontal(|ui| {
+        ui.strong("Sockets").on_hover_text(hints::SOCKETS);
+        ui.checkbox(&mut model.show_gizmos, "show in viewport").on_hover_text(hints::SOCKET_DRAG);
+    });
     ui.label("Named points on the target; layers attach to them with Socket / Segment.");
     let mut remove = None;
+    let step_id = ui.make_persistent_id("socket nudge step");
+    let mut step: f32 = ui.data(|d| d.get_temp(step_id)).unwrap_or(0.01);
     for (index, socket) in project.sockets.iter_mut().enumerate() {
+        let selected = model.selected_socket.as_deref() == Some(socket.name.as_str());
+        let marker = model.markers.iter().find(|m| m.name == socket.name);
         ui.horizontal(|ui| {
             if ui.small_button("❌").on_hover_text("Remove").clicked() {
                 remove = Some(index);
+            }
+            if ui
+                .selectable_label(selected, "◎")
+                .on_hover_text("Select: highlight it in the viewport and nudge it")
+                .clicked()
+            {
+                model.selected_socket = if selected { None } else { Some(socket.name.clone()) };
             }
             egui::TextEdit::singleline(&mut socket.name)
                 .hint_text("name")
@@ -113,15 +138,63 @@ pub fn sockets_and_fit_panel(ui: &mut egui::Ui, project: &mut ProjectV2) {
                     .desired_width(150.0),
             )
             .on_hover_text("Name of an entity under the target, e.g. a bone; empty = the target root");
+            if let Some(info) = info {
+                ui.menu_button("⏷", |ui| {
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        if ui.button("(target root)").clicked() {
+                            node.clear();
+                            ui.close();
+                        }
+                        for n in info.nodes.iter() {
+                            if ui.selectable_label(n.name == node, &n.name).clicked() {
+                                node = n.name.clone();
+                                ui.close();
+                            }
+                        }
+                    });
+                })
+                .response
+                .on_hover_text("Pick a node of the preview model");
+            }
             socket.node = (!node.is_empty()).then_some(node);
-            ui.add_space(2.0);
+            if marker.is_some_and(|m| m.pending) {
+                ui.colored_label(egui::Color32::from_rgb(0xFF, 0x77, 0x66), "⚠")
+                    .on_hover_text("No node with this name under the preview target: the socket sits at the target root");
+            }
         });
         ui.horizontal(|ui| {
             ui.add_space(24.0);
             ui.label("offset (m):").on_hover_text("Metres from the node (or the target root), in its own axes");
             socket.offset = ui_for_vec3(ui, socket.offset);
         });
+        if selected {
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                ui.label("nudge").on_hover_text(hints::NUDGE);
+                for (axis, name) in [(Vec3::X, "X"), (Vec3::Y, "Y"), (Vec3::Z, "Z")] {
+                    if ui.small_button(format!("−{}", name)).on_hover_text(hints::NUDGE).clicked() {
+                        socket.offset -= axis * step;
+                    }
+                    if ui.small_button(format!("+{}", name)).on_hover_text(hints::NUDGE).clicked() {
+                        socket.offset += axis * step;
+                    }
+                }
+                for (value, label) in NUDGE_STEPS {
+                    ui.radio_value(&mut step, value, label);
+                }
+            });
+            if let Some(m) = marker {
+                ui.horizontal(|ui| {
+                    ui.add_space(24.0);
+                    ui.label(
+                        RichText::new(format!("in the world at ({:.3}, {:.3}, {:.3})", m.world.x, m.world.y, m.world.z))
+                            .weak(),
+                    );
+                });
+            }
+        }
     }
+    ui.data_mut(|d| d.insert_temp(step_id, step));
     if let Some(index) = remove {
         project.sockets.remove(index);
     }
@@ -138,5 +211,8 @@ pub fn sockets_and_fit_panel(ui: &mut egui::Ui, project: &mut ProjectV2) {
             offset: Vec3::ZERO,
         });
     }
-    ui.label("The editor's preview target has no model: sockets with a node sit at the target root.");
+    ui.label(RichText::new(hints::SOCKET_DRAG).weak());
+    if info.is_none() {
+        ui.label(RichText::new("Without a preview model (MODEL stage) sockets with a node sit at the target root.").weak());
+    }
 }

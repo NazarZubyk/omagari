@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 use bevy::window::WindowCloseRequested;
 
-use omagari::format::{builtin_texture_path, ChannelDef, LayerDef, PreviewDef, ProjectV2, TexturePurpose};
+use omagari::format::{builtin_texture_path, ChannelDef, LayerDef, ProjectV2, TexturePurpose};
 use omagari::runtime::resolve_asset_path_in;
 
 use super::assets::{select_asset, TexturePreviews};
@@ -501,24 +501,15 @@ impl ActionContext<'_> {
     /// Loads and plays the project an MCP preview request names, with its
     /// stage and motion.
     fn preview_request(&mut self, request: PreviewRequest) {
-        let filename = request.name;
+        let filename = request.name.clone();
         match load_project(&filename) {
             Ok(mut loaded) => {
-                if let Some(motion) = request.motion {
-                    loaded.preview.get_or_insert_with(PreviewDef::default).motion = motion;
-                }
+                request.apply_to(&mut loaded);
                 if let Some(stage) = request.stage.as_deref().and_then(super::scene::Stage::parse) {
                     stage.store(&mut loaded);
                 }
                 if let Some(camera) = request.camera.as_deref().and_then(super::camera::PreviewCamera::parse) {
                     camera.store(&mut loaded);
-                }
-                if !request.params.is_empty() {
-                    let preview = loaded.preview.get_or_insert_with(PreviewDef::default);
-                    for (name, value) in request.params.iter() {
-                        preview.params.retain(|(n, _)| n != name);
-                        preview.params.push((name.clone(), *value));
-                    }
                 }
                 // The request's stage, motion and values are viewing
                 // choices: the project still counts as saved.

@@ -31,7 +31,8 @@ pub const TRIGGERS: &str = "Named one-shot events the game fires (any names), e.
 pub const TRIGGER_NAME: &str = "The name the game uses: vfx.trigger(instance, \"name\"). Renaming updates the layers that play on it and the preview's auto-fire.";
 pub const PULSES: &str = "When the trigger fires, the parameter jumps to To and goes back to its value over Decay seconds (a flash). Number parameters only.";
 pub const FIRE: &str = "Fires the trigger on the preview, like the game's vfx.trigger.";
-pub const FIRE_RANDOM: &str = "Fires with a position: a random point near the target, like vfx.trigger_at with a contact point. Layers reading trigger_pos / trigger_dir burst there.";
+pub const FIRE_RANDOM: &str = "Fires with a position: a random point on the target's model (its meshes' bounds; near the target without a model), like vfx.trigger_at with a contact point. Layers reading trigger_pos / trigger_dir burst there.";
+pub const ANIMATION_TRIGGER: &str = "Fires the trigger each time the preview animation passes this clip time (every loop), e.g. at the hit frame of a swing. Saved with the project as a preview setting.";
 pub const AUTO_FIRE: &str = "Fires the trigger on the preview every N seconds. Saved with the project as a preview setting.";
 pub const BLEND: &str = "How particles mix with what is behind them. Add for glows and fire, Blend for smoke.";
 
@@ -130,3 +131,20 @@ pub const PRNG_SEED: &str = "Seed of the GPU random numbers. Off = the default s
 pub const PRESET_ONCE: &str = "One burst: Count particles at once, one cycle (impacts, explosions). Keeps the count (and its random range).";
 pub const PRESET_RATE: &str = "A steady stream: Count particles per second, forever (fire, smoke, auras). Keeps the count (and its random range).";
 pub const PRESET_BURST: &str = "Repeated bursts: Count particles at once every Period seconds, forever (pulses). Keeps the count and the period.";
+
+// --- model preview -------------------------------------------------------------
+
+pub const MODEL: &str = "A glTF model (.glb / .gltf) of the game assets folder to preview the effect on (MODEL stage). It is the game's model: sockets, attach_to and the checks use its node names. Without one the MODEL stage shows the capsule.";
+pub const ROOT_HEIGHT: &str = "How high the game's entity root (the effect's target) is above the model's feet, in metres: the model is placed this much below the target. E.g. 0.9 for a player whose root is 0.9 m above the feet; 0 = the target is the model's origin.";
+pub const ANIMATION_FILE: &str = "The glTF file the animation clip comes from: the model's own file, or another file with the same skeleton (Mixamo clips are separate files). Clips play on nodes with the same names, no retargeting.";
+pub const ANIMATION_CLIP: &str = "The clip to play (its name in the file; Mixamo clips are all called \"mixamo.com\"). Pause, loop and scrub in the bottom bar.";
+pub const ATTACH_TO: &str = "Where the preview instance is attached, like the game's spawn_vfx(&package, target): the model's root (the moving target), or a node of the body or of the weapon (pick it here or with 🎯 in the HIERARCHY tab). Sockets are looked up under it.";
+pub const WEAPON: &str = "A second model held by a node of the first (e.g. a sword in mixamorig:RightHand), with an offset and rotation. It is a separate model: effects on the body do not cover it. Pick \"weapon\" under Instance on to preview a weapon effect.";
+pub const HIERARCHY_ACTIONS: &str = "🎯 attach the preview instance to the node · ⚓+ new socket on the node · A / B segment start / end of the selected layer";
+pub const NODE_TARGET: &str = "Attach the preview instance to this node (preview.attach_to): the game's target entity";
+pub const NODE_SOCKET: &str = "Add a package socket on this node (offset 0); move it in the SOCKETS & FIT tab or by dragging its dot in the viewport";
+pub const NODE_SEGMENT: &str = "Use this node as the segment start (A) or end (B) of the selected layer (its socket on the node, else the node name)";
+pub const MESHES: &str = "Mesh entities (mesh.material) and materials of the model: what surface layers will target (own model only).";
+pub const SOCKET_DRAG: &str = "Drag a socket's dot in the viewport to move it in the camera plane; or type the offset, or nudge it. Gizmos: cyan = socket, yellow = selected or segment, red = node not found.";
+pub const NUDGE: &str = "Moves the selected socket by the step along the node's axis";
+pub const SEGMENT_RADIUS: &str = "Particles start at a random point along the layer's segment (attach Segment), up to a radius (here 5 cm, edit the last number) around it: a capsule along a blade. A SetAttribute position with Mix(segment_a, segment_b, rand) + a random offset square to the segment.";
