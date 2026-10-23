@@ -129,6 +129,88 @@ impl ProjectV2 {
         })
     }
 
+    /// Names of the layers that use the asset `id`.
+    pub fn asset_users(&self, id: &str) -> Vec<String> {
+        self.layers
+            .iter()
+            .filter(|l| match l {
+                LayerDef::Particles(p) => p.texture.as_deref() == Some(id),
+            })
+            .map(|l| l.name().to_string())
+            .collect()
+    }
+
+    /// Renames the asset `from` to `to` and updates every layer that uses
+    /// it. Fails when `to` is empty or taken, or `from` does not exist.
+    pub fn rename_asset(&mut self, from: &str, to: &str) -> Result<(), String> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err("an asset id cannot be empty".into());
+        }
+        if from == to {
+            return Ok(());
+        }
+        if self.asset(to).is_some() {
+            return Err(format!("an asset \"{}\" already exists", to));
+        }
+        let asset = self
+            .assets
+            .iter_mut()
+            .find(|a| a.id == from)
+            .ok_or_else(|| format!("no asset \"{}\"", from))?;
+        asset.id = to.to_string();
+        for layer in self.layers.iter_mut() {
+            match layer {
+                LayerDef::Particles(p) => {
+                    if p.texture.as_deref() == Some(from) {
+                        p.texture = Some(to.to_string());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes the asset `id`; refused while layers use it (the error names
+    /// them).
+    pub fn delete_asset(&mut self, id: &str) -> Result<AssetDef, String> {
+        let users = self.asset_users(id);
+        if !users.is_empty() {
+            return Err(format!("\"{}\" is used by {}", id, quoted_list(&users)));
+        }
+        let index = self
+            .assets
+            .iter()
+            .position(|a| a.id == id)
+            .ok_or_else(|| format!("no asset \"{}\"", id))?;
+        Ok(self.assets.remove(index))
+    }
+
+    /// An asset id based on `base` that no asset has yet: `base`, `base2`,
+    /// `base3`, ... Characters other than letters, digits, `_` and `-` become
+    /// `_`.
+    pub fn unique_asset_id(&self, base: &str) -> String {
+        let mut clean: String = base
+            .trim()
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        if clean.is_empty() {
+            clean = "texture".into();
+        }
+        if self.asset(&clean).is_none() {
+            return clean;
+        }
+        let mut n = 2;
+        loop {
+            let candidate = format!("{}{}", clean, n);
+            if self.asset(&candidate).is_none() {
+                return candidate;
+            }
+            n += 1;
+        }
+    }
+
     /// The package socket with this name.
     pub fn socket(&self, name: &str) -> Option<&SocketDef> {
         self.sockets.iter().find(|s| s.name == name)
@@ -366,6 +448,101 @@ impl TextureAssetDef {
 
     pub fn filter(&self) -> TextureFilter {
         self.filter.unwrap_or(TextureFilter::Linear)
+    }
+}
+
+impl TexturePurpose {
+    pub const ALL: [TexturePurpose; 4] =
+        [TexturePurpose::Sprite, TexturePurpose::Noise, TexturePurpose::Mask, TexturePurpose::Gradient];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TexturePurpose::Sprite => "Sprite",
+            TexturePurpose::Noise => "Noise",
+            TexturePurpose::Mask => "Mask",
+            TexturePurpose::Gradient => "Gradient",
+        }
+    }
+}
+
+/// A texture input of Omagari's own shaders (surface, shape, trail,
+/// afterimage and distortion layers, from P4 on): the asset and the channel
+/// the shader reads, so one channel-packed texture can feed several slots.
+/// Not used by the runtime yet.
+///
+/// ```ron
+/// (asset: "noise_pack", channel: G)
+/// (asset: "smoke")              // channel: Luminance
+/// ```
+///
+/// Particle layers cannot pick a channel (bevy_hanabi's texture sampling
+/// reads RGBA or R); extract the channel to its own texture for them.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct TextureSlotDef {
+    /// Asset id in the package's `assets`.
+    pub asset: String,
+    pub channel: ChannelDef,
+}
+
+/// Which value of a texture a slot reads.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ChannelDef {
+    R,
+    G,
+    B,
+    A,
+    /// Brightness of the colour (`0.2126 R + 0.7152 G + 0.0722 B`): right for
+    /// one-layer grayscale or colour textures.
+    #[default]
+    Luminance,
+}
+
+impl ChannelDef {
+    pub const ALL: [ChannelDef; 5] = [ChannelDef::R, ChannelDef::G, ChannelDef::B, ChannelDef::A, ChannelDef::Luminance];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ChannelDef::R => "R",
+            ChannelDef::G => "G",
+            ChannelDef::B => "B",
+            ChannelDef::A => "A",
+            ChannelDef::Luminance => "Luminance",
+        }
+    }
+
+    /// File name / asset id suffix of an extracted channel: `r`, `g`, `b`,
+    /// `a`, `luminance`.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            ChannelDef::R => "r",
+            ChannelDef::G => "g",
+            ChannelDef::B => "b",
+            ChannelDef::A => "a",
+            ChannelDef::Luminance => "luminance",
+        }
+    }
+
+    /// Reads `r`, `G`, `alpha`, `lum`, `luminance`, ... (any case).
+    pub fn parse(text: &str) -> Option<ChannelDef> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "r" | "red" => Some(ChannelDef::R),
+            "g" | "green" => Some(ChannelDef::G),
+            "b" | "blue" => Some(ChannelDef::B),
+            "a" | "alpha" => Some(ChannelDef::A),
+            "l" | "lum" | "luma" | "luminance" | "gray" | "grey" => Some(ChannelDef::Luminance),
+            _ => None,
+        }
+    }
+}
+
+/// `"a", "b" and "c"`.
+fn quoted_list(items: &[String]) -> String {
+    let quoted: Vec<String> = items.iter().map(|i| format!("\"{}\"", i)).collect();
+    match quoted.len() {
+        0 => String::new(),
+        1 => quoted[0].clone(),
+        n => format!("{} and {}", quoted[..n - 1].join(", "), quoted[n - 1]),
     }
 }
 
@@ -699,6 +876,69 @@ mod tests {
         let effect = def.produce(&mut warnings);
         assert!(effect.properties().is_empty());
         assert!(warnings[0].contains("Property(\"nope\") is not a runtime property"), "{:?}", warnings);
+    }
+
+    fn asset_project() -> ProjectV2 {
+        ProjectV2::from_ron_str(
+            r#"(version: 2,
+                assets: [
+                    (id: "smoke", kind: Texture((path: "vfx/textures/smoke.png"))),
+                    (id: "spare", kind: Texture((path: "vfx/textures/spare.png"))),
+                ],
+                layers: [
+                    Particles((name: "a", texture: Some("smoke"))),
+                    Particles((name: "b", texture: Some("smoke"))),
+                    Particles((name: "c")),
+                ])"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn renaming_an_asset_updates_its_layers() {
+        let mut p = asset_project();
+        assert_eq!(p.asset_users("smoke"), vec!["a", "b"]);
+        p.rename_asset("smoke", "fog").unwrap();
+        assert!(p.asset("smoke").is_none());
+        assert_eq!(p.asset_users("fog"), vec!["a", "b"]);
+        assert_eq!(p.layers[2].as_particles().unwrap().texture, None);
+        assert!(p.rename_asset("fog", "spare").unwrap_err().contains("already exists"));
+        assert!(p.rename_asset("fog", " ").is_err());
+        assert!(p.rename_asset("nope", "x").is_err());
+        assert!(p.rename_asset("fog", "fog").is_ok());
+    }
+
+    #[test]
+    fn deleting_a_used_asset_is_refused() {
+        let mut p = asset_project();
+        let err = p.delete_asset("smoke").unwrap_err();
+        assert_eq!(err, "\"smoke\" is used by \"a\" and \"b\"");
+        assert_eq!(p.assets.len(), 2);
+        assert_eq!(p.delete_asset("spare").unwrap().id, "spare");
+        assert_eq!(p.assets.len(), 1);
+        assert!(p.delete_asset("spare").is_err());
+    }
+
+    #[test]
+    fn unique_asset_ids() {
+        let p = asset_project();
+        assert_eq!(p.unique_asset_id("noise"), "noise");
+        assert_eq!(p.unique_asset_id("smoke"), "smoke2");
+        assert_eq!(p.unique_asset_id("my noise.v2"), "my_noise_v2");
+        assert_eq!(p.unique_asset_id(""), "texture");
+    }
+
+    #[test]
+    fn texture_slots_default_to_luminance() {
+        let slot: TextureSlotDef = ron::from_str(r#"(asset: "noise")"#).unwrap();
+        assert_eq!(slot, TextureSlotDef { asset: "noise".into(), channel: ChannelDef::Luminance });
+        let slot: TextureSlotDef = ron::from_str(r#"(asset: "pack", channel: G)"#).unwrap();
+        assert_eq!(slot.channel, ChannelDef::G);
+        for c in ChannelDef::ALL {
+            assert_eq!(ChannelDef::parse(c.suffix()), Some(c));
+            assert_eq!(ChannelDef::parse(c.name()), Some(c));
+        }
+        assert_eq!(ChannelDef::parse("rgb"), None);
     }
 
     #[test]
