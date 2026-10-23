@@ -14,12 +14,8 @@ use bevy::prelude::*;
 use bevy_hanabi::prelude::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
-use omagari::{register_missing_hanabi_modifiers, ExportedEffect, ExportedProject};
-
-use crate::controller::OmagariProject;
-use crate::effect::*;
-use crate::expr::*;
-use crate::modifiers::*;
+use omagari::format::*;
+use omagari::{register_missing_hanabi_modifiers, ExportedProject};
 
 const DT: f32 = 1.0 / 60.0;
 /// Longest time a single particle is simulated.
@@ -751,16 +747,8 @@ pub fn type_registry() -> AppTypeRegistry {
 
 /// Builds the `*.hanabi.ron` export of a project.
 pub fn export_string(project: &OmagariProject, registry: &AppTypeRegistry) -> Result<String, String> {
-    let mut to_export = ExportedProject::default();
-    for effect in project.effects.iter() {
-        to_export.effects.push(ExportedEffect {
-            name: effect.name().to_string(),
-            parent: effect.parent(),
-            texture_index: effect.texture_index(),
-            effect_asset: effect.produce(),
-        });
-    }
-    to_export
+    project
+        .to_exported()
         .to_ron_string(&registry.read())
         .map_err(|e| format!("export failed: {}", e))
 }

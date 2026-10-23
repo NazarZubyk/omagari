@@ -17,6 +17,8 @@ use std::{
     time::Duration,
 };
 
+pub mod format;
+
 /// OmagariPlugin is a Bevy plugin for managing and despawning exported Omagari effects from assets.
 pub struct OmagariPlugin;
 
