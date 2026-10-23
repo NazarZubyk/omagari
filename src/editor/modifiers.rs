@@ -395,3 +395,267 @@ impl ModifierLabel for OrientModifierEditor {
         "🧭 Orient"
     }
 }
+
+// --- P2b modifiers -------------------------------------------------------------
+
+/// A named expression in a collapsible section, with a tooltip.
+fn expr_section(app: &mut AppContext, ui: &mut egui::Ui, index: u64, label: &str, hint: &str, expr: &mut ExprWriterEditor) {
+    unique_collapsing(index, label, ui)
+        .show(ui, |ui| expr.draw_ui(app, ui, index))
+        .header_response
+        .on_hover_text(hint);
+}
+
+impl ModifierLabel for SetPositionCone3dModifierEditor {
+    fn label() -> &'static str {
+        "🕂 SetPositionCone3d"
+    }
+}
+
+impl UiProvider for SetPositionCone3dModifierEditor {
+    fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                expr_section(app, ui, 1, "Height (m)", hints::CONE_HEIGHT, &mut self.height_expr);
+                expr_section(app, ui, 2, "Base radius (m)", hints::CONE_BASE, &mut self.base_radius_expr);
+                expr_section(app, ui, 3, "Top radius (m)", hints::CONE_TOP, &mut self.top_radius_expr);
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.dimension, ShapeDimension::Volume, "Volume");
+                    ui.radio_value(&mut self.dimension, ShapeDimension::Surface, "Surface")
+                        .on_hover_text("bevy_hanabi always fills the cone's volume; Surface behaves like Volume");
+                });
+            })
+            .header_response
+            .on_hover_text(hints::CONE);
+    }
+}
+
+impl ModifierLabel for RadialAccelModifierEditor {
+    fn label() -> &'static str {
+        "🕛 RadialAccel"
+    }
+}
+
+impl UiProvider for RadialAccelModifierEditor {
+    fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                expr_section(app, ui, 1, "Origin", "The point particles are pushed from or pulled to (m)", &mut self.origin_expr);
+                expr_section(app, ui, 2, "Acceleration (m/s²)", hints::RADIAL_ACCEL_VALUE, &mut self.accel_expr);
+            })
+            .header_response
+            .on_hover_text(hints::RADIAL_ACCEL);
+    }
+}
+
+impl ModifierLabel for TangentAccelModifierEditor {
+    fn label() -> &'static str {
+        "🕛 TangentAccel"
+    }
+}
+
+impl UiProvider for TangentAccelModifierEditor {
+    fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                expr_section(app, ui, 1, "Origin", "A point on the swirl's axis (m)", &mut self.origin_expr);
+                expr_section(app, ui, 2, "Axis", "The direction the swirl turns around, e.g. (0, 1, 0) = around up", &mut self.axis_expr);
+                expr_section(app, ui, 3, "Acceleration (m/s²)", hints::TANGENT_ACCEL_VALUE, &mut self.accel_expr);
+            })
+            .header_response
+            .on_hover_text(hints::TANGENT_ACCEL);
+    }
+}
+
+impl ModifierLabel for KillSphereModifierEditor {
+    fn label() -> &'static str {
+        "💀 KillSphere"
+    }
+}
+
+impl UiProvider for KillSphereModifierEditor {
+    fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                expr_section(app, ui, 1, "Center", "Center of the sphere (m)", &mut self.center_expr);
+                expr_section(app, ui, 2, "Radius (m)", "Radius of the sphere", &mut self.radius_expr);
+                ui.checkbox(&mut self.kill_inside, "kill inside").on_hover_text(hints::KILL_INSIDE);
+            })
+            .header_response
+            .on_hover_text(hints::KILL_SPHERE);
+    }
+}
+
+impl ModifierLabel for KillAabbModifierEditor {
+    fn label() -> &'static str {
+        "💀 KillAabb"
+    }
+}
+
+impl UiProvider for KillAabbModifierEditor {
+    fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                expr_section(app, ui, 1, "Center", "Center of the box (m)", &mut self.center_expr);
+                expr_section(app, ui, 2, "Half size (m)", "Half the box's width, height and depth (vec3)", &mut self.half_size_expr);
+                ui.checkbox(&mut self.kill_inside, "kill inside").on_hover_text(hints::KILL_INSIDE);
+            })
+            .header_response
+            .on_hover_text(hints::KILL_AABB);
+    }
+}
+
+/// A render-time constant or random range of vectors (`±` switches).
+fn ui_for_cpu_vec<T: Copy>(ui: &mut egui::Ui, value: &mut CpuVecDef<T>, edit: impl Fn(&mut egui::Ui, T) -> T) {
+    match value {
+        CpuVecDef::Single(v) => {
+            *v = edit(ui, *v);
+            let v = *v;
+            if ui.small_button("±").on_hover_text("Random range (the same value for every particle at render time)").clicked() {
+                *value = CpuVecDef::Uniform((v, v));
+            }
+        }
+        CpuVecDef::Uniform((a, b)) => {
+            ui.vertical(|ui| {
+                *a = edit(ui, *a);
+                ui.label("to");
+                *b = edit(ui, *b);
+            });
+            let a = *a;
+            if ui.small_button("=").on_hover_text("Single value").clicked() {
+                *value = CpuVecDef::Single(a);
+            }
+        }
+    }
+}
+
+/// Blend and mask radio buttons of the colour render modifiers.
+fn ui_for_color_blend(ui: &mut egui::Ui, blend: &mut ColorBlendMode, mask: &mut ColorBlendMask) {
+    ui.horizontal(|ui| {
+        ui.radio_value(blend, ColorBlendMode::Modulate, "Modulate")
+            .on_hover_text("Multiplies the particle's colour");
+        ui.radio_value(blend, ColorBlendMode::Add, "Add").on_hover_text("Adds to the particle's colour");
+        ui.radio_value(blend, ColorBlendMode::Overwrite, "Overwrite")
+            .on_hover_text("Replaces the particle's colour");
+    });
+    ui.horizontal(|ui| {
+        ui.radio_value(mask, ColorBlendMask::RGBA, "RGBA").on_hover_text("Changes colour and opacity");
+        ui.radio_value(mask, ColorBlendMask::RGB, "RGB").on_hover_text("Changes the colour only, not the opacity");
+        ui.radio_value(mask, ColorBlendMask::A, "A").on_hover_text("Changes the opacity only");
+    });
+}
+
+impl ModifierLabel for SetColorModifierEditor {
+    fn label() -> &'static str {
+        "🎨 SetColor"
+    }
+}
+
+impl UiProvider for SetColorModifierEditor {
+    fn draw_ui(&mut self, _app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("r g b a:");
+                    ui_for_cpu_vec(ui, &mut self.color, ui_for_vec4);
+                });
+                ui_for_color_blend(ui, &mut self.blend, &mut self.mask);
+            })
+            .header_response
+            .on_hover_text(hints::SET_COLOR);
+    }
+}
+
+impl ModifierLabel for SetSizeModifierEditor {
+    fn label() -> &'static str {
+        "📏 SetSize"
+    }
+}
+
+impl UiProvider for SetSizeModifierEditor {
+    fn draw_ui(&mut self, _app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("x y z (m):");
+                    ui_for_cpu_vec(ui, &mut self.size, ui_for_vec3);
+                });
+            })
+            .header_response
+            .on_hover_text(hints::SET_SIZE);
+    }
+}
+
+impl ModifierLabel for FlipbookModifierEditor {
+    fn label() -> &'static str {
+        "🎞 Flipbook"
+    }
+}
+
+impl UiProvider for FlipbookModifierEditor {
+    fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                let mut from_texture = self.grid.is_none();
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut from_texture, "grid of the texture")
+                        .on_hover_text("Use the rows × columns set on the texture asset (ASSETS tab)")
+                        .changed()
+                    {
+                        self.grid = if from_texture { None } else { Some(app.layer_texture_grid.unwrap_or((4, 4))) };
+                    }
+                    if from_texture {
+                        match app.layer_texture_grid {
+                            Some((rows, cols)) => {
+                                ui.label(format!("{} rows × {} columns", rows, cols));
+                            }
+                            None => {
+                                ui.colored_label(egui::Color32::from_hex("#FFCC66").unwrap(), "⚠ the texture has no grid")
+                                    .on_hover_text("Set the grid in the ASSETS tab, or untick and set it here");
+                            }
+                        }
+                    }
+                });
+                if let Some((rows, cols)) = &mut self.grid {
+                    ui.horizontal(|ui| {
+                        ui.label("rows");
+                        *rows = ui_for_u32_ex(ui, *rows, 1, 64, 1);
+                        ui.label("columns");
+                        *cols = ui_for_u32_ex(ui, *cols, 1, 64, 1);
+                    });
+                }
+            })
+            .header_response
+            .on_hover_text(hints::FLIPBOOK);
+    }
+}
+
+impl ModifierLabel for RoundModifierEditor {
+    fn label() -> &'static str {
+        "⏺ Round"
+    }
+}
+
+impl UiProvider for RoundModifierEditor {
+    fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                expr_section(app, ui, 1, "Roundness (0..1)", hints::ROUND, &mut self.roundness_expr);
+            })
+            .header_response
+            .on_hover_text(hints::ROUND);
+    }
+}
+
+impl ModifierLabel for ScreenSpaceSizeModifierEditor {
+    fn label() -> &'static str {
+        "🖵 ScreenSpaceSize"
+    }
+}
+
+impl UiProvider for ScreenSpaceSizeModifierEditor {
+    fn draw_ui(&mut self, _app: &mut AppContext, ui: &mut egui::Ui, _index: u64) {
+        ui.label(Self::label()).on_hover_text(hints::SCREEN_SPACE_SIZE);
+    }
+}

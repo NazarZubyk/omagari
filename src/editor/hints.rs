@@ -103,3 +103,30 @@ pub fn purpose_hint(purpose: omagari::format::TexturePurpose) -> &'static str {
         P::Gradient => "A colour ramp looked up from left to right. Clamp, colour.",
     }
 }
+
+// --- P2b: hanabi coverage ----------------------------------------------------------
+
+pub const CONE: &str = "Particles start inside a cone standing on the layer's origin and opening upwards (+Y), turning with the emitter: fountains, thrusters, torches.";
+pub const CONE_HEIGHT: &str = "How tall the cone is, in metres (from its base at the origin up).";
+pub const CONE_BASE: &str = "Radius of the cone at the bottom (the origin), in metres. Small = a narrow nozzle.";
+pub const CONE_TOP: &str = "Radius at the top, in metres. 0 = a pointed cone; larger than the base = a cone opening upwards.";
+pub const RADIAL_ACCEL: &str = "Pushes particles away from a point (positive) or pulls them towards it (negative): implosions, black holes, bursts.";
+pub const RADIAL_ACCEL_VALUE: &str = "m/s² away from the origin; negative pulls particles in.";
+pub const TANGENT_ACCEL: &str = "Swirls particles around an axis: auras, tornados, vortices. Combine with a pull (RadialAccel, negative) to keep them circling.";
+pub const TANGENT_ACCEL_VALUE: &str = "m/s² around the axis; negative swirls the other way.";
+pub const KILL_SPHERE: &str = "Removes particles that leave a sphere (or enter it, with kill inside): keep a swarm in a ball, or clear a hole.";
+pub const KILL_AABB: &str = "Removes particles that leave a box (or enter it, with kill inside): keep rain inside a room, stop particles at the floor.";
+pub const KILL_INSIDE: &str = "On: particles inside the volume die. Off: particles outside it die.";
+pub const SET_COLOR: &str = "Sets the colour when particles are drawn, combined with their colour by the blend mode. A random range gives every particle the same colour (bevy_hanabi limit): use hdr_color at birth for per-particle colours.";
+pub const SET_SIZE: &str = "Sets the size in metres when particles are drawn (replaces the size attribute; a later SizeOverLifetime replaces it again).";
+pub const FLIPBOOK: &str = "Plays a sprite sheet: each particle draws frame sprite_index of the texture (frames left to right, then top to bottom). Needs ParticleTexture, a grid and something that sets sprite_index (Update + › Flipbook frames over lifetime).";
+pub const FLIPBOOK_FRAMES: &str = "An update SetAttribute that steps sprite_index from the first frame at birth to the last at death, using the texture's grid (rows × columns frames).";
+pub const ROUND: &str = "Rounds the corners of particle squares: 0 = square, 1 = circle. A number or an expression (render time).";
+pub const SCREEN_SPACE_SIZE: &str = "The particle size is in screen pixels instead of metres, so particles keep their size on screen at any distance (dots, UI-like sparkles). Put it after the size modifiers; sizes like 8 to 32.";
+pub const ORIENT_ROTATION: &str = "Spins the particle square around the view direction, in radians: a number, or e.g. Age × 3 for spinning sprites. Works with ParallelCameraDepthPlane and FaceCameraPosition.";
+pub const MOTION: &str = "When particles move by their velocity. After update (default) / before update; None = only modifiers that set the position move them (expression-driven paths, ribbons).";
+pub const SIM_CONDITION: &str = "When visible (default): the layer is simulated only while visible, the cheapest. Always: also off screen, so it is up to date when it comes back into view.";
+pub const PRNG_SEED: &str = "Seed of the GPU random numbers. Off = the default seed (0). The same seed gives the same random spread every time; change it to get another variation.";
+pub const PRESET_ONCE: &str = "One burst: Count particles at once, one cycle (impacts, explosions). Keeps the count (and its random range).";
+pub const PRESET_RATE: &str = "A steady stream: Count particles per second, forever (fire, smoke, auras). Keeps the count (and its random range).";
+pub const PRESET_BURST: &str = "Repeated bursts: Count particles at once every Period seconds, forever (pulses). Keeps the count and the period.";

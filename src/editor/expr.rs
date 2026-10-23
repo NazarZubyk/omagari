@@ -8,6 +8,22 @@ use omagari::format::*;
 use super::helpers::*;
 use super::AppContext;
 
+fn warn_color() -> egui::Color32 {
+    egui::Color32::from_hex("#FF8866").unwrap()
+}
+
+/// A picker of value types; `floats_only` limits it to f32 / vec2 / vec3 /
+/// vec4 (`Rand`).
+fn value_type_picker(ui: &mut egui::Ui, id: egui::Id, value: &mut ValueTypeDef, floats_only: bool) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(value.name())
+        .show_ui(ui, |ui| {
+            for t in ValueTypeDef::ALL.into_iter().filter(|t| !floats_only || t.is_float()) {
+                ui.selectable_value(value, t, t.name());
+            }
+        });
+}
+
 impl UiProvider for ExprOperatorEditor {
     fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
         let unique_id = index;
@@ -47,6 +63,19 @@ impl UiProvider for ExprOperatorEditor {
                     ExprOperatorEditor::ParentAttr(selected_attr)
                 };
             }
+            ExprOperatorEditor::Cast(arg, target) => {
+                unique_collapsing(unique_id, &label, ui)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("to").weak());
+                            let id = ui.make_persistent_id(format!("cast type {}", index));
+                            value_type_picker(ui, id, target, false);
+                        });
+                        arg.draw_ui(app, ui, 1);
+                    })
+                    .header_response
+                    .on_hover_text(info.hint);
+            }
             _ => {
                 let names = info.args;
                 unique_collapsing(unique_id, &label, ui)
@@ -54,7 +83,9 @@ impl UiProvider for ExprOperatorEditor {
                         for (i, arg) in self.args_mut().into_iter().enumerate() {
                             // Named arguments where the order matters.
                             let name = names.get(i).copied().unwrap_or_default();
-                            if names.len() >= 3 && !matches!(info.name, "Vec3" | "Vec4") {
+                            if names.len() >= 2 && !matches!(info.name, "Vec2" | "Vec3" | "Vec4")
+                                && !matches!(name, "a" | "b")
+                            {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(name).weak());
                                     arg.draw_ui(app, ui, i as u64 + 1);
@@ -71,19 +102,118 @@ impl UiProvider for ExprOperatorEditor {
     }
 }
 
-/// The Operator menu: every row of [`OPERATORS`], with its hint.
+/// The Operator menu: every row of [`OPERATORS`] in its group, with its hint.
 pub fn operator_menu_ui(ui: &mut egui::Ui) -> Option<Box<ExprOperatorEditor>> {
-    for info in OPERATORS.iter() {
-        let text = if info.args.is_empty() {
-            format!("🖩 {}", info.name)
-        } else {
-            format!("🖩 {}({})", info.name, info.args.join(", "))
-        };
-        if ui.button(text).on_hover_text(info.hint).clicked() {
-            return Some(Box::new((info.make)()));
-        }
+    let mut picked = None;
+    for group in OPERATOR_GROUPS {
+        ui.menu_button(group, |ui| {
+            for info in OPERATORS.iter().filter(|o| o.group == group) {
+                let text = if info.args.is_empty() {
+                    format!("🖩 {}", info.name)
+                } else {
+                    format!("🖩 {}({})", info.name, info.args.join(", "))
+                };
+                if ui.button(text).on_hover_text(info.hint).clicked() {
+                    picked = Some(Box::new((info.make)()));
+                }
+            }
+        });
     }
-    None
+    picked
+}
+
+/// The value menu: every row of [`EXPR_VALUES`] in its group.
+fn value_menu_ui(ui: &mut egui::Ui) -> Option<ExprWriterEditor> {
+    let mut picked = None;
+    for group in ["Number", "Vector", "Random", "Time", "Special"] {
+        ui.menu_button(group, |ui| {
+            for info in EXPR_VALUES.iter().filter(|v| v.group == group && !NOT_OFFERED_VALUES.contains(&v.name)) {
+                if ui
+                    .button(format!("{} ({})", info.name, info.ty))
+                    .on_hover_text(info.hint)
+                    .clicked()
+                {
+                    picked = Some((info.make)());
+                }
+            }
+        });
+    }
+    picked
+}
+
+/// The editable part of a literal or a random value (nothing for built-in
+/// values like Time).
+fn leaf_value_ui(e: &mut ExprWriterEditor, ui: &mut egui::Ui, index: u64) {
+    use ExprWriterEditor as E;
+    let int = |ui: &mut egui::Ui, v: &mut i32| {
+        ui.add(egui::DragValue::new(v).speed(0.1).range(-100000..=100000));
+    };
+    let uint = |ui: &mut egui::Ui, v: &mut u32| {
+        ui.add(egui::DragValue::new(v).speed(0.1).range(0..=100000));
+    };
+    match e {
+        E::Float(f) => *f = ui_for_f32(ui, *f),
+        E::U32(v) => *v = ui_for_u32_ex(ui, *v, 0, 10000, 1),
+        E::I32(v) => int(ui, v),
+        E::Bool(v) => {
+            ui.checkbox(v, "");
+        }
+        E::Vec2(v) => {
+            for k in 0..2 {
+                v[k] = ui_for_f32(ui, v[k]);
+            }
+        }
+        E::Vec3(v) => *v = ui_for_vec3(ui, *v),
+        E::Vec4(v) => *v = ui_for_vec4(ui, *v),
+        E::IVec2(v) => (0..2).for_each(|k| int(ui, &mut v[k])),
+        E::IVec3(v) => (0..3).for_each(|k| int(ui, &mut v[k])),
+        E::IVec4(v) => (0..4).for_each(|k| int(ui, &mut v[k])),
+        E::UVec2(v) => (0..2).for_each(|k| uint(ui, &mut v[k])),
+        E::UVec3(v) => (0..3).for_each(|k| uint(ui, &mut v[k])),
+        E::UVec4(v) => (0..4).for_each(|k| uint(ui, &mut v[k])),
+        E::BVec2(v) => {
+            let (mut x, mut y) = (v.x, v.y);
+            ui.checkbox(&mut x, "");
+            ui.checkbox(&mut y, "");
+            *v = BVec2::new(x, y);
+        }
+        E::BVec3(v) => {
+            let (mut x, mut y, mut z) = (v.x, v.y, v.z);
+            ui.checkbox(&mut x, "");
+            ui.checkbox(&mut y, "");
+            ui.checkbox(&mut z, "");
+            *v = BVec3::new(x, y, z);
+        }
+        E::BVec4(v) => {
+            let (mut x, mut y, mut z, mut w) = (v.x, v.y, v.z, v.w);
+            ui.checkbox(&mut x, "");
+            ui.checkbox(&mut y, "");
+            ui.checkbox(&mut z, "");
+            ui.checkbox(&mut w, "");
+            *v = BVec4::new(x, y, z, w);
+        }
+        E::Rand(t) => {
+            let id = ui.make_persistent_id(format!("rand type {}", index));
+            value_type_picker(ui, id, t, true);
+            if !t.is_float() {
+                ui.colored_label(warn_color(), "⚠ float types only")
+                    .on_hover_text("bevy_hanabi 0.19's shaders have no integer or bool random function");
+            }
+        }
+        E::RandU32 => {
+            ui.colored_label(warn_color(), "⚠ fails on the GPU").on_hover_text(
+                "bevy_hanabi 0.19's shaders have no integer random function; use Cast(RandFloat × n, U32)",
+            );
+        }
+        E::IsAlive => {
+            ui.label(egui::RichText::new("(update only)").weak());
+        }
+        E::AlphaCutoff => {
+            ui.colored_label(warn_color(), "⚠ fails on the GPU")
+                .on_hover_text("bevy_hanabi 0.19 cannot compile AlphaCutoff; use the Mask cutoff number");
+        }
+        _ => {}
+    }
 }
 
 impl UiProvider for ExprWriterEditor {
@@ -107,128 +237,6 @@ impl UiProvider for ExprWriterEditor {
                 {
                     *self = v;
                 }
-            }
-            ExprWriterEditor::Age => {
-                if let Some(v) = ui
-                    .horizontal(|ui| match ui_tools_for_expr_writer("Age", ui) {
-                        ExprControl::Delete => Some(ExprWriterEditor::Placeholder),
-                        ExprControl::Noop => None,
-                        ExprControl::Copy => {
-                            app.expr_clipboard = Some(c);
-                            None
-                        }
-                    })
-                    .inner
-                {
-                    *self = v;
-                }
-            }
-            ExprWriterEditor::RandU32 => {
-                if let Some(v) = ui
-                    .horizontal(|ui| match ui_tools_for_expr_writer("Rand U32", ui) {
-                        ExprControl::Delete => Some(ExprWriterEditor::Placeholder),
-                        ExprControl::Noop => None,
-                        ExprControl::Copy => {
-                            app.expr_clipboard = Some(c);
-                            None
-                        }
-                    })
-                    .inner
-                {
-                    *self = v;
-                }
-            }
-            ExprWriterEditor::RandFloat => {
-                if let Some(v) = ui
-                    .horizontal(|ui| match ui_tools_for_expr_writer("Rand Float", ui) {
-                        ExprControl::Delete => Some(ExprWriterEditor::Placeholder),
-                        ExprControl::Noop => None,
-                        ExprControl::Copy => {
-                            app.expr_clipboard = Some(c);
-                            None
-                        }
-                    })
-                    .inner
-                {
-                    *self = v;
-                }
-            }
-            ExprWriterEditor::RandVec3 => {
-                if let Some(v) = ui
-                    .horizontal(|ui| match ui_tools_for_expr_writer("Rand Vec3", ui) {
-                        ExprControl::Delete => Some(ExprWriterEditor::Placeholder),
-                        ExprControl::Noop => None,
-                        ExprControl::Copy => {
-                            app.expr_clipboard = Some(c);
-                            None
-                        }
-                    })
-                    .inner
-                {
-                    *self = v;
-                }
-            }
-            ExprWriterEditor::Float(f) => {
-                *self = ui
-                    .horizontal(|ui| match ui_tools_for_expr_writer("Float", ui) {
-                        ExprControl::Delete => ExprWriterEditor::Placeholder,
-                        ExprControl::Noop => ExprWriterEditor::Float(ui_for_f32(ui, *f)),
-                        ExprControl::Copy => {
-                            app.expr_clipboard = Some(c);
-                            ExprWriterEditor::Float(ui_for_f32(ui, *f))
-                        }
-                    })
-                    .inner;
-            }
-            ExprWriterEditor::U32(f) => {
-                *self = ui
-                    .horizontal(|ui| match ui_tools_for_expr_writer("U32", ui) {
-                        ExprControl::Delete => ExprWriterEditor::Placeholder,
-                        ExprControl::Noop => {
-                            ExprWriterEditor::U32(ui_for_u32_ex(ui, *f, 0, 10000, 1))
-                        }
-                        ExprControl::Copy => {
-                            app.expr_clipboard = Some(c);
-                            ExprWriterEditor::U32(ui_for_u32_ex(ui, *f, 0, 10000, 1))
-                        }
-                    })
-                    .inner;
-            }
-            ExprWriterEditor::Vec3(result) => {
-                *self = ui
-                    .horizontal(|ui| match ui_tools_for_expr_writer("Vec3", ui) {
-                        ExprControl::Delete => ExprWriterEditor::Placeholder,
-                        ExprControl::Noop => ExprWriterEditor::Vec3(ui_for_vec3(ui, *result)),
-                        ExprControl::Copy => {
-                            app.expr_clipboard = Some(c);
-                            ExprWriterEditor::Vec3(ui_for_vec3(ui, *result))
-                        }
-                    })
-                    .inner;
-            }
-            ExprWriterEditor::Vec4(result) => {
-                *self = ui
-                    .horizontal(|ui| match ui_tools_for_expr_writer("Vec4", ui) {
-                        ExprControl::Delete => ExprWriterEditor::Placeholder,
-                        ExprControl::Noop => ExprWriterEditor::Vec4(ui_for_vec4(ui, *result)),
-                        ExprControl::Copy => {
-                            app.expr_clipboard = Some(c);
-                            ExprWriterEditor::Vec4(ui_for_vec4(ui, *result))
-                        }
-                    })
-                    .inner;
-            }
-            ExprWriterEditor::Time => {
-                *self = ui
-                    .horizontal(|ui| match ui_tools_for_expr_writer("Time", ui) {
-                        ExprControl::Delete => ExprWriterEditor::Placeholder,
-                        ExprControl::Noop => ExprWriterEditor::Time,
-                        ExprControl::Copy => {
-                            app.expr_clipboard = Some(c);
-                            ExprWriterEditor::Time
-                        }
-                    })
-                    .inner;
             }
 
             ExprWriterEditor::Property(name) => {
@@ -278,7 +286,7 @@ impl UiProvider for ExprWriterEditor {
                                 ui.label(egui::RichText::new(param_kind_label(kind)).weak());
                             }
                             None => {
-                                ui.colored_label(egui::Color32::from_hex("#FF8866").unwrap(), "⚠ unknown")
+                                ui.colored_label(warn_color(), "⚠ unknown")
                                     .on_hover_text("No parameter has this name (PARAMETERS tab); it reads 0.0");
                             }
                         }
@@ -302,33 +310,11 @@ impl UiProvider for ExprWriterEditor {
                             *self = ExprWriterEditor::Operator(op);
                         }
                     });
-                    if ui.button("Age").clicked() {
-                        *self = ExprWriterEditor::Age;
-                    }
-                    if ui.button("RandFloat").clicked() {
-                        *self = ExprWriterEditor::RandFloat;
-                    }
-                    if ui.button("RandU32").clicked() {
-                        *self = ExprWriterEditor::RandU32;
-                    }
-                    if ui.button("RandVec3").clicked() {
-                        *self = ExprWriterEditor::RandVec3;
-                    }
-                    if ui.button("Time").clicked() {
-                        *self = ExprWriterEditor::Time;
-                    }
-                    if ui.button("Float").clicked() {
-                        *self = ExprWriterEditor::Float(0.0);
-                    }
-                    if ui.button("U32").clicked() {
-                        *self = ExprWriterEditor::U32(0);
-                    }
-                    if ui.button("Vec3").clicked() {
-                        *self = ExprWriterEditor::Vec3(Vec3::ZERO);
-                    }
-                    if ui.button("Vec4").clicked() {
-                        *self = ExprWriterEditor::Vec4(Vec4::ZERO);
-                    }
+                    ui.menu_button("Value", |ui| {
+                        if let Some(value) = value_menu_ui(ui) {
+                            *self = value;
+                        }
+                    });
                     ui.menu_button("Parameter", |ui| {
                         if app.params.is_empty() {
                             ui.label(egui::RichText::new("No parameters yet: add them in the PARAMETERS tab").weak());
@@ -392,6 +378,27 @@ impl UiProvider for ExprWriterEditor {
                                 )),
                             ))
                         }
+                        let frames = app.layer_texture_grid.map(|(r, c)| r * c).unwrap_or(16);
+                        if ui
+                            .button("Sprite Index Over Lifetime")
+                            .on_hover_text(format!(
+                                "i32(age / lifetime × {}): the flipbook frame from first to last over the particle's life (for sprite_index, in an update SetAttribute)",
+                                frames
+                            ))
+                            .clicked()
+                        {
+                            *self = sprite_index_over_lifetime(frames).attr_expr;
+                        }
+                        if ui
+                            .button("Spin Over Age")
+                            .on_hover_text("age × 3: an angle that grows over the particle's life (Orient rotation, radians)")
+                            .clicked()
+                        {
+                            *self = ExprWriterEditor::Operator(Box::new(ExprOperatorEditor::Multiply(
+                                ExprWriterEditor::Age,
+                                ExprWriterEditor::Float(3.0),
+                            )));
+                        }
                     });
                     if app.expr_clipboard.is_some() {
                         ui.separator();
@@ -400,6 +407,22 @@ impl UiProvider for ExprWriterEditor {
                         }
                     }
                 });
+            }
+
+            _ => {
+                let label = c.leaf_name().unwrap_or_default();
+                let control = ui
+                    .horizontal(|ui| {
+                        let control = ui_tools_for_expr_writer(label, ui);
+                        leaf_value_ui(self, ui, index);
+                        control
+                    })
+                    .inner;
+                match control {
+                    ExprControl::Delete => *self = ExprWriterEditor::Placeholder,
+                    ExprControl::Copy => app.expr_clipboard = Some(c),
+                    ExprControl::Noop => {}
+                }
             }
         }
     }
