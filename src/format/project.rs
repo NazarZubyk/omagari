@@ -124,6 +124,12 @@ impl ProjectV2 {
         self.assets.iter().find(|a| a.id == id)
     }
 
+    /// `(rows, columns)` of the sprite sheet of a layer's texture, if it has
+    /// one.
+    pub fn texture_grid(&self, layer: &ParticlesLayerDef) -> Option<(u32, u32)> {
+        layer.texture.as_ref().and_then(|id| self.texture(id)).and_then(|t| t.grid)
+    }
+
     /// The texture asset with this id.
     pub fn texture(&self, id: &str) -> Option<&TextureAssetDef> {
         self.asset(id).and_then(|a| match &a.kind {
@@ -1026,10 +1032,24 @@ impl ParticlesLayerDef {
     /// layer's simulation space), with `Param(..)` reads resolved against the
     /// package's `params`. See [`ParticleEffectDef::produce`]. Root layers
     /// played by the runtime (`OnTrigger`, `While`) do not start active.
+    ///
+    /// A Flipbook without its own grid gets none here; use
+    /// [`ParticlesLayerDef::produce_in`], which reads the texture's grid.
     pub fn produce(&self, params: &[ParamDef], warnings: &mut Vec<String>) -> EffectAsset {
+        self.produce_with_grid(params, None, warnings)
+    }
+
+    /// Builds the layer's effect as part of `project`: its parameters and
+    /// the sprite-sheet grid of the layer's texture (for Flipbook). What the
+    /// runtime uses.
+    pub fn produce_in(&self, project: &ProjectV2, warnings: &mut Vec<String>) -> EffectAsset {
+        self.produce_with_grid(&project.parameters, project.texture_grid(self), warnings)
+    }
+
+    fn produce_with_grid(&self, params: &[ParamDef], grid: Option<(u32, u32)>, warnings: &mut Vec<String>) -> EffectAsset {
         let mut effect = self
             .effect
-            .produce(&self.name, self.simulation_space.into(), params, warnings);
+            .produce_with_grid(&self.name, self.simulation_space.into(), params, grid, warnings);
         if self.play.is_driven() && self.parent.is_none() {
             effect.spawner = effect.spawner.with_starts_active(false);
         }

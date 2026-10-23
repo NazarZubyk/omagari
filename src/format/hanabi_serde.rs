@@ -110,6 +110,47 @@ impl SpawnerDef {
     }
 }
 
+/// Spawner patterns of bevy_hanabi's `SpawnerSettings` constructors.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SpawnerPreset {
+    /// `SpawnerSettings::once`: `count` particles at once, one cycle.
+    Once,
+    /// `SpawnerSettings::rate`: `count` particles per second, forever.
+    Rate,
+    /// `SpawnerSettings::burst`: `count` particles at once every `period`
+    /// seconds, forever.
+    Burst,
+}
+
+impl SpawnerDef {
+    /// This spawner switched to a preset pattern, keeping its count (also a
+    /// random range), the period of a burst, and `starts_active` /
+    /// `emit_on_start`.
+    pub fn with_preset(&self, preset: SpawnerPreset) -> SpawnerDef {
+        let count = self.count.into();
+        let settings = match preset {
+            SpawnerPreset::Once => SpawnerSettings::once(count),
+            SpawnerPreset::Rate => SpawnerSettings::rate(count),
+            SpawnerPreset::Burst => {
+                let period = if self.period.range()[0] > 0.0 { self.period } else { CpuValueDef::Single(1.0) };
+                SpawnerSettings::burst(count, period.finite_or(1.0).into())
+            }
+        };
+        SpawnerDef {
+            starts_active: self.starts_active,
+            emit_on_start: self.emit_on_start,
+            ..settings.into()
+        }
+    }
+
+    /// The preset this spawner matches, if any.
+    pub fn preset(&self) -> Option<SpawnerPreset> {
+        [SpawnerPreset::Once, SpawnerPreset::Rate, SpawnerPreset::Burst]
+            .into_iter()
+            .find(|p| self.with_preset(*p) == *self)
+    }
+}
+
 impl From<SpawnerSettings> for SpawnerDef {
     fn from(settings: SpawnerSettings) -> Self {
         SpawnerDef {
@@ -258,5 +299,60 @@ pub mod option_color_blend_mask {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<ColorBlendMask>, D::Error> {
         Ok(Option::<ColorBlendMaskDef>::deserialize(d)?
             .map(|mask| ColorBlendMask::from_bits_retain(mask.0)))
+    }
+}
+
+/// `#[serde(with)]` for a [`ColorBlendMode`] field: `Overwrite`, `Add` or
+/// `Modulate`.
+pub mod color_blend_mode {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &ColorBlendMode, s: S) -> Result<S::Ok, S::Error> {
+        match value {
+            ColorBlendMode::Overwrite => ColorBlendModeDef::Overwrite,
+            ColorBlendMode::Add => ColorBlendModeDef::Add,
+            ColorBlendMode::Modulate => ColorBlendModeDef::Modulate,
+        }
+        .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<ColorBlendMode, D::Error> {
+        Ok(match ColorBlendModeDef::deserialize(d)? {
+            ColorBlendModeDef::Overwrite => ColorBlendMode::Overwrite,
+            ColorBlendModeDef::Add => ColorBlendMode::Add,
+            ColorBlendModeDef::Modulate => ColorBlendMode::Modulate,
+        })
+    }
+}
+
+/// `#[serde(with)]` for a [`ColorBlendMask`] field: the RGBA bit mask as a
+/// newtype, e.g. `(15)`.
+pub mod color_blend_mask {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &ColorBlendMask, s: S) -> Result<S::Ok, S::Error> {
+        ColorBlendMaskDef(value.bits()).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<ColorBlendMask, D::Error> {
+        Ok(ColorBlendMask::from_bits_retain(ColorBlendMaskDef::deserialize(d)?.0))
+    }
+}
+
+/// A render-time constant or uniform random range of vectors (bevy_hanabi's
+/// `CpuValue<Vec3>` / `CpuValue<Vec4>` in `SetSizeModifier` /
+/// `SetColorModifier`): `Single((1.0, 1.0, 1.0))` or `Uniform(((..), (..)))`.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub enum CpuVecDef<T> {
+    Single(T),
+    Uniform((T, T)),
+}
+
+impl<T: Copy + bevy::reflect::FromReflect> From<CpuVecDef<T>> for CpuValue<T> {
+    fn from(value: CpuVecDef<T>) -> Self {
+        match value {
+            CpuVecDef::Single(v) => CpuValue::Single(v),
+            CpuVecDef::Uniform(range) => CpuValue::Uniform(range),
+        }
     }
 }

@@ -502,10 +502,322 @@ impl From<OrientModeDef> for OrientMode {
 #[serde(default)]
 pub struct OrientModifierEditor {
     pub mode: OrientModeDef,
+    /// Spin of the particle square around the view direction, in radians
+    /// (f32, render time; e.g. `Age × speed`). bevy_hanabi uses it with
+    /// `ParallelCameraDepthPlane` and `FaceCameraPosition` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotation_expr: Option<ExprWriterEditor>,
 }
 
 impl OrientModifierEditor {
-    pub fn produce(&self) -> OrientModifier {
-        OrientModifier::new(self.mode.into())
+    /// The rotation expression must be written before the module is
+    /// finished, hence the writer.
+    pub fn produce(&self, writer: &EffectWriter) -> OrientModifier {
+        let modifier = OrientModifier::new(self.mode.into());
+        match &self.rotation_expr {
+            Some(rotation) => modifier.with_rotation(rotation.produce(writer).expr()),
+            None => modifier,
+        }
+    }
+}
+
+// --- P2b modifiers ---------------------------------------------------------------
+
+/// Random position in a truncated cone along the layer's +Y axis, with its
+/// base circle at the layer origin (bevy_hanabi's `SetPositionCone3dModifier`;
+/// it always fills the volume, `dimension` is kept for its file format). The
+/// cone turns with the emitter. Init only.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct SetPositionCone3dModifierEditor {
+    pub height_expr: ExprWriterEditor,
+    pub base_radius_expr: ExprWriterEditor,
+    pub top_radius_expr: ExprWriterEditor,
+    #[serde(with = "hanabi_serde::shape_dimension")]
+    pub dimension: ShapeDimension,
+}
+
+impl ModifierProducer<SetPositionCone3dModifier> for SetPositionCone3dModifierEditor {
+    fn produce(&self, writer: &EffectWriter) -> SetPositionCone3dModifier {
+        SetPositionCone3dModifier {
+            height: self.height_expr.produce(writer).expr(),
+            base_radius: self.base_radius_expr.produce(writer).expr(),
+            top_radius: self.top_radius_expr.produce(writer).expr(),
+            dimension: self.dimension,
+        }
+    }
+}
+
+impl Default for SetPositionCone3dModifierEditor {
+    fn default() -> Self {
+        Self {
+            height_expr: ExprWriterEditor::Float(0.5),
+            base_radius_expr: ExprWriterEditor::Float(0.05),
+            top_radius_expr: ExprWriterEditor::Float(0.3),
+            dimension: ShapeDimension::Volume,
+        }
+    }
+}
+
+/// Pushes particles away from (positive) or pulls them towards (negative)
+/// a point, in m/s² (bevy_hanabi's `RadialAccelModifier`). Update only.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct RadialAccelModifierEditor {
+    pub origin_expr: ExprWriterEditor,
+    pub accel_expr: ExprWriterEditor,
+}
+
+impl ModifierProducer<RadialAccelModifier> for RadialAccelModifierEditor {
+    fn produce(&self, writer: &EffectWriter) -> RadialAccelModifier {
+        let origin = self.origin_expr.produce(writer).expr();
+        let accel = self.accel_expr.produce(writer).expr();
+        RadialAccelModifier::new(origin, accel)
+    }
+}
+
+impl Default for RadialAccelModifierEditor {
+    fn default() -> Self {
+        Self {
+            origin_expr: ExprWriterEditor::Vec3(Vec3::ZERO),
+            accel_expr: ExprWriterEditor::Float(-2.0),
+        }
+    }
+}
+
+/// Swirls particles around an axis through a point, in m/s² (bevy_hanabi's
+/// `TangentAccelModifier`: direction = axis × (position − origin)). Update
+/// only.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct TangentAccelModifierEditor {
+    pub origin_expr: ExprWriterEditor,
+    pub axis_expr: ExprWriterEditor,
+    pub accel_expr: ExprWriterEditor,
+}
+
+impl ModifierProducer<TangentAccelModifier> for TangentAccelModifierEditor {
+    fn produce(&self, writer: &EffectWriter) -> TangentAccelModifier {
+        let origin = self.origin_expr.produce(writer).expr();
+        let axis = self.axis_expr.produce(writer).expr();
+        let accel = self.accel_expr.produce(writer).expr();
+        TangentAccelModifier::new(origin, axis, accel)
+    }
+}
+
+impl Default for TangentAccelModifierEditor {
+    fn default() -> Self {
+        Self {
+            origin_expr: ExprWriterEditor::Vec3(Vec3::ZERO),
+            axis_expr: ExprWriterEditor::Vec3(Vec3::Y),
+            accel_expr: ExprWriterEditor::Float(3.0),
+        }
+    }
+}
+
+/// Kills particles outside (or inside, `kill_inside`) a sphere (bevy_hanabi's
+/// `KillSphereModifier`, which takes the squared radius: produced as
+/// `radius × radius`). Update only.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct KillSphereModifierEditor {
+    pub center_expr: ExprWriterEditor,
+    pub radius_expr: ExprWriterEditor,
+    pub kill_inside: bool,
+}
+
+impl ModifierProducer<KillSphereModifier> for KillSphereModifierEditor {
+    fn produce(&self, writer: &EffectWriter) -> KillSphereModifier {
+        let center = self.center_expr.produce(writer).expr();
+        let radius = self.radius_expr.produce(writer);
+        let sqr_radius = radius.clone().mul(radius).expr();
+        KillSphereModifier::new(center, sqr_radius).with_kill_inside(self.kill_inside)
+    }
+}
+
+impl Default for KillSphereModifierEditor {
+    fn default() -> Self {
+        Self {
+            center_expr: ExprWriterEditor::Vec3(Vec3::ZERO),
+            radius_expr: ExprWriterEditor::Float(2.0),
+            kill_inside: false,
+        }
+    }
+}
+
+/// Kills particles outside (or inside, `kill_inside`) a box given by its
+/// center and half its size (bevy_hanabi's `KillAabbModifier`). Update only.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct KillAabbModifierEditor {
+    pub center_expr: ExprWriterEditor,
+    pub half_size_expr: ExprWriterEditor,
+    pub kill_inside: bool,
+}
+
+impl ModifierProducer<KillAabbModifier> for KillAabbModifierEditor {
+    fn produce(&self, writer: &EffectWriter) -> KillAabbModifier {
+        let center = self.center_expr.produce(writer).expr();
+        let half_size = self.half_size_expr.produce(writer).expr();
+        KillAabbModifier::new(center, half_size).with_kill_inside(self.kill_inside)
+    }
+}
+
+impl Default for KillAabbModifierEditor {
+    fn default() -> Self {
+        Self {
+            center_expr: ExprWriterEditor::Vec3(Vec3::ZERO),
+            half_size_expr: ExprWriterEditor::Vec3(Vec3::ONE),
+            kill_inside: false,
+        }
+    }
+}
+
+/// Sets the colour when particles are drawn (bevy_hanabi's
+/// `SetColorModifier`): a constant (or a random range, which bevy_hanabi's
+/// render shader samples with one seed: the same value for every particle).
+/// Combined with the particle colour by `blend` on the `mask` channels.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct SetColorModifierEditor {
+    pub color: hanabi_serde::CpuVecDef<Vec4>,
+    #[serde(with = "hanabi_serde::color_blend_mode")]
+    pub blend: ColorBlendMode,
+    #[serde(with = "hanabi_serde::color_blend_mask")]
+    pub mask: ColorBlendMask,
+}
+
+impl SetColorModifierEditor {
+    pub fn produce(&self) -> SetColorModifier {
+        SetColorModifier {
+            color: self.color.into(),
+            blend: self.blend,
+            mask: self.mask,
+        }
+    }
+}
+
+impl Default for SetColorModifierEditor {
+    fn default() -> Self {
+        Self {
+            color: hanabi_serde::CpuVecDef::Single(Vec4::ONE),
+            blend: ColorBlendMode::Modulate,
+            mask: ColorBlendMask::RGBA,
+        }
+    }
+}
+
+/// Sets the size in metres when particles are drawn (bevy_hanabi's
+/// `SetSizeModifier`), replacing the `size` attribute (like
+/// SizeOverLifetime, which replaces it too; the later one wins).
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct SetSizeModifierEditor {
+    pub size: hanabi_serde::CpuVecDef<Vec3>,
+}
+
+impl SetSizeModifierEditor {
+    pub fn produce(&self) -> SetSizeModifier {
+        SetSizeModifier { size: self.size.into() }
+    }
+}
+
+impl Default for SetSizeModifierEditor {
+    fn default() -> Self {
+        Self {
+            size: hanabi_serde::CpuVecDef::Single(Vec3::splat(0.1)),
+        }
+    }
+}
+
+/// Plays a sprite sheet: draws frame `sprite_index` (an i32 attribute; frames
+/// count left to right, then top to bottom) of the layer's texture
+/// (bevy_hanabi's `FlipbookModifier`). `grid` = `(rows, columns)`; `None` =
+/// the `grid` of the layer's texture asset. Animate `sprite_index` with an
+/// update `SetAttribute` (see [`sprite_index_over_lifetime`]).
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct FlipbookModifierEditor {
+    pub grid: Option<(u32, u32)>,
+}
+
+impl FlipbookModifierEditor {
+    /// The grid it uses: its own, else the layer texture's `(rows, columns)`.
+    pub fn grid_for(&self, texture_grid: Option<(u32, u32)>) -> Option<(u32, u32)> {
+        self.grid.or(texture_grid)
+    }
+
+    /// Without a usable grid the whole texture is one frame (with a warning).
+    pub fn produce(&self, texture_grid: Option<(u32, u32)>, warnings: &mut Vec<String>) -> FlipbookModifier {
+        let (rows, cols) = match self.grid_for(texture_grid) {
+            Some((rows, cols)) if rows > 0 && cols > 0 => (rows, cols),
+            Some(grid) => {
+                warnings.push(format!("Flipbook grid {:?} needs at least 1 row and 1 column; it uses 1 × 1", grid));
+                (1, 1)
+            }
+            None => {
+                warnings.push(
+                    "Flipbook has no grid: set the texture asset's grid (rows × columns) or the modifier's; it uses 1 × 1"
+                        .into(),
+                );
+                (1, 1)
+            }
+        };
+        // bevy_hanabi's grid is (columns, rows).
+        FlipbookModifier { sprite_grid_size: UVec2::new(cols, rows) }
+    }
+}
+
+/// An update `SetAttribute` that steps `sprite_index` from frame 0 at birth
+/// to frame `frames − 1` at death: `i32(age / lifetime × frames)`. The
+/// prebuilt "animate sprite index over lifetime" of the editor and guide.
+pub fn sprite_index_over_lifetime(frames: u32) -> SetAttributeModifierEditor {
+    let op = |o: ExprOperatorEditor| ExprWriterEditor::Operator(Box::new(o));
+    SetAttributeModifierEditor {
+        attr: Attribute::SPRITE_INDEX,
+        attr_expr: op(ExprOperatorEditor::Cast(
+            op(ExprOperatorEditor::Multiply(
+                op(ExprOperatorEditor::Divide(
+                    ExprWriterEditor::Age,
+                    op(ExprOperatorEditor::Attr(Attribute::LIFETIME)),
+                )),
+                ExprWriterEditor::Float(frames.max(1) as f32),
+            )),
+            ValueTypeDef::I32,
+        )),
+    }
+}
+
+/// Rounds the corners of particle squares (bevy_hanabi's `RoundModifier`):
+/// 0 = square, 1 = circle / ellipse (f32, render time).
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct RoundModifierEditor {
+    pub roundness_expr: ExprWriterEditor,
+}
+
+impl RoundModifierEditor {
+    pub fn produce(&self, writer: &EffectWriter) -> RoundModifier {
+        RoundModifier { roundness: self.roundness_expr.produce(writer).expr() }
+    }
+}
+
+impl Default for RoundModifierEditor {
+    fn default() -> Self {
+        Self { roundness_expr: ExprWriterEditor::Float(1.0) }
+    }
+}
+
+/// Particle size in screen pixels instead of metres: the size (attribute,
+/// SetSize or SizeOverLifetime before it) is read as pixels, so particles
+/// keep their on-screen size at any distance (bevy_hanabi's
+/// `ScreenSpaceSizeModifier`).
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct ScreenSpaceSizeModifierEditor {}
+
+impl ScreenSpaceSizeModifierEditor {
+    pub fn produce(&self) -> ScreenSpaceSizeModifier {
+        ScreenSpaceSizeModifier
     }
 }

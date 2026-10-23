@@ -309,7 +309,7 @@ impl VfxPackage {
                 FALLBACK_LIFETIME
             }));
 
-            let effect = layer.produce(&project.parameters, warnings);
+            let effect = layer.produce_in(&project, warnings);
             let properties: Vec<String> = effect.properties().iter().map(|p| p.name().to_string()).collect();
             let param_properties = project
                 .parameters
