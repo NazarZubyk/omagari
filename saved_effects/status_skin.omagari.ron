@@ -1,0 +1,44 @@
+// P4 demo (guide recipe "Status skin"): a purple poison skin on the game's
+// Y Bot (anim/tpose.glb, running with anim/run.glb; the MODEL stage shows the
+// capsule without those files). Noise crawls up the body and sticks to the
+// limbs, a pink rim, a slow breathing and a flash on every "tick" (auto-fired
+// every second in the editor).
+(
+    version: 2,
+    parameters: [
+        (name: "flash", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.0),
+    ],
+    triggers: [
+        (name: "tick", pulses: [(param: "flash", to: 1.0, decay: 0.35)]),
+    ],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Surface((
+            name: "poison_skin",
+            targets: AllMeshes,
+            material: (
+                blend: Blend,
+                color: Const((0.55, 0.08, 0.95, 0.7)),
+                opacity: Const(1.0),
+                emissive: Const(1.5),
+                noise_a: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(3.0), scroll: Const((0.0, 0.25)), strength: Const(0.85), contrast: Const(2.5))),
+                rim: Some((color: Const((1.0, 0.45, 1.0, 0.8)), power: Const(2.5), intensity: Const(1.5))),
+                pulse: Some((frequency: Const(0.8), amount: Const(0.25))),
+                flash: Some(Param("flash", [(0.0, 0.0), (1.0, 1.0)])),
+            ),
+            shells: [(offset: 0.0)],
+            fade: (in: 0.3, out: 0.6),
+        )),
+    ],
+    preview: Some((
+        stage: Model,
+        camera: Game,
+        model: Some("anim/tpose.glb"),
+        animation: Some("mixamo.com"),
+        animation_speed: 1.0,
+        motion: Some(Circle(radius: 3.0, speed: 3.6)),
+        auto_triggers: [("tick", 1.0)],
+        root_height: 0.9,
+        animation_file: Some("anim/run.glb"),
+    )),
+)

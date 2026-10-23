@@ -1,0 +1,38 @@
+// P4 demo (guide recipe "Frost from the feet up"): frost covering the Y Bot
+// from the feet up to the parameter "frost" (0..1) of its height. Drag the
+// PARAMETERS slider or press "animate".
+(
+    version: 2,
+    parameters: [
+        (name: "frost", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.5),
+    ],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Surface((
+            name: "frost",
+            targets: AllMeshes,
+            material: (
+                blend: Blend,
+                color: Const((0.7, 0.9, 1.0, 0.75)),
+                opacity: Const(1.0),
+                emissive: Const(1.2),
+                noise_a: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(6.0), scroll: Const((0.0, 0.0)), strength: Const(0.6))),
+                rim: Some((color: Const((0.8, 0.95, 1.0, 0.6)), power: Const(3.0), intensity: Const(1.2))),
+                fill: Some((axis: Y, from: Const(0.0), to: Param("frost", [(0.0, 0.0), (1.0, 1.0)]), softness: Const(0.08))),
+            ),
+            shells: [(offset: 0.003)],
+            fade: (in: 0.2, out: 0.8),
+        )),
+    ],
+    preview: Some((
+        stage: Model,
+        camera: Game,
+        model: Some("anim/tpose.glb"),
+        animation: Some("mixamo.com"),
+        animation_speed: 1.0,
+        motion: Some(Circle(radius: 3.0, speed: 3.6)),
+        params: [("frost", Float(0.6))],
+        root_height: 0.9,
+        animation_file: Some("anim/run.glb"),
+    )),
+)
