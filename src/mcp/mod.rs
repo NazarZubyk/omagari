@@ -74,7 +74,7 @@ pub fn guide_recipes() -> Vec<Recipe> {
 pub const PREVIEW_REQUEST_FILE: &str = ".preview_request";
 
 /// Stages `preview_in_editor` accepts.
-pub const PREVIEW_STAGES: [&str; 3] = ["air", "floor", "object"];
+pub const PREVIEW_STAGES: [&str; 5] = ["air", "floor", "object", "capsule", "model"];
 
 /// Cameras `preview_in_editor` accepts.
 pub const PREVIEW_CAMERAS: [&str; 2] = ["orbit", "game"];
@@ -98,6 +98,55 @@ pub struct PreviewRequest {
     pub params: Vec<(String, ParamValue)>,
     /// A trigger to fire once the project plays.
     pub trigger: Option<String>,
+    /// Preview model (glTF in the game assets folder); `None` keeps the
+    /// project's.
+    pub model: Option<String>,
+    /// Animation clip name; `Some("")` = no animation.
+    pub animation: Option<String>,
+    /// glTF file of the clip; `Some("")` = the model's file.
+    pub animation_file: Option<String>,
+    /// Node the instance is attached to; `Some("")` = the model's root.
+    pub attach_to: Option<String>,
+    /// Height of the target above the model's feet (metres).
+    pub root_height: Option<f32>,
+}
+
+impl PreviewRequest {
+    /// Applies the request's viewing choices to a project's preview block.
+    pub fn apply_to(&self, project: &mut ProjectV2) {
+        fn preview(p: &mut ProjectV2) -> &mut omagari::format::PreviewDef {
+            p.preview.get_or_insert_with(Default::default)
+        }
+        if let Some(motion) = self.motion {
+            preview(project).motion = motion;
+        }
+        if let Some(model) = &self.model {
+            let preview = preview(project);
+            preview.model = (!model.is_empty()).then(|| model.clone());
+            if preview.model.is_some() {
+                preview.stage = omagari::format::PreviewStage::Model;
+            }
+        }
+        if let Some(file) = &self.animation_file {
+            preview(project).animation_file = (!file.is_empty()).then(|| file.clone());
+        }
+        if let Some(clip) = &self.animation {
+            preview(project).animation = (!clip.is_empty()).then(|| clip.clone());
+        }
+        if let Some(node) = &self.attach_to {
+            preview(project).attach_to = (!node.is_empty()).then(|| node.clone());
+        }
+        if let Some(height) = self.root_height {
+            preview(project).root_height = height;
+        }
+        if !self.params.is_empty() {
+            let preview = preview(project);
+            for (name, value) in self.params.iter() {
+                preview.params.retain(|(n, _)| n != name);
+                preview.params.push((name.clone(), *value));
+            }
+        }
+    }
 }
 
 /// A parameter value from JSON: a number, or `[r, g, b]` / `[r, g, b, a]`
@@ -157,6 +206,19 @@ impl PreviewRequest {
         if let Some(trigger) = &self.trigger {
             object["trigger"] = json!(trigger);
         }
+        for (key, value) in [
+            ("model", &self.model),
+            ("animation", &self.animation),
+            ("animation_file", &self.animation_file),
+            ("attach_to", &self.attach_to),
+        ] {
+            if let Some(v) = value {
+                object[key] = json!(v);
+            }
+        }
+        if let Some(h) = self.root_height {
+            object["root_height"] = json!(h);
+        }
         object.to_string()
     }
 
@@ -185,8 +247,21 @@ impl PreviewRequest {
             None | Some(Value::Null) => Vec::new(),
             Some(p) => param_set_from_json(p)?,
         };
-        let trigger = value.get("trigger").and_then(Value::as_str).map(str::to_string);
-        Ok(PreviewRequest { name, stage, motion, camera, params, trigger })
+        let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+        let trigger = text("trigger");
+        Ok(PreviewRequest {
+            name,
+            stage,
+            motion,
+            camera,
+            params,
+            trigger,
+            model: text("model"),
+            animation: text("animation"),
+            animation_file: text("animation_file"),
+            attach_to: text("attach_to"),
+            root_height: value.get("root_height").and_then(Value::as_f64).map(|h| h as f32),
+        })
     }
 }
 
@@ -366,13 +441,13 @@ fn tool_list() -> Value {
     json!([
         {
             "name": "guide",
-            "description": "Omagari effect authoring guide: workflow, file format (v2), layers, attach (sockets, segments, fit, lifecycle), parameters and triggers (values and events the game sends), modifiers, expressions, textures, recipes, game use. Read before creating effects.",
+            "description": "Omagari effect authoring guide: workflow, file format (v2), layers, attach (sockets, segments, fit, lifecycle), model preview (models, animations, weapons), parameters and triggers (values and events the game sends), modifiers, expressions, textures, recipes, game use. Read before creating effects.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "One section to keep the reply short: workflow, format, layers, attach, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game. Omit for the whole guide."
+                        "description": "One section to keep the reply short: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game. Omit for the whole guide."
                     }
                 }
             }
@@ -458,7 +533,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "list_assets",
-            "description": "List the textures you can use: the 7 built-ins and the texture files in the game assets folder, with size, layout (RGBA / grayscale, bits) and which saved projects use them.",
+            "description": "List the textures you can use (the 7 built-ins and the texture files in the game assets folder, with size, layout (RGBA / grayscale, bits) and which saved projects use them) and the glTF models of the game assets folder (preview models) with their size, height and animation clips.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -484,7 +559,7 @@ fn tool_list() -> Value {
                     "stage": {
                         "type": "string",
                         "enum": PREVIEW_STAGES,
-                        "description": "Scene to play it in: \"air\" (middle of an empty room), \"floor\" (floor at y = 0), \"object\" (a ~2-unit rock centered on the spawn point, floor under it). Omit to keep the user's current choice."
+                        "description": "Scene to play it in: \"air\" (middle of an empty room), \"floor\" (floor at y = 0), \"object\" (a ~2-unit rock centered on the spawn point, floor under it), \"capsule\" (a 0.7 x 1.8 m capsule, its centre is the target, floor 0.9 below), \"model\" (the project's preview model, or `model`; the capsule without one). Omit to keep the project's stage."
                     },
                     "camera": {
                         "type": "string",
@@ -508,9 +583,41 @@ fn tool_list() -> Value {
                     "trigger": {
                         "type": "string",
                         "description": "A trigger of the project to fire once it plays, like the game's trigger."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "A glTF model (.glb/.gltf) of the game assets folder to play it on (sets the model stage), e.g. \"anim/tpose.glb\". list_assets lists the models, describe_model their nodes and clips."
+                    },
+                    "animation": {
+                        "type": "string",
+                        "description": "Animation clip to play on the model (its name, e.g. Mixamo's \"mixamo.com\"); \"\" = none."
+                    },
+                    "animation_file": {
+                        "type": "string",
+                        "description": "Another glTF file the clip comes from, with the same skeleton (node names), e.g. \"anim/run.glb\"; \"\" = the model's file."
+                    },
+                    "attach_to": {
+                        "type": "string",
+                        "description": "Node of the model the instance is attached to (the game's target entity); \"\" = the model's root."
+                    },
+                    "root_height": {
+                        "type": "number",
+                        "description": "Height of the target (the game's entity root) above the model's feet, metres (0.9 for a player root 0.9 m above the feet)."
                     }
                 },
                 "required": ["name"]
+            }
+        },
+        {
+            "name": "describe_model",
+            "description": "Describe a glTF model (.glb/.gltf) of the game assets folder without rendering it: node hierarchy (names for sockets, attach_to and weapon nodes; bones marked, rest positions), meshes with their entity names and materials (surface layer targets), animation clips with lengths, and the rest-pose bounds / height. Guide section \"model\".",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The model, relative to the game assets folder (e.g. \"anim/tpose.glb\") or absolute." },
+                    "max_nodes": { "type": "integer", "description": "Nodes listed in the hierarchy (default 300)." }
+                },
+                "required": ["path"]
             }
         }
     ])
@@ -646,7 +753,7 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
             let stage = match str_arg("stage") {
                 None => None,
                 Some(s) if PREVIEW_STAGES.contains(&s) => Some(s.to_string()),
-                Some(other) => return Err(format!("unknown stage \"{}\": use air, floor or object", other)),
+                Some(other) => return Err(format!("unknown stage \"{}\": use air, floor, object, capsule or model", other)),
             };
             let motion = match args.get("motion") {
                 None | Some(Value::Null) => None,
@@ -678,6 +785,7 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
                     return Err(format!("\"{}\" is not a trigger of {} (triggers: {})", t, file_name, known.join(", ")));
                 }
             }
+            let model_args = preview_model_args(args, &project, ctx)?;
             let preview = PreviewRequest {
                 name: file_name.clone(),
                 stage: stage.clone(),
@@ -685,6 +793,11 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
                 camera: camera.clone(),
                 params: params.clone(),
                 trigger: trigger.clone(),
+                model: model_args.model.clone(),
+                animation: model_args.animation.clone(),
+                animation_file: model_args.animation_file.clone(),
+                attach_to: model_args.attach_to.clone(),
+                root_height: model_args.root_height,
             };
             let request = Folder::SavedEffects.full_file_path(PREVIEW_REQUEST_FILE.to_string());
             fs::write(&request, preview.to_json()).map_err(|e| format!("{}: {}", request.display(), e))?;
@@ -703,8 +816,14 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
                     };
                     let fired = trigger.map(|t| format!(", and fired \"{}\"", t)).unwrap_or_default();
                     return Ok(format!(
-                        "The editor loaded {} and is playing it for the user{}{}{}{}{}.",
-                        file_name, in_stage, moving, seen, with, fired
+                        "The editor loaded {} and is playing it for the user{}{}{}{}{}{}.",
+                        file_name,
+                        in_stage,
+                        model_args.describe(),
+                        moving,
+                        seen,
+                        with,
+                        fired
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -716,6 +835,29 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
             ))
         }
         "import_asset" => import_asset(args, ctx),
+        "describe_model" => {
+            let path = str_arg("path").ok_or("missing `path`")?.trim().replace('\\', "/");
+            let file = if Path::new(&path).is_absolute() { PathBuf::from(&path) } else { assets_root.join(&path) };
+            if !file.is_file() {
+                let found: Vec<String> =
+                    crate::model_info::scan_models(&assets_root, 50).into_iter().map(|(p, _)| p).collect();
+                return Err(format!(
+                    "{} not found (game assets folder {}; models: {})",
+                    path,
+                    assets_root.display(),
+                    if found.is_empty() { "none".to_string() } else { found.join(", ") }
+                ));
+            }
+            let info = crate::model_info::ModelInfo::cached(&file)?;
+            let max = args.get("max_nodes").and_then(Value::as_u64).unwrap_or(300) as usize;
+            let relative = library::relative_game_path(&file, &assets_root).unwrap_or(path.clone());
+            Ok(format!(
+                "{}: {}Use it as `preview: Some((stage: Model, model: Some(\"{}\"), ..))`; sockets name nodes with `node: Some(\"...\")`.",
+                relative,
+                info.describe(max),
+                relative
+            ))
+        }
         "list_assets" => Ok(list_assets(ctx)),
         "extract_channel" => {
             let project_name = str_arg("project").ok_or("missing `project`")?;
@@ -742,6 +884,83 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
         }
         _ => Err(format!("unknown tool: {}", name)),
     }
+}
+
+/// The model arguments of `preview_in_editor`, checked against the game
+/// assets folder.
+#[derive(Default)]
+struct PreviewModelArgs {
+    model: Option<String>,
+    animation: Option<String>,
+    animation_file: Option<String>,
+    attach_to: Option<String>,
+    root_height: Option<f32>,
+}
+
+impl PreviewModelArgs {
+    fn describe(&self) -> String {
+        let mut out = String::new();
+        if let Some(m) = &self.model {
+            out += &format!(" on the model {}", m);
+        }
+        if let Some(a) = self.animation.as_ref().filter(|a| !a.is_empty()) {
+            out += &format!(
+                " playing \"{}\"{}",
+                a,
+                self.animation_file.as_ref().filter(|f| !f.is_empty()).map(|f| format!(" from {}", f)).unwrap_or_default()
+            );
+        }
+        if let Some(n) = self.attach_to.as_ref().filter(|n| !n.is_empty()) {
+            out += &format!(", attached to \"{}\"", n);
+        }
+        out
+    }
+}
+
+fn preview_model_args(args: &Value, project: &ProjectV2, ctx: &Context) -> Result<PreviewModelArgs, String> {
+    let text = |key: &str| args.get(key).and_then(Value::as_str).map(|s| s.trim().replace('\\', "/"));
+    let root = ctx.assets_root();
+    let describe = |path: &str| -> Result<std::sync::Arc<crate::model_info::ModelInfo>, String> {
+        let file = root.join(path);
+        if !file.is_file() {
+            let found: Vec<String> = crate::model_info::scan_models(&root, 30).into_iter().map(|(p, _)| p).collect();
+            return Err(format!(
+                "{} is not a model in the game assets folder {} (models: {})",
+                path,
+                root.display(),
+                if found.is_empty() { "none".to_string() } else { found.join(", ") }
+            ));
+        }
+        crate::model_info::ModelInfo::cached(&file)
+    };
+    let out = PreviewModelArgs {
+        model: text("model").filter(|m| !m.is_empty()),
+        animation: text("animation"),
+        animation_file: text("animation_file"),
+        attach_to: text("attach_to"),
+        root_height: args.get("root_height").and_then(Value::as_f64).map(|h| h as f32),
+    };
+    let preview = project.preview.clone().unwrap_or_default();
+    let model = out.model.clone().or(preview.model.clone());
+    let body = match &model {
+        Some(m) => Some(describe(m)?),
+        None => None,
+    };
+    if let Some(clip) = out.animation.as_ref().filter(|a| !a.is_empty()) {
+        let file = out.animation_file.clone().filter(|f| !f.is_empty()).or(preview.animation_file.clone()).or(model.clone());
+        let file = file.ok_or("animation needs a model (or animation_file)")?;
+        let info = describe(&file)?;
+        if info.animation(clip).is_none() {
+            let known: Vec<String> = info.animations.iter().map(|a| format!("\"{}\"", a.label())).collect();
+            return Err(format!("{} has no animation \"{}\" (it has: {})", file, clip, if known.is_empty() { "none".into() } else { known.join(", ") }));
+        }
+    }
+    if let (Some(node), Some(body)) = (out.attach_to.as_ref().filter(|n| !n.is_empty()), &body) {
+        if preview.target == omagari::format::PreviewTargetModel::Body && body.node(node).is_none() {
+            return Err(format!("attach_to: {} has no node \"{}\" (describe_model lists its nodes)", model.unwrap_or_default(), node));
+        }
+    }
+    Ok(out)
 }
 
 /// A project in `saved_effects/` (tools that change projects refuse the
@@ -864,6 +1083,20 @@ fn list_assets(ctx: &Context) -> String {
     }
     if found.len() >= 500 {
         out += "(list cut at 500 files)\n";
+    }
+    let models = crate::model_info::scan_models(&root, 200);
+    out += &format!(
+        "\nModels in the game assets folder ({}; preview models: preview_in_editor(model: ..), describe_model(path) for nodes):\n",
+        models.len()
+    );
+    if models.is_empty() {
+        out += "- none.\n";
+    }
+    for (path, bytes) in models.iter() {
+        let info = crate::model_info::ModelInfo::cached(&root.join(path))
+            .map(|i| i.summary())
+            .unwrap_or_else(|e| format!("not readable: {}", e));
+        out += &format!("- {} - {} KB; {}\n", path, bytes.div_ceil(1024), info);
     }
     out
 }
@@ -1116,6 +1349,42 @@ mod tests {
         assert!(err.contains("texture \"missing\" is not in the assets list"), "{}", err);
     }
 
+    /// `describe_model`, the models of `list_assets` and the model arguments
+    /// of `preview_in_editor`, on generated glTF files in a temporary game
+    /// assets folder.
+    #[test]
+    fn models_are_described_listed_and_checked() {
+        let dir = crate::asset_library::tests::temp_dir("mcp_models");
+        crate::model_info::tests::write_fixture(&dir.join("chars/hero.gltf"), Some(("Wave", 1.5)));
+        crate::model_info::tests::write_fixture(&dir.join("anim/swing.gltf"), Some(("Swing", 0.5)));
+        let ctx = Context::new(GameAssets::resolve(Some(dir.to_string_lossy().to_string()), None, &Default::default()));
+
+        let text = call_tool("describe_model", &json!({ "path": "chars/hero.gltf" }), &ctx).unwrap();
+        assert!(text.starts_with("chars/hero.gltf: 6 nodes (3 bones, 2 mesh nodes)"), "{}", text);
+        assert!(text.contains("      RightHand [bone] (-0.40, 1.60, 0.00)"), "{}", text);
+        assert!(text.contains("- \"Wave\": 1.500 s"), "{}", text);
+        assert!(text.contains("model: Some(\"chars/hero.gltf\")"), "{}", text);
+        let absolute = dir.join("anim/swing.gltf").to_string_lossy().to_string();
+        assert!(call_tool("describe_model", &json!({ "path": absolute }), &ctx).unwrap().contains("\"Swing\""));
+        let missing = call_tool("describe_model", &json!({ "path": "nope.glb" }), &ctx).unwrap_err();
+        assert!(missing.contains("anim/swing.gltf, chars/hero.gltf"), "{}", missing);
+
+        let list = call_tool("list_assets", &json!({}), &ctx).unwrap();
+        assert!(list.contains("Models in the game assets folder (2"), "{}", list);
+        assert!(list.contains("- chars/hero.gltf - ") && list.contains("animations: \"Wave\" 1.50 s"), "{}", list);
+
+        let project = ProjectV2::default();
+        let args = json!({ "model": "chars/hero.gltf", "animation": "Swing", "animation_file": "anim/swing.gltf", "attach_to": "Spine" });
+        let ok = preview_model_args(&args, &project, &ctx).unwrap();
+        assert_eq!(ok.describe(), " on the model chars/hero.gltf playing \"Swing\" from anim/swing.gltf, attached to \"Spine\"");
+        let err = |args: Value| preview_model_args(&args, &project, &ctx).err().unwrap_or_default();
+        assert!(err(json!({ "model": "chars/hero.gltf", "animation": "Run" })).contains("has no animation \"Run\" (it has: \"Wave\")"));
+        assert!(err(json!({ "model": "chars/hero.gltf", "attach_to": "Tail" })).contains("has no node \"Tail\""));
+        assert!(err(json!({ "model": "chars/villain.glb" })).contains("is not a model in the game assets folder"));
+        assert!(err(json!({ "animation": "Wave" })).contains("animation needs a model"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn preview_requests_are_json_and_old_files_still_read() {
         let request = PreviewRequest {
@@ -1128,6 +1397,11 @@ mod tests {
                 ("tint".into(), ParamValue::Color(bevy::math::Vec4::new(1.0, 0.5, 0.0, 1.0))),
             ],
             trigger: Some("hit".into()),
+            model: Some("anim/tpose.glb".into()),
+            animation: Some("mixamo.com".into()),
+            animation_file: Some("anim/run.glb".into()),
+            attach_to: Some("".into()),
+            root_height: Some(0.9),
         };
         let text = request.to_json();
         assert!(text.starts_with('{'), "{}", text);
@@ -1139,9 +1413,27 @@ mod tests {
             camera: None,
             params: Vec::new(),
             trigger: None,
+            model: None,
+            animation: Some("".into()),
+            animation_file: None,
+            attach_to: None,
+            root_height: None,
             ..request.clone()
         };
         assert_eq!(PreviewRequest::parse(&still.to_json()).unwrap(), still);
+
+        // Applied to a project: the model sets the model stage, "" clears.
+        let mut project = ProjectV2::default();
+        project.preview = Some(omagari::format::PreviewDef { attach_to: Some("Hips".into()), ..Default::default() });
+        request.apply_to(&mut project);
+        let preview = project.preview.clone().unwrap();
+        assert_eq!(preview.stage, omagari::format::PreviewStage::Model);
+        assert_eq!(preview.model.as_deref(), Some("anim/tpose.glb"));
+        assert_eq!(preview.animation_source(), Some("anim/run.glb"));
+        assert_eq!((preview.attach_to, preview.root_height), (None, 0.9));
+        assert_eq!(preview.params.len(), 2);
+        still.apply_to(&mut project);
+        assert_eq!(project.preview.as_ref().unwrap().animation, None);
         assert_eq!(
             param_value_from_json(&json!([0.1, 0.2, 0.3])).unwrap(),
             ParamValue::Color(bevy::math::Vec4::new(0.1, 0.2, 0.3, 1.0))
@@ -1220,7 +1512,7 @@ mod tests {
 
     #[test]
     fn guide_sections_are_listed() {
-        for section in ["workflow", "format", "layers", "attach", "textures", "assets", "recipes", "game"] {
+        for section in ["workflow", "format", "layers", "attach", "model", "textures", "assets", "recipes", "game"] {
             assert!(!guide_section(Some(section)).starts_with("No section"), "{}", section);
         }
     }
