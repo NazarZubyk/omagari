@@ -896,8 +896,7 @@ fn modifier_name(m: &ModifierEditor) -> &'static str {
     m.kind_name()
 }
 
-/// Sets attributes the way an init (or init-and-update) modifier does.
-/// `ctx` is the shader it runs in.
+/// Applies an init modifier to a newborn particle.
 fn apply_init(
     m: &ModifierEditor,
     p: &mut Attrs,
@@ -908,6 +907,8 @@ fn apply_init(
     apply_setter(m, p, parent, rng, time, Ctx::Init, true)
 }
 
+/// Sets attributes the way a setter modifier (SetAttribute, positions,
+/// velocities, InheritAttribute) does in the shader `ctx`.
 fn apply_setter(
     m: &ModifierEditor,
     p: &mut Attrs,
