@@ -81,6 +81,9 @@ pub struct DevOptions {
     /// `--fire <trigger>`: fires a trigger a few frames before the
     /// screenshot.
     pub fire: Option<String>,
+    /// `--fire-before <frames>`: how many frames before the screenshot
+    /// `--fire` fires (default 6).
+    pub fire_before: Option<u32>,
     /// `--focus-node <name>`: the orbit camera looks at this node of the
     /// preview model (e.g. `mixamorig:Hips`) instead of the target.
     pub focus_node: Option<String>,
@@ -205,6 +208,10 @@ impl DevOptions {
                     options.stop_at = Some(text.parse().map_err(|_| format!("--stop-at {}: not a frame number", text))?);
                 }
                 "--fire" => options.fire = Some(value()?),
+                "--fire-before" => {
+                    let text = value()?;
+                    options.fire_before = Some(text.parse().map_err(|_| format!("--fire-before {}: not a frame count", text))?);
+                }
                 "--focus-node" => options.focus_node = Some(value()?),
                 "--screenshot-after" => {
                     let frames = value()?;
@@ -300,7 +307,7 @@ pub fn run_dev_options(
         session.actions.push(Action::Stop);
     }
     if let Some(trigger) = &options.fire {
-        if *frame + 6 == at {
+        if *frame + options.fire_before.unwrap_or(6) == at {
             session.actions.push(Action::FireTrigger { name: trigger.clone(), random_point: false });
         }
     }
@@ -411,5 +418,8 @@ mod tests {
         assert!(DevOptions::parse(&args("--motion fly")).is_err());
         assert!(DevOptions::parse(&args("--anim-time soon")).is_err());
         assert!(DevOptions::parse(&args("--window-size big")).is_err());
+        let o = DevOptions::parse(&args("--fire slam --fire-before 20")).unwrap();
+        assert_eq!((o.fire.as_deref(), o.fire_before), (Some("slam"), Some(20)));
+        assert!(DevOptions::parse(&args("--fire-before soon")).is_err());
     }
 }

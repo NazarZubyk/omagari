@@ -14,7 +14,8 @@ pub const ATTACH: &str = "Where the layer sits: Target = the target's root; Sock
 pub const PLAY: &str = "When the layer plays. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires a trigger (a burst); While = while a parameter is at or above a threshold. How long it emits is set by the spawner.";
 pub const RATE: &str = "Particles per second as a steady stream, replacing the spawner's count while the layer plays. A constant, or a curve over a parameter (e.g. more particles at higher intensity). Off = the spawner's own count.";
 pub const VISIBLE: &str = "Show the layer only while a parameter is between From and To; outside it the layer fades out over Fade (parameter units). Neighbouring ranges cross-fade, e.g. a weak look below 0.6 and a strong one above. Fades the spawn rate; multiply alpha by Property visibility to fade live particles too.";
-pub const BINDING: &str = "Constant: one value. Curve: the value follows a number parameter: keys are (parameter value → value), straight lines in between, flat past the first and last key.";
+pub const BINDING: &str = "Constant: one value. Curve over parameter: the value follows a number parameter: keys are (parameter value → value), straight lines in between, flat past the first and last key. Curve over age: the value changes over the seconds since the layer started (or its trigger played it).";
+pub const BINDING_AGE: &str = "The value changes over time: keys are (seconds since the layer started → value). A one-shot or triggered layer starts its age again each time it plays, so a shockwave can grow and fade without code. Flat past the last key.";
 
 // --- parameters and triggers ----------------------------------------------------
 
@@ -174,5 +175,19 @@ pub const RIM_INTENSITY: &str = "Brightness of the rim; above 1 it blooms.";
 pub const PULSE: &str = "A steady breathing: the opacity goes down by Amount and back, Frequency times per second.";
 pub const FLASH: &str = "A flash: 0 = nothing, 1 = three times as bright and half-way to opaque. Bind it to a parameter that a trigger pulses (TRIGGERS tab) for a hit or damage-tick flash.";
 pub const DISSOLVE: &str = "The surface breaks up where the noise (A, else B) is below Threshold, with a glowing edge. 0 = whole, 1 = gone: bind it to a parameter to make the layer appear or burn away.";
-pub const FILL: &str = "Shows the layer only on a band of the model along an axis of its rest pose: 0 = the low end (feet for Y), 1 = the high end (head). From 0 and To bound to a parameter = frost rising from the feet.";
+pub const FILL: &str = "Shows the layer only on a band of the model along an axis of its rest pose: 0 = the low end (feet for Y), 1 = the high end (head). From 0 and To bound to a parameter = frost rising from the feet. U / V use the mesh's texture coordinates instead (0..1): along a slash arc or around a ring, so To over age sweeps it.";
+
+// --- shape layers ------------------------------------------------------------------
+
+pub const SHAPE: &str = "A shape layer draws a simple 3D shape (sphere, ring, arc, ...) with the effect shader, attached to the target but not bent by its skeleton: shield bubbles, ground rings, shockwaves, slash arcs, glow columns.";
+pub const SHAPE_KIND: &str = "The shape and its size in metres (before the scale below and the size fit). Flat shapes (ring, quad, arc) lie flat, facing up; turn them with Rotation.";
+pub const SHAPE_FOLLOW: &str = "How it follows its attach point. Full = moves, turns and tilts with it; Position = moves only, keeps its own orientation; PositionYaw = moves and turns to face the same way but never tilts (a ground ring stays flat while the body leans).";
+pub const SHAPE_OFFSET: &str = "Metres from the attach point (scaled with the size fit): in the attach point's space (Full), in world axes (Position), or turned with the target's heading (PositionYaw). The target root of a character is often 0.9 m above its feet: a ground ring needs about -0.88 in Y.";
+pub const SHAPE_ROTATION: &str = "Degrees about X, then Y, then Z. A flat ring or arc at 0 lies flat; 90 about X stands it up facing forward.";
+pub const SHAPE_SCALE: &str = "Scale (X, Y, Z) on top of the shape's size. Make it a curve over age for a shockwave that grows, or over a parameter for a shield that swells.";
+pub const SHAPE_SPIN: &str = "Turning speed in degrees per second around the axis (in the shape's own space; Y = the shape's up). Can be a curve.";
+pub const SHAPE_PLAY: &str = "When the shape shows. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires the trigger (the age starts over; with a payload position it plays there); While = while a parameter is at or above a threshold.";
+pub const SHAPE_DURATION: &str = "Seconds an OnStart / OnTrigger shape plays (it fades in and out inside this time and is gone after it). For Loop / While shapes the age starts over every Duration seconds, so age curves repeat. Off = plays until the effect stops.";
+pub const SHAPE_FADE: &str = "One-shots fade in over In after they start and out over Out before they end. Other shapes fade in when they start and out when they stop (While: when the parameter drops). Every shape fades out over Out when the game stops the effect.";
+pub const SHAPE_SORT: &str = "Draw order among see-through things at a similar distance (metres added to its distance): positive = drawn later, on top of particles and skin effects; negative = earlier.";
 pub const MASK: &str = "A mask texture: where it is dark the layer is transparent.";

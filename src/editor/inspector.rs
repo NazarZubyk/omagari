@@ -8,6 +8,7 @@ use omagari::format::{LayerDef, ProjectV2};
 use super::assets::{assets_tab, TexturePreviews};
 use super::camera::PreviewCamera;
 use super::effect::draw_particles_layer;
+use super::shape::draw_shape_layer;
 use super::surface::draw_surface_layer;
 use super::model::ModelPreview;
 use super::model_panel::{hierarchy_tab, model_section, target_model_info};
@@ -117,6 +118,18 @@ fn layer_tab(
             subject_box(ui, session, &name);
             ui.add_space(4.0);
             draw_surface_layer(layer, assets, parameters, app, ui, index as u64, model);
+        }
+        LayerDef::Shape(layer) => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🔷 SHAPE LAYER").color(ACCENT).strong()).on_hover_text(hints::SHAPE);
+                if !session.view.shows(&name) {
+                    ui.label(RichText::new("(hidden in the preview)").weak());
+                }
+            });
+            ui.label(RichText::new(hints::SHAPE).weak().small());
+            subject_box(ui, session, &name);
+            ui.add_space(4.0);
+            draw_shape_layer(layer, assets, parameters, app, ui, index as u64);
         }
     }
 }

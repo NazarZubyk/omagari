@@ -1,7 +1,8 @@
 //! Editor widgets for values bound to parameters: the binding editor
-//! (constant / curve over a parameter, with a key list and a small plot) and
-//! the parameter picker. Used for a particle layer's `rate` and every value
-//! of a surface layer's material (numbers, scroll vectors, colours).
+//! (constant / curve over a parameter / curve over the layer's age, with a
+//! key list and a small plot) and the parameter picker. Used for a particle
+//! layer's `rate` and every value of surface and shape layers (numbers,
+//! scroll and scale vectors, colours).
 
 use bevy_egui::egui;
 use omagari::format::{Binding, ParamKind};
@@ -85,10 +86,20 @@ pub fn binding_editor_range(
         });
     };
     binding_editor_with(ui, binding, params, param_range, false, &mut value_ui, id);
-    if let Binding::Param(name, keys) = binding {
-        let range = param_range(name);
-        curve_plot(ui, keys, range);
+    match binding {
+        Binding::Param(name, keys) => {
+            let range = param_range(name);
+            curve_plot(ui, keys, range, "parameter");
+        }
+        Binding::Age(keys) => curve_plot(ui, keys, age_range(keys), "age (s)"),
+        Binding::Const(_) => {}
     }
+}
+
+/// The plot range of an age curve: 0 to its last key (at least 1 s).
+fn age_range<T>(keys: &[(f32, T)]) -> Option<(f32, f32)> {
+    let last = keys.iter().map(|k| k.0).fold(0.0f32, f32::max);
+    Some((0.0, if last > 0.0 { last } else { 1.0 }))
 }
 
 /// Edits any `Binding<T>`: a constant, a curve over a Float parameter (keys
@@ -104,17 +115,19 @@ pub fn binding_editor_with<T: Copy + Default>(
     id: egui::Id,
 ) {
     let kind_of = |name: &str| params.iter().find(|(p, _)| p == name).map(|(_, k)| *k);
-    // 0 = constant, 1 = curve over a Float parameter, 2 = a Color parameter.
+    // 0 = constant, 1 = curve over a Float parameter, 2 = a Color parameter,
+    // 3 = curve over the layer's age.
     let mode = match binding {
         Binding::Const(_) => 0,
         Binding::Param(name, keys) if color_params && keys.is_empty() && kind_of(name) != Some(ParamKind::Float) => 2,
         Binding::Param(..) => 1,
+        Binding::Age(_) => 3,
     };
     let current = match binding {
         Binding::Const(v) => *v,
-        Binding::Param(_, keys) => keys.first().map(|k| k.1).unwrap_or_default(),
+        Binding::Param(_, keys) | Binding::Age(keys) => keys.first().map(|k| k.1).unwrap_or_default(),
     };
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.radio(mode == 0, "constant").on_hover_text(hints::BINDING).clicked() && mode != 0 {
             *binding = Binding::Const(current);
         }
@@ -122,6 +135,9 @@ pub fn binding_editor_with<T: Copy + Default>(
             let name = first_float(params);
             let (lo, hi) = param_range(&name).unwrap_or((0.0, 1.0));
             *binding = Binding::Param(name, vec![(lo, current), (hi, current)]);
+        }
+        if ui.radio(mode == 3, "curve over age").on_hover_text(hints::BINDING_AGE).clicked() && mode != 3 {
+            *binding = Binding::Age(vec![(0.0, current), (1.0, current)]);
         }
         if color_params
             && ui
@@ -153,7 +169,15 @@ pub fn binding_editor_with<T: Copy + Default>(
                 float_param_picker(ui, name, params, id.with("param"));
             });
             let range = param_range(name);
-            keys_editor(ui, keys, range, value_ui, id.with("keys"));
+            keys_editor(ui, keys, range, "at", value_ui, id.with("keys"));
+            if keys.is_empty() {
+                ui.colored_label(WARN, "⚠ no keys: the curve has no value");
+            }
+        }
+        Binding::Age(keys) => {
+            ui.label(egui::RichText::new("seconds since the layer started (or its trigger played it)").weak())
+                .on_hover_text(hints::BINDING_AGE);
+            keys_editor(ui, keys, Some((0.0, 1.0)), "age s", value_ui, id.with("age keys"));
             if keys.is_empty() {
                 ui.colored_label(WARN, "⚠ no keys: the curve has no value");
             }
@@ -188,12 +212,13 @@ fn keys_editor<T: Copy + Default>(
     ui: &mut egui::Ui,
     keys: &mut Vec<(f32, T)>,
     range: Option<(f32, f32)>,
+    at: &str,
     value_ui: &mut dyn FnMut(&mut egui::Ui, &mut T),
     id: egui::Id,
 ) {
     let mut remove = None;
     egui::Grid::new(id).num_columns(4).spacing([6.0, 2.0]).show(ui, |ui| {
-        ui.label(egui::RichText::new("at").weak());
+        ui.label(egui::RichText::new(at).weak());
         ui.label("");
         ui.label(egui::RichText::new("value").weak());
         ui.end_row();
@@ -225,8 +250,8 @@ fn keys_editor<T: Copy + Default>(
     }
 }
 
-/// A small line plot of the curve over the parameter range.
-fn curve_plot(ui: &mut egui::Ui, keys: &[(f32, f32)], range: Option<(f32, f32)>) {
+/// A small line plot of the curve over the parameter (or age) range.
+fn curve_plot(ui: &mut egui::Ui, keys: &[(f32, f32)], range: Option<(f32, f32)>, input: &str) {
     if keys.is_empty() {
         return;
     }
@@ -257,5 +282,5 @@ fn curve_plot(ui: &mut egui::Ui, keys: &[(f32, f32)], range: Option<(f32, f32)>)
             painter.circle_filled(to_screen(*key), 2.5, visuals.strong_text_color());
         }
     }
-    response.on_hover_text(format!("parameter {} … {}; value 0 … {}", x0, x1, top));
+    response.on_hover_text(format!("{} {} … {}; value 0 … {}", input, x0, x1, top));
 }

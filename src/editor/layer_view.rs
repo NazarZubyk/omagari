@@ -61,7 +61,8 @@ impl LayerView {
 
     /// The project the preview builds: particle layers that don't show get an
     /// alpha mask nothing passes, so they still simulate and spawn children;
-    /// surface layers that don't show lose their shells.
+    /// surface layers that don't show lose their shells, shapes become fully
+    /// transparent.
     pub fn apply(&self, project: &ProjectV2) -> ProjectV2 {
         let mut project = project.clone();
         for layer in project.layers.iter_mut() {
@@ -72,6 +73,14 @@ impl LayerView {
                 // A hidden surface layer draws no overlays.
                 LayerDef::Surface(s) if !shows => s.shells.clear(),
                 LayerDef::Surface(_) => {}
+                // A hidden shape draws nothing (fully transparent).
+                LayerDef::Shape(s) if !shows => {
+                    s.material.opacity = omagari::format::Binding::Const(0.0);
+                    s.material.rim = None;
+                    s.material.flash = None;
+                    s.material.dissolve = None;
+                }
+                LayerDef::Shape(_) => {}
             }
         }
         project
