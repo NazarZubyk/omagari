@@ -1,0 +1,83 @@
+// P1 demo: a Local aura on a socket (stays on the moving target) and Global
+// sparks along a segment (left behind as a trail). The preview target runs
+// in a circle at 3.6 m/s; switch ⟳ MOTION off to compare.
+(
+    version: 2,
+    assets: [
+        (id: "glow1", kind: Texture((path: "omagari://textures/glow1.png"))),
+        (id: "spark1", kind: Texture((path: "omagari://textures/spark1.png"))),
+    ],
+    sockets: [
+        (name: "chest", node: None, offset: (0.0, 1.0, 0.0)),
+        (name: "blade_base", node: None, offset: (0.4, 0.8, 0.0)),
+        (name: "blade_tip", node: None, offset: (0.4, 1.8, 0.0)),
+    ],
+    layers: [
+        Particles((
+            name: "aura",
+            attach: Socket("chest"),
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 256,
+                spawner: (count: Single(60.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(1.0), Float(1.6))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.08))),
+                    SetPositionCircle((center_expr: Vec3((0.0, -0.9, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.45), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Vec3(Float(0.0), Operator(Uniform(Float(0.6), Float(1.2))), Float(0.0))))),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((drag_expr: Float(0.5))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (0.6, 0.1, 1.0, 0.0)), (0.2, (1.2, 0.2, 2.0, 0.8)), (1.0, (0.4, 0.05, 0.8, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+        Particles((
+            name: "edge_sparks",
+            attach: Segment(from: "blade_base", to: "blade_tip"),
+            simulation_space: Global,
+            play: Loop,
+            texture: Some("spark1"),
+            effect: (
+                capacity: 256,
+                spawner: (count: Single(80.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.2), Float(0.5))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.03))),
+                    SetAttribute((attr: "position", attr_expr: Operator(Add(Property("segment_a"), Operator(Multiply(Operator(Subtract(Property("segment_b"), Property("segment_a"))), RandFloat)))))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Float(0.6))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel_expr: Vec3((0.0, -2.0, 0.0)))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (2.0, 3.0, 5.0, 0.0)), (0.1, (2.0, 3.0, 5.0, 1.0)), (1.0, (0.5, 1.0, 3.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((
+        stage: Floor,
+        motion: Some(Circle(radius: 3.0, speed: 3.6)),
+    )),
+)

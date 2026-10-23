@@ -289,6 +289,67 @@ fn play_label(play: &PlayDef) -> String {
     }
 }
 
+fn attach_label(attach: &AttachDef) -> &'static str {
+    match attach {
+        AttachDef::Target => "Target",
+        AttachDef::Socket(_) => "Socket",
+        AttachDef::Segment { .. } => "Segment",
+    }
+}
+
+/// A socket name field with a menu of the package's sockets.
+fn ui_for_socket_name(ui: &mut egui::Ui, name: &mut String, sockets: &[String], hint: &str) {
+    ui.add(egui::TextEdit::singleline(name).hint_text(hint).desired_width(90.0)).on_hover_text(
+        "A package socket (⚓ SOCKETS & FIT), or the name of a node in the target's model",
+    );
+    if !sockets.is_empty() {
+        ui.menu_button("⏷", |ui| {
+            for socket in sockets {
+                if ui.button(socket).clicked() {
+                    *name = socket.clone();
+                    ui.close();
+                }
+            }
+        });
+    }
+}
+
+fn ui_for_attach(ui: &mut egui::Ui, attach: &mut AttachDef, sockets: &[String], id: egui::Id) {
+    let first = sockets.first().cloned().unwrap_or_default();
+    egui::ComboBox::from_id_salt(id.with("attach"))
+        .selected_text(attach_label(attach))
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(*attach == AttachDef::Target, "Target").on_hover_text("The target's root").clicked() {
+                *attach = AttachDef::Target;
+            }
+            let socket = matches!(attach, AttachDef::Socket(_));
+            if ui.selectable_label(socket, "Socket").on_hover_text("Follows a socket").clicked() && !socket {
+                *attach = AttachDef::Socket(first.clone());
+            }
+            let segment = matches!(attach, AttachDef::Segment { .. });
+            if ui
+                .selectable_label(segment, "Segment")
+                .on_hover_text("Between two sockets; read Property segment_a / segment_b in expressions")
+                .clicked()
+                && !segment
+            {
+                *attach = AttachDef::Segment {
+                    from: first.clone(),
+                    to: sockets.get(1).cloned().unwrap_or_default(),
+                };
+            }
+        });
+    match attach {
+        AttachDef::Target => {}
+        AttachDef::Socket(name) => ui_for_socket_name(ui, name, sockets, "socket"),
+        AttachDef::Segment { from, to } => {
+            ui_for_socket_name(ui, from, sockets, "from");
+            ui.label("→");
+            ui_for_socket_name(ui, to, sockets, "to");
+        }
+    }
+}
+
 fn alpha_mode_label(mode: AlphaModeDef) -> &'static str {
     match mode {
         AlphaModeDef::Blend => "Blend",
@@ -361,6 +422,12 @@ pub fn draw_particles_layer(
                         .on_hover_text("Particles move with the target");
                     ui.radio_value(&mut layer.simulation_space, SimulationSpaceDef::Global, "Global")
                         .on_hover_text("Particles stay where they were emitted: a moving target leaves a trail");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Attach:").on_hover_text(
+                        "Where the layer sits on the target: its root, a socket (follows it), or a segment between two sockets (Property segment_a / segment_b)",
+                    );
+                    ui_for_attach(ui, &mut layer.attach, &app.socket_names, id);
                 });
                 ui.horizontal(|ui| {
                     ui.label("Play:").on_hover_text(
