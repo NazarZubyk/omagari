@@ -140,10 +140,18 @@ impl PackageAssets for InMemoryPackageAssets<'_> {
 /// Loader settings for a texture, or `None` for Bevy's defaults (sRGB, the
 /// app's default sampler), which is what sprites use.
 fn texture_loader_settings(texture: &TextureAssetDef) -> Option<(bool, ImageSampler)> {
+    match texture_image_settings(texture) {
+        (true, ImageSampler::Default) => None,
+        settings => Some(settings),
+    }
+}
+
+/// Whether a texture is sRGB and the sampler it needs: `(true,
+/// ImageSampler::Default)` for the sprite defaults (Clamp, sRGB, Linear).
+pub fn texture_image_settings(texture: &TextureAssetDef) -> (bool, ImageSampler) {
     let is_srgb = texture.color_space() == TextureColorSpace::Srgb;
-    if is_srgb && texture.wrap() == TextureWrap::Clamp && texture.filter() == TextureFilter::Linear
-    {
-        return None;
+    if texture.wrap() == TextureWrap::Clamp && texture.filter() == TextureFilter::Linear {
+        return (is_srgb, ImageSampler::Default);
     }
     let address = match texture.wrap() {
         TextureWrap::Repeat => ImageAddressMode::Repeat,
@@ -162,7 +170,25 @@ fn texture_loader_settings(texture: &TextureAssetDef) -> Option<(bool, ImageSamp
         mipmap_filter: filter,
         ..default()
     });
-    Some((is_srgb, sampler))
+    (is_srgb, sampler)
+}
+
+/// Gives an already loaded image a texture's settings (sampler, sRGB or
+/// linear for 8-bit RGBA formats). Returns whether it changed anything.
+///
+/// Bevy keeps the image of a path loaded with the settings of its first
+/// load, so a package rebuilt with other settings for the same file (the
+/// editor's live preview) gets the old ones; this fixes the image in place.
+pub fn apply_texture_settings(image: &mut Image, texture: &TextureAssetDef) -> bool {
+    let (is_srgb, sampler) = texture_image_settings(texture);
+    let format = image.texture_descriptor.format;
+    let wanted = if is_srgb { format.add_srgb_suffix() } else { format.remove_srgb_suffix() };
+    if wanted == format && image.sampler == sampler {
+        return false;
+    }
+    image.texture_descriptor.format = wanted;
+    image.sampler = sampler;
+    true
 }
 
 impl VfxPackage {
@@ -372,6 +398,29 @@ mod tests {
             ])"#,
         );
         assert_eq!(package.auto_finish, None);
+    }
+
+    #[test]
+    fn loaded_images_take_changed_texture_settings() {
+        use bevy::render::render_resource::TextureFormat;
+        use crate::format::TexturePurpose;
+
+        let mut image = Image::default();
+        image.texture_descriptor.format = TextureFormat::Rgba8UnormSrgb;
+        let sprite = TextureAssetDef::new("a.png", TexturePurpose::Sprite);
+        assert!(!apply_texture_settings(&mut image, &sprite), "already the sprite defaults");
+
+        let noise = TextureAssetDef::new("a.png", TexturePurpose::Noise);
+        assert!(apply_texture_settings(&mut image, &noise));
+        assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8Unorm);
+        let ImageSampler::Descriptor(d) = &image.sampler else { panic!("{:?}", image.sampler) };
+        assert_eq!(d.address_mode_u, ImageAddressMode::Repeat);
+        assert!(!apply_texture_settings(&mut image, &noise), "nothing left to change");
+
+        assert!(apply_texture_settings(&mut image, &sprite));
+        assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8UnormSrgb);
+        assert_eq!(image.sampler, ImageSampler::Default);
+        assert_eq!(texture_loader_settings(&sprite), None);
     }
 
     #[test]
