@@ -54,6 +54,7 @@ pub enum RightTab {
     Parameters,
     Triggers,
     Assets,
+    Hierarchy,
 }
 
 /// A modal question.
@@ -118,6 +119,12 @@ pub struct EditorSession {
     pub auto_fire_random: bool,
     /// Files are dragged over the window.
     pub drop_hover: bool,
+    /// The pointer is over the editor's panels or a dialog (last frame).
+    pub pointer_on_ui: bool,
+    /// The HIERARCHY tab shows the weapon model.
+    pub hierarchy_weapon: bool,
+    /// The HIERARCHY tab's search text.
+    pub hierarchy_search: String,
     /// The native file dialog of IMPORT, while it is open.
     pub import_dialog: ImportDialog,
 }
@@ -155,6 +162,9 @@ impl Default for EditorSession {
             param_animation: None,
             auto_fire_random: false,
             drop_hover: false,
+            pointer_on_ui: false,
+            hierarchy_weapon: false,
+            hierarchy_search: String::new(),
             import_dialog: ImportDialog::default(),
         }
     }

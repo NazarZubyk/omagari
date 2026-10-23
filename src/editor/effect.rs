@@ -769,7 +769,7 @@ fn modifier_menu<T>(ui: &mut egui::Ui, list: &mut Vec<T>, entries: &[MenuEntry<T
     }
 }
 
-const INIT_MENU: [MenuEntry<ModifierEditor>; 9] = [
+const INIT_MENU: [MenuEntry<ModifierEditor>; 10] = [
     ("Attributes", SetAttributeModifierEditor::label, hints::SET_ATTRIBUTE, || ModifierEditor::SetAttribute(default())),
     ("Attributes", InheritAttributeModifierEditor::label, "Copies a value from the parent particle (child layers only)", || {
         ModifierEditor::InheritAttribute(default())
@@ -781,6 +781,9 @@ const INIT_MENU: [MenuEntry<ModifierEditor>; 9] = [
         ModifierEditor::SetPositionSphere(default())
     }),
     ("Position", SetPositionCone3dModifierEditor::label, hints::CONE, || ModifierEditor::SetPositionCone3d(default())),
+    ("Position", || "🕂 Random point on segment with radius", hints::SEGMENT_RADIUS, || {
+        ModifierEditor::SetAttribute(segment_point_with_radius(0.05))
+    }),
     ("Velocity", SetVelocityCircleModifierEditor::label, "Particles fly outwards in a flat circle (speed in m/s)", || {
         ModifierEditor::SetVelocityCircle(default())
     }),

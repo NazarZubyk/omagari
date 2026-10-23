@@ -8,6 +8,7 @@ use omagari::format::{ParamKind, ParamValue, PreviewMotion, ProjectV2, TextureAs
 use omagari::runtime::{apply_texture_settings_to, InMemoryPackageAssets};
 use omagari::{TriggerArgs, VfxCommandsExt, VfxControl, VfxPackage};
 
+use crate::editor::model::{random_point_on_bounds, ModelPreview};
 use crate::editor::params_panel::preview_value;
 use crate::editor::session::EditorSession;
 use crate::editor::AppContext;
@@ -18,9 +19,11 @@ pub struct EffectResource {
     pub context: AppContext,
 }
 
-/// The entity preview instances are attached to: the spawn point at the
-/// origin (the stage moves the room around it, not the effect), moved by the
-/// project's preview motion.
+/// The preview's moving root (the game's entity root): the spawn point at
+/// the origin (the stage moves the room around it, not the effect), moved by
+/// the project's preview motion. Preview instances are attached to it, or
+/// on the CAPSULE / MODEL stage to the node `preview.attach_to` names
+/// ([`ModelPreview::instance_target`]).
 #[derive(Component)]
 pub struct PreviewTarget;
 
@@ -37,7 +40,8 @@ pub enum PreviewCommand {
     /// play the project from the start in a new instance.
     Restart,
     /// Fire a trigger on the preview instance, without a payload or at a
-    /// random point near the target.
+    /// random point on the target (its meshes' bounds when it has a body,
+    /// else near it).
     Fire { name: String, random_point: bool },
 }
 
@@ -85,12 +89,16 @@ pub fn apply_preview_commands(
     session: Res<EditorSession>,
     mut effects: ResMut<Assets<EffectAsset>>,
     asset_server: Res<AssetServer>,
-    target: Single<(Entity, &GlobalTransform), With<PreviewTarget>>,
+    root: Single<Entity, With<PreviewTarget>>,
+    globals: Query<&GlobalTransform>,
+    model: Option<Res<ModelPreview>>,
     mut state: ResMut<PreviewState>,
     // Both read the packages; only one is used at a time.
     mut packages_or_control: ParamSet<(ResMut<Assets<VfxPackage>>, VfxControl)>,
 ) {
-    let (target, target_transform) = *target;
+    let target = model.as_ref().and_then(|m| m.instance_target).filter(|&e| globals.contains(e)).unwrap_or(*root);
+    let target_transform = globals.get(target).copied().unwrap_or_default();
+    let bounds = model.as_ref().and_then(|m| m.target_bounds);
     for request in requests.read() {
         match request {
             PreviewCommand::Render | PreviewCommand::Restart => {
@@ -145,13 +153,23 @@ pub fn apply_preview_commands(
             }
             PreviewCommand::Fire { name, random_point } => {
                 let args = if *random_point {
-                    random_point_near(target_transform, rand::random(), rand::random(), rand::random())
+                    random_trigger_point(&target_transform, bounds)
                 } else {
                     TriggerArgs::default()
                 };
                 state.pending_fires.push((name.clone(), args, 0));
             }
         }
+    }
+}
+
+/// A random trigger payload: on the bounds of the target's meshes when it has
+/// any (a model or the capsule), else near the target.
+pub fn random_trigger_point(target: &GlobalTransform, bounds: Option<(Vec3, Vec3)>) -> TriggerArgs {
+    let (a, b, c) = (rand::random(), rand::random(), rand::random());
+    match bounds {
+        Some((min, max)) => random_point_on_bounds(min, max, a, b, c),
+        None => random_point_near(target, a, b, c),
     }
 }
 
@@ -193,6 +211,7 @@ pub fn drive_preview(
     mut session: ResMut<EditorSession>,
     mut state: ResMut<PreviewState>,
     target: Single<&GlobalTransform, With<PreviewTarget>>,
+    model: Option<Res<ModelPreview>>,
     mut vfx: VfxControl,
     mut drive: Local<PreviewDrive>,
 ) {
@@ -258,7 +277,7 @@ pub fn drive_preview(
         if drive.auto[index].1 >= *every {
             drive.auto[index].1 = drive.auto[index].1.rem_euclid(*every);
             let args = if session.auto_fire_random {
-                random_point_near(*target, rand::random(), rand::random(), rand::random())
+                random_trigger_point(*target, model.as_ref().and_then(|m| m.target_bounds))
             } else {
                 TriggerArgs::default()
             };

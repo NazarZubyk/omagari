@@ -347,6 +347,13 @@ impl UiProvider for ExprWriterEditor {
                         {
                             *self = segment_point_expr();
                         }
+                        if ui
+                            .button("Random Point On Segment With Radius")
+                            .on_hover_text(super::hints::SEGMENT_RADIUS)
+                            .clicked()
+                        {
+                            *self = segment_point_with_radius(0.05).attr_expr;
+                        }
                         if let Some((param, _)) = app.params.iter().find(|(_, k)| *k == ParamKind::Float) {
                             if ui
                                 .button("Mix By Parameter")

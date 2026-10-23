@@ -1,5 +1,6 @@
 //! The right panel: tabs for the selected layer (inspector), sockets & fit,
-//! the preview settings, parameters, triggers and assets.
+//! the preview settings (stage, camera, motion, model, animation, weapon),
+//! parameters, triggers, assets and the preview model's hierarchy.
 
 use bevy_egui::egui::{self, RichText};
 use omagari::format::{LayerDef, ProjectV2};
@@ -7,6 +8,8 @@ use omagari::format::{LayerDef, ProjectV2};
 use super::assets::{assets_tab, TexturePreviews};
 use super::camera::PreviewCamera;
 use super::effect::draw_particles_layer;
+use super::model::ModelPreview;
+use super::model_panel::{hierarchy_tab, model_section, target_model_info};
 use super::package::{motion_panel, sockets_and_fit_panel};
 use super::params_panel::{parameters_tab, triggers_tab};
 use super::problems::{message_list, subject_box, ACCENT};
@@ -15,13 +18,14 @@ use super::session::{EditorSession, RightTab};
 use super::AppContext;
 use crate::settings::GameAssets;
 
-const TABS: [(RightTab, &str, &str); 6] = [
+const TABS: [(RightTab, &str, &str); 7] = [
     (RightTab::Layer, "🔧 LAYER", "Settings of the selected layer"),
     (RightTab::SocketsFit, "⚓ SOCKETS & FIT", "Named points on the target, and size fit"),
     (RightTab::Preview, "🎬 PREVIEW", "Stage, camera, backdrop and target motion of the preview"),
     (RightTab::Parameters, "📈 PARAMETERS", "Values the game sets while the effect plays (intensity, tint, ...)"),
     (RightTab::Triggers, "⚡ TRIGGERS", "Events the game fires (hit, tick, ...): bursts and pulses"),
     (RightTab::Assets, "🖼 ASSETS", "Textures of the project"),
+    (RightTab::Hierarchy, "🌲 HIERARCHY", "Nodes, bones, meshes and materials of the preview model: attach, sockets, segments"),
 ];
 
 pub fn right_panel(
@@ -32,6 +36,7 @@ pub fn right_panel(
     backdrop: &mut Backdrop,
     previews: &mut TexturePreviews,
     game_assets: &GameAssets,
+    model: &mut ModelPreview,
 ) {
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
@@ -45,7 +50,8 @@ pub fn right_panel(
         .show(ui, |ui| match session.tab {
             RightTab::Layer => layer_tab(ui, project, session, app),
             RightTab::SocketsFit => {
-                sockets_and_fit_panel(ui, project);
+                let info = target_model_info(project, game_assets);
+                sockets_and_fit_panel(ui, project, model, info.as_deref());
                 let subjects: Vec<String> =
                     project.sockets.iter().map(|s| format!("socket \"{}\"", s.name)).collect();
                 for subject in subjects.iter() {
@@ -57,10 +63,15 @@ pub fn right_panel(
                     .filter(|(_, m)| !m.starts_with('[') && m.contains("fit"));
                 message_list(ui, fit_messages);
             }
-            RightTab::Preview => preview_tab(ui, project, session, backdrop),
+            RightTab::Preview => {
+                preview_tab(ui, project, session, backdrop);
+                ui.separator();
+                model_section(ui, project, model, game_assets);
+            }
             RightTab::Parameters => parameters_tab(ui, project, session, app),
             RightTab::Triggers => triggers_tab(ui, project, session, app),
             RightTab::Assets => assets_tab(ui, project, session, previews, game_assets),
+            RightTab::Hierarchy => hierarchy_tab(ui, project, session, model, app, game_assets),
         });
 }
 
@@ -130,8 +141,6 @@ fn preview_tab(ui: &mut egui::Ui, project: &mut ProjectV2, session: &mut EditorS
     ui.strong("Target motion")
         .on_hover_text("Moves the preview target so you can see how the effect follows a moving character");
     motion_panel(ui, project);
-    ui.separator();
-    ui.label(RichText::new("Model, animation and socket preview come in P3.").weak());
 }
 
 

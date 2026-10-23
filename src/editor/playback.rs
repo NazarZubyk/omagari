@@ -1,10 +1,14 @@
 //! The bottom bar: play (RENDER), stop, restart, live preview, playback
-//! speed, the problems of the project and the last status message.
+//! speed, the preview model's animation (pause, loop, time, speed), the
+//! problems of the project and the last status message.
 
 use bevy::prelude::*;
 use bevy_egui::egui::{self, RichText};
 
+use omagari::format::ProjectV2;
+
 use super::actions::Action;
+use super::model::ModelPreview;
 use super::problems::{badge, ERROR, NOTE, WARNING};
 use super::session::EditorSession;
 use super::shortcuts::Shortcut;
@@ -16,10 +20,12 @@ const SPEEDS: [f32; 4] = [0.1, 0.25, 0.5, 1.0];
 
 pub fn playback_bar(
     ui: &mut egui::Ui,
+    project: &mut ProjectV2,
     session: &mut EditorSession,
     preview_state: &PreviewState,
     time: &mut Time<Virtual>,
     app: &AppContext,
+    model: &mut ModelPreview,
 ) {
     ui.add_space(3.0);
     ui.horizontal_wrapped(|ui| {
@@ -79,6 +85,7 @@ pub fn playback_bar(
         if (slider.changed() || speed != time.relative_speed()) && speed > 0.0 {
             time.set_relative_speed(speed);
         }
+        super::model_panel::animation_controls(ui, project, model);
         ui.separator();
 
         let d = &session.diagnostics;

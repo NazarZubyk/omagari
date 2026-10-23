@@ -301,6 +301,28 @@ pub fn triggers_tab(ui: &mut egui::Ui, project: &mut ProjectV2, session: &mut Ed
                 }
             });
 
+            // Fire at a clip time of the preview animation (preview block).
+            ui.horizontal(|ui| {
+                let current = project
+                    .preview
+                    .as_ref()
+                    .and_then(|p| p.animation_triggers.iter().find(|(n, _)| *n == name).map(|(_, at)| *at));
+                let mut on = current.is_some();
+                let mut at = current.unwrap_or(0.3);
+                let toggled = ui.checkbox(&mut on, "fire at clip time").on_hover_text(hints::ANIMATION_TRIGGER).changed();
+                let edited = ui
+                    .add_enabled(on, egui::DragValue::new(&mut at).speed(0.01).range(0.0..=600.0).suffix(" s"))
+                    .on_hover_text(hints::ANIMATION_TRIGGER)
+                    .changed();
+                if toggled || edited {
+                    let preview = project.preview.get_or_insert_with(PreviewDef::default);
+                    preview.animation_triggers.retain(|(n, _)| *n != name);
+                    if on {
+                        preview.animation_triggers.push((name.clone(), at));
+                    }
+                }
+            });
+
             // Pulses.
             ui.label(RichText::new("Pulses").strong()).on_hover_text(hints::PULSES);
             let mut remove_pulse = None;
@@ -359,6 +381,7 @@ pub fn triggers_tab(ui: &mut egui::Ui, project: &mut ProjectV2, session: &mut Ed
         let removed = project.triggers.remove(index);
         if let Some(preview) = &mut project.preview {
             preview.auto_triggers.retain(|(n, _)| *n != removed.name);
+            preview.animation_triggers.retain(|(n, _)| *n != removed.name);
         }
         app.status = Some(format!("Removed trigger \"{}\" (Ctrl+Z brings it back)", removed.name));
     }

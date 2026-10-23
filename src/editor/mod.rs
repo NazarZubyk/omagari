@@ -15,6 +15,8 @@ pub mod history;
 pub mod inspector;
 pub mod layer_view;
 pub mod layers_panel;
+pub mod model;
+pub mod model_panel;
 pub mod modifiers;
 pub mod package;
 pub mod params_panel;
@@ -71,9 +73,17 @@ impl Plugin for EditorPlugin {
             .init_resource::<scene::Stage>()
             .init_resource::<session::EditorSession>()
             .init_resource::<assets::TexturePreviews>()
+            .init_resource::<model::ModelPreview>()
+            .init_resource::<scene::StageFloor>()
+            .init_gizmo_group::<model::SocketGizmos>()
             .add_systems(
                 Startup,
-                (scene::spawn_scene, spawn_preview_target, camera::spawn_preview_cameras),
+                (
+                    scene::spawn_scene,
+                    spawn_preview_target,
+                    camera::spawn_preview_cameras,
+                    model::configure_socket_gizmos,
+                ),
             )
             .add_systems(
                 Update,
@@ -89,23 +99,36 @@ impl Plugin for EditorPlugin {
                     camera::focus_camera,
                     camera::apply_render_profiles,
                     scene::draw_room_grid,
+                    model::drag_sockets,
                 ),
             )
             .add_systems(
                 Update,
                 (
+                    model::sync_preview_models,
+                    model::resolve_instance_target,
+                    model::drive_model_animation,
                     apply_preview_commands,
                     crate::controller::sync_preview_texture_settings,
                     crate::controller::drive_preview,
                 )
                     .chain()
+                    .after(move_preview_target)
                     .before(omagari::runtime::VfxSystems),
+            )
+            .add_systems(
+                PostUpdate,
+                model::update_socket_markers.after(bevy::transform::TransformSystems::Propagate),
             )
             .add_systems(
                 Update,
                 scene::apply_scene
                     .after(scene::sync_stage)
-                    .run_if(resource_changed::<scene::Backdrop>.or_else(resource_changed::<scene::Stage>)),
+                    .run_if(
+                        resource_changed::<scene::Backdrop>
+                            .or_else(resource_changed::<scene::Stage>)
+                            .or_else(resource_changed::<scene::StageFloor>),
+                    ),
             )
             .add_systems(
                 EguiPrimaryContextPass,

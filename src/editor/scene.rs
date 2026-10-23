@@ -17,7 +17,7 @@ const ROOM_HALF_SIZE: f32 = 20.0;
 ///
 /// The rooms are a cube with a 1-unit grid on every face, which gives a sense of
 /// scale and orientation while orbiting the camera.
-#[derive(Resource, Default, Clone, Copy, PartialEq)]
+#[derive(Resource, Default, Clone, Copy, PartialEq, Debug)]
 pub enum Backdrop {
     #[default]
     LightRoom,
@@ -103,16 +103,24 @@ pub enum Stage {
     Floor,
     /// Around a rock resting on the floor, for shields and auras.
     Object,
+    /// On a 0.7 × 1.8 m capsule standing on the floor (its centre is the
+    /// target).
+    Capsule,
+    /// On the project's preview model (`preview.model`; the capsule without
+    /// one), see [`super::model`].
+    Model,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 3] = [Stage::Air, Stage::Floor, Stage::Object];
+    pub const ALL: [Stage; 5] = [Stage::Air, Stage::Floor, Stage::Object, Stage::Capsule, Stage::Model];
 
     pub fn name(self) -> &'static str {
         match self {
             Stage::Air => "AIR",
             Stage::Floor => "FLOOR",
             Stage::Object => "OBJECT",
+            Stage::Capsule => "CAPSULE",
+            Stage::Model => "MODEL",
         }
     }
 
@@ -121,6 +129,8 @@ impl Stage {
             Stage::Air => "The effect floats in the middle of the room",
             Stage::Floor => "The effect sits on the floor",
             Stage::Object => "The effect sits around a rock on the floor (shields, auras)",
+            Stage::Capsule => "The effect sits on a 0.7 × 1.8 m capsule standing on the floor (a character's size); its centre is the target",
+            Stage::Model => "The effect sits on the preview model (PREVIEW tab: model, animation, weapon); the capsule until a model is set",
         }
     }
 
@@ -129,16 +139,19 @@ impl Stage {
             "air" => Some(Stage::Air),
             "floor" => Some(Stage::Floor),
             "object" => Some(Stage::Object),
+            "capsule" => Some(Stage::Capsule),
+            "model" => Some(Stage::Model),
             _ => None,
         }
     }
 
-    /// The stage of a project; stages the editor can't show yet (capsule,
-    /// model) fall back to AIR.
+    /// The stage of a project.
     pub fn of(project: &ProjectV2) -> Stage {
         match project.preview.as_ref().map(|p| p.stage) {
             Some(PreviewStage::Floor) => Stage::Floor,
             Some(PreviewStage::Object) => Stage::Object,
+            Some(PreviewStage::Capsule) => Stage::Capsule,
+            Some(PreviewStage::Model) => Stage::Model,
             _ => Stage::Air,
         }
     }
@@ -149,21 +162,30 @@ impl Stage {
             Stage::Air => PreviewStage::Air,
             Stage::Floor => PreviewStage::Floor,
             Stage::Object => PreviewStage::Object,
+            Stage::Capsule => PreviewStage::Capsule,
+            Stage::Model => PreviewStage::Model,
         };
         if Stage::of(project) != self {
             project.preview.get_or_insert_with(PreviewDef::default).stage = stage;
         }
     }
 
-    /// Height of the room center, given the lowest point of the rock.
-    fn room_center_y(self, rock_bottom: f32) -> f32 {
+    /// Height of the room center, given the lowest point of the rock and
+    /// how far below the target the floor of a body stage is.
+    fn room_center_y(self, rock_bottom: f32, floor: StageFloor) -> f32 {
         match self {
             Stage::Air => 0.0,
             Stage::Floor => ROOM_HALF_SIZE,
             Stage::Object => ROOM_HALF_SIZE + rock_bottom,
+            Stage::Capsule | Stage::Model => ROOM_HALF_SIZE - floor.0.unwrap_or(0.0),
         }
     }
 }
+
+/// How far below the preview target the floor of the CAPSULE / MODEL stage
+/// is (set by [`super::model::sync_preview_models`]).
+#[derive(Resource, Default, Clone, Copy, PartialEq, Debug)]
+pub struct StageFloor(pub Option<f32>);
 
 /// Keeps the [`Stage`] resource on the project's stage.
 pub fn sync_stage(project: Res<ProjectV2>, mut stage: ResMut<Stage>) {
@@ -268,6 +290,7 @@ fn rock_mesh() -> (Mesh, f32) {
 pub fn apply_scene(
     backdrop: Res<Backdrop>,
     stage: Res<Stage>,
+    floor: Res<StageFloor>,
     rock_bottom: Res<RockBottom>,
     mut clear_color: ResMut<ClearColor>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -277,7 +300,7 @@ pub fn apply_scene(
 ) {
     clear_color.0 = backdrop.clear_color();
     let (room_transform, room_visibility) = &mut *room;
-    room_transform.translation.y = stage.room_center_y(rock_bottom.0);
+    room_transform.translation.y = stage.room_center_y(rock_bottom.0, *floor);
     match backdrop.face_colors() {
         Some(colors) => {
             **room_visibility = Visibility::Inherited;
@@ -300,6 +323,7 @@ pub fn draw_room_grid(
     mut gizmos: Gizmos,
     backdrop: Res<Backdrop>,
     stage: Res<Stage>,
+    floor: Res<StageFloor>,
     rock_bottom: Res<RockBottom>,
     cameras: Query<(&Camera, &Transform, &Projection), With<PreviewCamera>>,
     target: Single<&Transform, (With<PreviewTarget>, Without<PreviewCamera>)>,
@@ -316,7 +340,7 @@ pub fn draw_room_grid(
     };
     let orthographic = matches!(projection, Projection::Orthographic(_));
     let h = ROOM_HALF_SIZE;
-    let center = Vec3::Y * stage.room_center_y(rock_bottom.0);
+    let center = Vec3::Y * stage.room_center_y(rock_bottom.0, *floor);
     let cells = (2.0 * h) as u32;
     for (normal, _) in ROOM_FACES {
         let face_center = center - normal * h;
@@ -351,7 +375,12 @@ mod tests {
         assert_eq!(project.preview.as_ref().unwrap().stage, PreviewStage::Object);
         assert_eq!(Stage::of(&project), Stage::Object);
         project.preview.as_mut().unwrap().stage = PreviewStage::Model;
-        assert_eq!(Stage::of(&project), Stage::Air, "not shown yet");
+        assert_eq!(Stage::of(&project), Stage::Model);
+        Stage::Capsule.store(&mut project);
+        assert_eq!(project.preview.as_ref().unwrap().stage, PreviewStage::Capsule);
         assert_eq!(Stage::parse(" Floor "), Some(Stage::Floor));
+        assert_eq!(Stage::parse("MODEL"), Some(Stage::Model));
+        // The floor of a body stage is under the body's feet.
+        assert_eq!(Stage::Capsule.room_center_y(-0.5, StageFloor(Some(0.9))), ROOM_HALF_SIZE - 0.9);
     }
 }
