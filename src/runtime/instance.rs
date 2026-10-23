@@ -26,6 +26,7 @@ use bevy_hanabi::prelude::*;
 use super::attach::{FitState, SocketAttach};
 use super::package::{apply_texture_settings_to, VfxPackage};
 use super::params::{sync_instance, ParamState, VfxWarnOnce};
+use super::surface::{SurfaceLayerState, VfxSurfaceLayer};
 use super::triggers::TriggerArgs;
 use crate::format::{AttachDef, ParamValue};
 
@@ -179,6 +180,8 @@ pub struct VfxInstance {
     pub(crate) target: Entity,
     pub(crate) lifecycle: VfxLifecycle,
     pub(crate) layers: Vec<Entity>,
+    /// Surface layer entities, in the order of the package's surface layers.
+    pub(crate) surfaces: Vec<Entity>,
     /// Layers of an earlier build (hot reload, package replaced): emitting
     /// stopped, despawned when the seconds run out.
     pub(crate) retired: Vec<(Entity, f32)>,
@@ -203,6 +206,7 @@ impl VfxInstance {
             target,
             lifecycle: VfxLifecycle::default(),
             layers: Vec::new(),
+            surfaces: Vec::new(),
             retired: Vec::new(),
             rebuild: false,
             linger: 0.0,
@@ -252,6 +256,12 @@ impl VfxInstance {
     /// until the package has loaded.
     pub fn layers(&self) -> &[Entity] {
         &self.layers
+    }
+
+    /// Surface layer entities, in the order of
+    /// [`VfxPackage::surface_layers`]. Empty until the package has loaded.
+    pub fn surface_layers(&self) -> &[Entity] {
+        &self.surfaces
     }
 
     /// Layers of an earlier build that are fading out.
@@ -384,7 +394,7 @@ impl VfxControl<'_, '_> {
         if !inst.lifecycle.is_stopping() {
             return inst.lifecycle.is_alive();
         }
-        if inst.layers.is_empty() {
+        if inst.layers.is_empty() && inst.surfaces.is_empty() {
             // Stopped before it started: start over.
             inst.lifecycle = VfxLifecycle::default();
             return true;
@@ -489,7 +499,7 @@ impl VfxControl<'_, '_> {
             return false;
         }
         inst.package = package;
-        if inst.layers.is_empty() {
+        if inst.layers.is_empty() && inst.surfaces.is_empty() {
             inst.lifecycle = VfxLifecycle::default();
         } else {
             inst.lifecycle.restart(None);
@@ -527,6 +537,7 @@ pub(crate) fn start_instances(
     asset_server: Res<AssetServer>,
     packages: Res<Assets<VfxPackage>>,
     mut instances: Query<(Entity, &mut VfxInstance)>,
+    surfaces: Query<(&Name, &SurfaceLayerState)>,
 ) {
     for (entity, mut instance) in instances.iter_mut() {
         let rebuilding = instance.rebuild && instance.state() == VfxState::Running;
@@ -554,12 +565,7 @@ pub(crate) fn start_instances(
             }
             Some(_) => continue,
         }
-        if !package
-            .particle_layers
-            .iter()
-            .filter_map(|l| l.texture.as_ref())
-            .all(|t| texture_settled(&asset_server, t))
-        {
+        if !package.textures().all(|t| texture_settled(&asset_server, t)) {
             continue;
         }
 
@@ -599,6 +605,36 @@ pub(crate) fn start_instances(
             }
         }
         instance.layers = layers;
+
+        // Surface layers are replaced at once (their overlays go with them);
+        // a layer of the same name keeps its fade level, so a rebuild does
+        // not blink.
+        let old_surfaces: Vec<Entity> = instance.surfaces.drain(..).collect();
+        let mut surface_layers = Vec::with_capacity(package.surface_layers.len());
+        for (index, layer) in package.surface_layers.iter().enumerate() {
+            let level = old_surfaces
+                .iter()
+                .filter_map(|&e| surfaces.get(e).ok())
+                .find(|(name, _)| name.as_str() == layer.name())
+                .map(|(_, state)| state.level)
+                .unwrap_or(0.0);
+            surface_layers.push(
+                commands
+                    .spawn((
+                        Name::new(layer.name().to_string()),
+                        VfxSurfaceLayer { instance: entity, index },
+                        SurfaceLayerState::with_level(level),
+                        Transform::default(),
+                        Visibility::default(),
+                        ChildOf(entity),
+                    ))
+                    .id(),
+            );
+        }
+        for e in old_surfaces {
+            commands.entity(e).try_despawn();
+        }
+        instance.surfaces = surface_layers;
         instance.linger = package.stop_duration();
         instance.rebuild = false;
         if rebuilding {
@@ -642,6 +678,19 @@ pub(crate) fn reload_instances(
                     .and_then(|id| package.project.texture(id));
                 if let Some(def) = def {
                     apply_texture_settings_to(&mut images, handle, def);
+                }
+            }
+            for layer in package.surface_layers.iter() {
+                let slots = [
+                    layer.def.material.noise_a.as_ref().map(|n| &n.texture),
+                    layer.def.material.noise_b.as_ref().map(|n| &n.texture),
+                    layer.def.material.mask.as_ref().map(|m| &m.texture),
+                ];
+                for (handle, slot) in layer.textures.iter().zip(slots) {
+                    let (Some(handle), Some(slot)) = (handle, slot) else { continue };
+                    if let Some(def) = package.project.texture(&slot.asset) {
+                        apply_texture_settings_to(&mut images, handle, def);
+                    }
                 }
             }
         }
@@ -697,7 +746,13 @@ pub(crate) fn on_instance_removed(
     let Ok(instance) = instances.get(entity) else {
         return;
     };
-    for layer in instance.layers.iter().copied().chain(instance.retired_layers()) {
+    for layer in instance
+        .layers
+        .iter()
+        .copied()
+        .chain(instance.surfaces.iter().copied())
+        .chain(instance.retired_layers())
+    {
         commands.entity(layer).try_despawn();
     }
     if instance.lifecycle.is_alive() {

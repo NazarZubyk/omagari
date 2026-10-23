@@ -4325,6 +4325,7 @@ dependencies = [
  "bevy_panorbit_camera",
  "gltf",
  "image",
+ "naga",
  "rand 0.9.5",
  "regex",
  "rfd",

@@ -22,6 +22,11 @@ rfd = { version = "0.17", optional = true }
 # features Bevy's glTF loader already compiles, so nothing new is built.
 gltf = { version = "1.4", default-features = false, features = ["names", "utils", "extras", "extensions"], optional = true }
 
+[dev-dependencies]
+# WGSL validation of the effect shader in a test (the version and features
+# Bevy's renderer already builds).
+naga = { version = "29", features = ["wgsl-in"] }
+
 [features]
 # `bevy/jpeg`: the editor imports and previews JPG textures. Games that use
 # JPG textures enable Bevy's `jpeg` feature themselves (PNG is a default).
