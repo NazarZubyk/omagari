@@ -77,15 +77,29 @@ use omagari::{VfxCommandsExt, VfxControl, VfxFinished, VfxPackage};
 
 let package: Handle<VfxPackage> = asset_server.load("vfx/fireworks.omagari.ron");
 let instance: Entity = commands.spawn_vfx(&package, target); // child of `target`
+let hit: Entity = commands.spawn_vfx_at(&package, Transform::from_translation(point)); // in the world
 
-fn stop_it(mut vfx: VfxControl) {
-    vfx.stop(instance); // stops emitting, despawns when the last particle died
+fn control(mut vfx: VfxControl) {
+    vfx.stop(instance);    // stops emitting, despawns when the last particle died
+    vfx.restart(instance); // while stopping: plays again on the same instance
     vfx.is_alive(instance);
+    vfx.state(instance);   // Starting / Running / Stopping / Finished
 }
-// then a `VfxFinished { instance, target }` message is sent once.
+
+fn finished(mut done: MessageReader<VfxFinished>) {
+    for f in done.read() { /* f.instance, f.target */ }
+}
 ```
 
-Texture paths in a package are relative to the game's `assets/` folder (`vfx/textures/smoke.png`); built-ins are `omagari://textures/<file>`. The editor previews packages through this same API. See `docs/VFX_SYSTEM_PLAN.md` for what comes next (sockets, parameters, triggers, more layer kinds).
+- **Lifecycle.** An instance spawns its layers once the package and its textures have loaded. `stop` is graceful; `restart` while stopping plays it again. An instance whose root layers are all one-shot (`play: OnStart` with a finite `cycle_count`) finishes by itself after its last spawn plus its longest particle life, so `spawn_vfx_at` one-shots clean up without code; looping ones run until `stop`. `VfxFinished { instance, target }` is sent once whenever an instance ends: finished, stopped, its target despawned (then `target` no longer exists), or despawned by other code. For `spawn_vfx_at` instances `target` is the instance itself.
+- **Attach.** Per layer `attach: Target | Socket("name") | Segment(from: "a", to: "b")`. A socket is a package socket (`sockets: [(name, node: Some("mixamorig:RightHand") | None, offset)]`) or, when no package socket has that name, an entity with that `Name` under the target. The layer follows the node (it becomes its child); until the node exists (a glTF scene still loading) the layer sits at the target's origin, and it re-resolves when the hierarchy changes. Segment layers get the two ends every frame as Hanabi properties `segment_a` / `segment_b`, readable in expressions with `Property("segment_a")`.
+- **Size fit.** `fit: None` keeps the authored size whatever the target's scale, `Some(TargetScale)` inherits it, `Some(TargetHeight(1.8))` scales by the height of the target's own meshes / 1.8 m. Fit scales `Local` layers only: Hanabi applies the emitter's full transform to Local particles but only its position to Global ones.
+- **Own model.** Mesh searches under a target (fit now, surface layers later) stop at nested glTF scenes (`WorldAssetRoot`, e.g. a weapon in a hand bone) and at entities marked `omagari::VfxSeparateModel`.
+- **Hot reload.** When a package asset changes (Bevy's file watcher, `AssetPlugin { watch_for_changes_override: Some(true), .. }` with the `file_watcher` feature), running instances rebuild their layers in place: old particles finish, new layers start, the instance entity and its state stay. `VfxControl::replace_package` does the same with another package (the editor's RENDER uses it).
+
+Texture paths in a package are relative to the game's `assets/` folder (`vfx/textures/smoke.png`); built-ins are `omagari://textures/<file>`. The editor previews packages through this same API. See `docs/VFX_SYSTEM_PLAN.md` for what comes next (parameters, triggers, more layer kinds).
+
+Legacy: `EffectComplex::spawn` returns the spawned entities, and its `despawn_in` timer now stops the spawners and despawns each effect once its last particle has died.
 
 ## Compatibility
 
