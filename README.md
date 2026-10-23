@@ -30,13 +30,19 @@ On Windows you can also double-click `start.bat`, which builds the editor (and t
 
 - Omagari uses Hanabi's public API only, utilizing a set of serializable proxy editors that together compose a project file that you can save and load.
 
-- Omagari project files should be named `{project_name}.omagari.ron`.
+- Omagari project files should be named `{project_name}.omagari.ron` and live in `saved_effects/`. The editor saves format v2 (a list of texture **assets** and particle **layers**); older v1 projects still load and are converted when you save them.
 
-- Exporting an Omagari project will generate a custom `ron` file built from a set of serialized `EffectAssets` along with some additional metadata.
+- The left panel lists the project's **layers**. Each particle layer has a name, a parent layer, a simulation space (**Local**: particles follow the target; **Global**: they stay where they were emitted and trail behind a moving target), a play mode, a texture (the built-in textures, added to the project's assets when picked), the blending mode, the spawner and the init / update / render modifiers (including texture sampling and orientation).
 
-- Exported files will be named `{project_name}.hanabi.ron`.
+- **RENDER** builds the project and plays it through the same runtime a game uses; **STOP** stops it the way a game does (no new particles, live ones finish).
+
+- **EXPORT** writes a VFX package `{project_name}.vfx.ron`: into the game assets folder's `vfx/` when one is set (see below), else into `exported_effects/`. The editor no longer writes `{project_name}.hanabi.ron` files; existing ones still load in games (legacy).
 
 - All delete ('`X`') buttons require right-click activation for safety.
+
+### Game assets folder
+
+Point Omagari at your game's `assets/` folder so exports land in `<game assets>/vfx/` and project textures (paths like `vfx/textures/smoke.png`) load from the game. Set it in the toolbar's **⚙ GAME ASSETS** menu (stored in `omagari_settings.ron` in the repository root; restart the editor to apply), or per run with `--game-assets <dir>` or the `OMAGARI_GAME_ASSETS` environment variable. The command line beats the environment variable, which beats the settings file. Without a game folder, this repository's `assets/` is used and exports go to `exported_effects/`.
 
 ### Creating effects with Claude
 
@@ -44,7 +50,11 @@ Omagari includes an MCP server (`omagari --mcp`) that lets Claude Code create, c
 
 ### Using exported effects in a game
 
-Add `omagari` as a dependency **without** the `editor` feature, add `OmagariPlugin` after `HanabiPlugin`, and load the exported file as an `EffectComplex` asset:
+Add `omagari` as a dependency **without** the `editor` feature, add `OmagariPlugin` after `HanabiPlugin`, and play the exported `*.vfx.ron` package (see "Library API" below).
+
+#### Legacy `*.hanabi.ron` exports
+
+Files exported by earlier versions load as an `EffectComplex` asset:
 
 ```rust
 app.add_plugins((HanabiPlugin, omagari::OmagariPlugin));
@@ -58,7 +68,7 @@ Since `bevy_hanabi` 0.19, effect assets are serialized through Bevy's type regis
 
 ### Library API (in progress): VFX packages
 
-The library can also load a project directly (`*.omagari.ron`, v1 or v2, or a `*.vfx.ron` package) and play it attached to any entity. Effects are built from the project at load time, so no Hanabi type registration is needed, and the built-in textures are embedded in the library (`omagari://textures/<file>`).
+The library loads a `*.vfx.ron` package (the editor's export) or a project directly (`*.omagari.ron`, v1 or v2) and plays it attached to any entity. Effects are built from the project at load time, so no Hanabi type registration is needed, and the built-in textures are embedded in the library (`omagari://textures/<file>`).
 
 ```rust
 app.add_plugins((DefaultPlugins, HanabiPlugin, omagari::OmagariPlugin));
@@ -75,7 +85,7 @@ fn stop_it(mut vfx: VfxControl) {
 // then a `VfxFinished { instance, target }` message is sent once.
 ```
 
-The editor still saves v1 projects and exports `*.hanabi.ron`; switching it to the v2 format is the next step (see `docs/VFX_SYSTEM_PLAN.md`).
+Texture paths in a package are relative to the game's `assets/` folder (`vfx/textures/smoke.png`); built-ins are `omagari://textures/<file>`. The editor previews packages through this same API. See `docs/VFX_SYSTEM_PLAN.md` for what comes next (sockets, parameters, triggers, more layer kinds).
 
 ## Compatibility
 
