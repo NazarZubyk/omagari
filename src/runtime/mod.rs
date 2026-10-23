@@ -5,7 +5,7 @@ mod builtin;
 mod instance;
 mod package;
 
-pub use builtin::{resolve_asset_path, BUILTIN_TEXTURES};
+pub use builtin::{resolve_asset_path, resolve_asset_path_in, BUILTIN_TEXTURES};
 pub use instance::*;
 pub use package::*;
 

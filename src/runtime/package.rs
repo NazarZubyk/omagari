@@ -8,7 +8,7 @@ use bevy::image::{
 use bevy::prelude::*;
 use bevy_hanabi::prelude::*;
 
-use super::builtin::resolve_asset_path;
+use super::builtin::{resolve_asset_path, resolve_asset_path_in};
 use crate::format::{
     AttachDef, PlayDef, ProjectV2, TextureAssetDef, TextureColorSpace, TextureFilter, TextureWrap,
 };
@@ -69,18 +69,55 @@ impl PackageAssets for LoadContext<'_> {
 }
 
 /// Builds packages from in-memory projects (editor preview, tests):
-/// effects go into `Assets<EffectAsset>`, textures are loaded by the server.
+/// effects go into `Assets<EffectAsset>`, textures are loaded by the server
+/// from the default asset source.
 impl PackageAssets for (&mut Assets<EffectAsset>, &AssetServer) {
-    fn add_effect(&mut self, _label: String, effect: EffectAsset) -> Handle<EffectAsset> {
-        self.0.add(effect)
+    fn add_effect(&mut self, label: String, effect: EffectAsset) -> Handle<EffectAsset> {
+        InMemoryPackageAssets::new(self.0, self.1).add_effect(label, effect)
     }
 
     fn load_texture(&mut self, texture: &TextureAssetDef) -> Handle<Image> {
-        let path = resolve_asset_path(&texture.path);
+        InMemoryPackageAssets::new(self.0, self.1).load_texture(texture)
+    }
+}
+
+/// Builds packages from in-memory projects, loading textures from a chosen
+/// asset source (the editor loads game textures from its `game` source, see
+/// [`resolve_asset_path_in`]).
+pub struct InMemoryPackageAssets<'a> {
+    pub effects: &'a mut Assets<EffectAsset>,
+    pub server: &'a AssetServer,
+    /// Asset source of paths relative to the game's `assets/` folder; `None`
+    /// = the default source.
+    pub source: Option<&'a str>,
+}
+
+impl<'a> InMemoryPackageAssets<'a> {
+    pub fn new(effects: &'a mut Assets<EffectAsset>, server: &'a AssetServer) -> Self {
+        InMemoryPackageAssets {
+            effects,
+            server,
+            source: None,
+        }
+    }
+
+    pub fn with_source(mut self, source: Option<&'a str>) -> Self {
+        self.source = source;
+        self
+    }
+}
+
+impl PackageAssets for InMemoryPackageAssets<'_> {
+    fn add_effect(&mut self, _label: String, effect: EffectAsset) -> Handle<EffectAsset> {
+        self.effects.add(effect)
+    }
+
+    fn load_texture(&mut self, texture: &TextureAssetDef) -> Handle<Image> {
+        let path = resolve_asset_path_in(&texture.path, self.source);
         match texture_loader_settings(texture) {
-            None => self.1.load(path),
+            None => self.server.load(path),
             Some((is_srgb, sampler)) => self
-                .1
+                .server
                 .load_builder()
                 .with_settings(move |s: &mut ImageLoaderSettings| {
                     s.is_srgb = is_srgb;

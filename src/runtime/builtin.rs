@@ -41,14 +41,26 @@ pub(crate) fn register_builtin_textures(app: &mut App) {
     }
 }
 
-/// Turns a package asset path into a path the `AssetServer` can load:
-/// `omagari://textures/cloud.png` becomes
-/// `embedded://omagari/textures/cloud.png`; other paths (relative to the
-/// game's `assets/` folder) are returned unchanged.
+/// Turns a package asset path into a path the `AssetServer` can load from
+/// the default asset source (what games do): `omagari://textures/cloud.png`
+/// becomes `embedded://omagari/textures/cloud.png`; other paths (relative to
+/// the game's `assets/` folder) are returned unchanged.
 pub fn resolve_asset_path(path: &str) -> String {
-    match path.strip_prefix(BUILTIN_TEXTURES_PREFIX) {
-        Some(file) => format!("embedded://{}/{}", EMBEDDED_TEXTURES_DIR, file),
-        None => path.to_string(),
+    resolve_asset_path_in(path, None)
+}
+
+/// Like [`resolve_asset_path`], but paths relative to the game's `assets/`
+/// folder are loaded from the asset source `source` (`Some("game")` gives
+/// `game://vfx/textures/x.png`) instead of the default source. The editor
+/// uses this, because its default source is its own `assets/` folder.
+/// Built-in textures always come from the `embedded` source.
+pub fn resolve_asset_path_in(path: &str, source: Option<&str>) -> String {
+    if let Some(file) = path.strip_prefix(BUILTIN_TEXTURES_PREFIX) {
+        return format!("embedded://{}/{}", EMBEDDED_TEXTURES_DIR, file);
+    }
+    match source {
+        Some(source) if !path.contains("://") => format!("{}://{}", source, path),
+        _ => path.to_string(),
     }
 }
 
@@ -74,5 +86,22 @@ mod tests {
             "embedded://omagari/textures/cloud.png"
         );
         assert_eq!(resolve_asset_path("vfx/textures/noise.png"), "vfx/textures/noise.png");
+    }
+
+    #[test]
+    fn paths_resolve_in_a_named_source() {
+        assert_eq!(
+            resolve_asset_path_in("vfx/textures/noise.png", Some("game")),
+            "game://vfx/textures/noise.png"
+        );
+        assert_eq!(
+            resolve_asset_path_in(&builtin_texture_path("glow1.png"), Some("game")),
+            "embedded://omagari/textures/glow1.png"
+        );
+        assert_eq!(
+            resolve_asset_path_in("other://x.png", Some("game")),
+            "other://x.png",
+            "explicit sources are kept"
+        );
     }
 }
