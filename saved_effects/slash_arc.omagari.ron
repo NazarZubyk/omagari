@@ -1,0 +1,35 @@
+(
+    version: 2,
+    triggers: [(name: "swing")],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Shape((
+            name: "slash",
+            attach: Target,
+            follow: Full,
+            shape: Arc(radius: 1.0, width: 0.35, angle_deg: 150.0, taper: 1.0),
+            transform: (offset: (0.0, 0.2, 0.0), rotation_deg: (0.0, 0.0, -25.0)),
+            play: OnTrigger("swing"),
+            duration: Some(0.35),
+            fade: (in: 0.0, out: 0.1),
+            material: (
+                blend: Add,
+                color: Const((2.5, 2.2, 1.6, 1.0)),
+                emissive: Const(1.5),
+                noise_a: Some((texture: (asset: "noise"), mapping: Uv, scale: Const(2.0), scroll: Const((-3.0, 0.0)), strength: Const(0.5), contrast: Const(2.0))),
+                fill: Some((axis: U, from: Age([(0.1, 0.0), (0.35, 1.0)]), to: Age([(0.0, 0.0), (0.15, 1.0)]), softness: Const(0.25))),
+            ),
+        )),
+    ],
+    preview: Some((
+        stage: Model,
+        camera: Game,
+        model: Some("anim/tpose.glb"),
+        animation: Some("mixamo.com"),
+        animation_speed: 1.0,
+        motion: Some(Circle(radius: 3.0, speed: 3.6)),
+        auto_triggers: [("swing", 1.0)],
+        root_height: 0.9,
+        animation_file: Some("anim/run.glb"),
+    )),
+)
