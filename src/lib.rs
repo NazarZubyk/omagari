@@ -20,20 +20,23 @@ use std::{
 pub mod format;
 pub mod runtime;
 
-pub use runtime::{VfxCommandsExt, VfxControl, VfxFinished, VfxInstance, VfxPackage};
+pub use runtime::{
+    VfxCommandsExt, VfxControl, VfxFinished, VfxInstance, VfxPackage, VfxSeparateModel, VfxState,
+};
 
 /// The Omagari runtime plugin. Add it after `DefaultPlugins` and `HanabiPlugin`.
 ///
 /// - VFX packages: loads `*.vfx.ron` / `*.omagari.ron` as [`VfxPackage`]s and
 ///   plays them with [`VfxCommandsExt::spawn_vfx`] / [`VfxControl`].
 /// - Built-in textures (`omagari://textures/<file>`) embedded in the library.
-/// - Legacy: [`EffectComplex`] (`*.hanabi.ron` exports) and its despawn timer.
+/// - Legacy: [`EffectComplex`] (`*.hanabi.ron` exports) and its graceful
+///   despawn timer.
 pub struct OmagariPlugin;
 
 impl Plugin for OmagariPlugin {
     fn build(&self, app: &mut App) {
         register_missing_hanabi_modifiers(app.world().resource::<AppTypeRegistry>());
-        app.add_systems(Update, despawn_effects_on_timer)
+        app.add_systems(Update, (despawn_effects_on_timer, finish_stopped_effects).chain())
            .init_asset::<EffectComplex>()
            .init_asset_loader::<OmagariAssetLoader>();
         runtime::build(app);
@@ -70,14 +73,18 @@ impl EffectComplex {
     /// - `commands`: Mutable reference to Commands used to spawn entities.
     /// - `textures`: Vector of image handles used to apply textures to the effects.
     /// - `pos`: Position to spawn the effects at.
-    /// - `despawn_in`: Optional duration for when to despawn the effects.
+    /// - `despawn_in`: Optional duration after which the effects stop
+    ///   emitting; each is despawned once its last particle has died.
+    ///
+    /// Returns the spawned effect entities, in file order.
     pub fn spawn(
         &self,
         commands: &mut Commands,
         textures: &Vec<Handle<Image>>,
         pos: Vec3,
         despawn_in: Option<Duration>,
-    ) {
+    ) -> Vec<Entity> {
+        let mut spawned = Vec::with_capacity(self.prepared_effects.len());
         let mut refs: HashMap<String, Entity> = HashMap::new();
         for prepared_effect in self.prepared_effects.iter() {
             let mut e = commands.spawn((
@@ -93,22 +100,27 @@ impl EffectComplex {
             }
 
             if let Some(despawn_in) = despawn_in {
-                e.insert(EffectDespawnTimer(Timer::from_seconds(
-                    despawn_in.as_secs_f32(),
-                    TimerMode::Once,
-                )));
+                e.insert(EffectDespawnTimer {
+                    timer: Timer::from_seconds(despawn_in.as_secs_f32(), TimerMode::Once),
+                    linger: prepared_effect.linger,
+                });
             }
 
             refs.insert(prepared_effect.name.clone(), e.id());
+            spawned.push(e.id());
 
             if let Some(parent) = &prepared_effect.parent {
                 if let Some(entity) = refs.get(parent) {
                     e.insert(EffectParent::new(*entity));
                 } else {
-                    // TODO: Raise an error
+                    warn!(
+                        "effect \"{}\": parent \"{}\" is not listed before it",
+                        prepared_effect.name, parent
+                    );
                 }
             }
         }
+        spawned
     }
 
     /// Creates an EffectComplex from raw byte data.
@@ -128,38 +140,109 @@ impl EffectComplex {
         let omagari_project = ExportedProject::from_ron_bytes(&bytes, type_registry)?;
 
         let mut prepared_effects: Vec<PreparedEffect> = Vec::new();
+        let lifetimes: Vec<f32> = omagari_project
+            .effects
+            .iter()
+            .map(|e| max_effect_lifetime(&e.effect_asset).unwrap_or(runtime::FALLBACK_LIFETIME))
+            .collect();
         for (index, effect) in omagari_project.effects.iter().enumerate() {
             // Each effect needs its own label, otherwise they overwrite each other.
             let h = load_context.add_labeled_asset(
                 format!("EffectAsset{}", index),
                 effect.effect_asset.clone(),
             );
+            // Particles of a child can be spawned until its parents' die.
+            let mut linger = lifetimes[index];
+            let mut parent = effect.parent.as_deref();
+            for _ in 0..omagari_project.effects.len() {
+                let Some(p) = parent.and_then(|name| omagari_project.effects.iter().position(|e| e.name == name))
+                else {
+                    break;
+                };
+                linger += lifetimes[p];
+                parent = omagari_project.effects[p].parent.as_deref();
+            }
             prepared_effects.push(PreparedEffect {
                 name: effect.name.to_string(),
                 parent: effect.parent.clone(),
                 texture_index: effect.texture_index.clone(),
                 effect_handle: h.clone(),
+                linger,
             });
         }
         Ok(Self { prepared_effects })
     }
+
+    /// Seconds each effect's particles live after it stops emitting, in file
+    /// order.
+    pub fn stop_durations(&self) -> Vec<f32> {
+        self.prepared_effects.iter().map(|e| e.linger).collect()
+    }
 }
 
-/// System function that despawns effects whose timers have expired.
-///
-/// # Parameters
-/// - `commands`: Commands used to remove entities.
-/// - `effects_with_timer`: Query for entities with an EffectDespawnTimer component.
-/// - `time`: A reference to the current time resource.
+/// Longest particle lifetime of a produced effect, read from its init
+/// `SetAttribute(lifetime, ...)` when that is a literal or a uniform random
+/// range of literals; hanabi's default (1 s) without one. `None` when it
+/// cannot be known.
+pub fn max_effect_lifetime(effect: &EffectAsset) -> Option<f32> {
+    fn max_literal(module: &Module, handle: ExprHandle) -> Option<f32> {
+        match module.get(handle)? {
+            Expr::Literal(literal) => match literal.value {
+                Value::Scalar(ScalarValue::Float(v)) => Some(v),
+                _ => None,
+            },
+            Expr::Binary {
+                op: BinaryOperator::UniformRand,
+                left,
+                right,
+            } => Some(max_literal(module, *left)?.max(max_literal(module, *right)?)),
+            _ => None,
+        }
+    }
+    let mut lifetime = Some(1.0);
+    for modifier in effect.init_modifiers() {
+        if let Some(set) = modifier.as_reflect().downcast_ref::<SetAttributeModifier>() {
+            if set.attribute == Attribute::LIFETIME {
+                lifetime = max_literal(effect.module(), set.value).map(|v| v.max(0.0));
+            }
+        }
+    }
+    lifetime
+}
+
+/// Stops legacy effects whose timers have expired: their spawners stop, and
+/// they are despawned once their last particle has died.
 fn despawn_effects_on_timer(
     mut commands: Commands,
     mut effects_with_timer: Query<(Entity, &mut EffectDespawnTimer)>,
     time: Res<Time>,
 ) {
     for (entity, mut timer) in effects_with_timer.iter_mut() {
-        timer.0.tick(time.delta());
-        if timer.0.is_finished() {
-            // TODO: Despawn more gracefully by stopping emissions first
+        timer.timer.tick(time.delta());
+        if timer.timer.is_finished() {
+            commands
+                .entity(entity)
+                .remove::<EffectDespawnTimer>()
+                .insert(StoppedEffect(Timer::from_seconds(timer.linger, TimerMode::Once)));
+        }
+    }
+}
+
+/// Keeps the spawners of stopped legacy effects off and despawns them when
+/// their particles have died.
+fn finish_stopped_effects(
+    mut commands: Commands,
+    mut stopped: Query<(Entity, &mut StoppedEffect, Option<&mut EffectSpawner>)>,
+    time: Res<Time>,
+) {
+    for (entity, mut stopped, spawner) in stopped.iter_mut() {
+        if let Some(mut spawner) = spawner {
+            if spawner.active {
+                spawner.active = false;
+            }
+        }
+        stopped.0.tick(time.delta());
+        if stopped.0.is_finished() {
             commands.entity(entity).try_despawn();
         }
     }
@@ -406,11 +489,21 @@ struct PreparedEffect {
     parent: Option<String>,
     texture_index: Option<usize>,
     effect_handle: Handle<EffectAsset>,
+    /// Seconds its particles live after it stops emitting.
+    linger: f32,
 }
 
-/// Component representing a timer for despawning an effect.
+/// When a legacy effect stops emitting, and how long its particles live
+/// after that.
 #[derive(Component)]
-struct EffectDespawnTimer(Timer);
+pub struct EffectDespawnTimer {
+    timer: Timer,
+    linger: f32,
+}
+
+/// A legacy effect that stopped emitting; despawned when the timer ends.
+#[derive(Component)]
+pub struct StoppedEffect(Timer);
 
 /// Asset loader for Omagari effects.
 ///

@@ -5,8 +5,8 @@
 //! load, and unknown struct fields are ignored (a newer editor's file still
 //! loads in an older game).
 //!
-//! Parameters, triggers, sockets, fit and most layer settings are data only
-//! for now; the runtime uses them in later phases.
+//! Parameters, triggers, `rate`, `visible` and `play` beyond `Loop` /
+//! `OnStart` are data only for now; the runtime uses them in later phases.
 
 use std::ops::{Add, Mul};
 
@@ -127,6 +127,11 @@ impl ProjectV2 {
         self.asset(id).and_then(|a| match &a.kind {
             AssetKind::Texture(t) => Some(t),
         })
+    }
+
+    /// The package socket with this name.
+    pub fn socket(&self, name: &str) -> Option<&SocketDef> {
+        self.sockets.iter().find(|s| s.name == name)
     }
 
     /// The particle layers, with their index in `layers`.
@@ -366,17 +371,27 @@ impl TextureAssetDef {
 
 // --- placement ---------------------------------------------------------------
 
-/// How an instance is scaled to its target.
+/// How an instance is scaled to its target. Without `fit` the instance
+/// keeps its authored size (world scale 1) whatever the target's scale.
+///
+/// bevy_hanabi applies the emitter's scale only to `Local` layers; `Global`
+/// layers keep their authored size.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 pub enum FitDef {
     /// Inherit the target's scale.
     TargetScale,
-    /// Scale by `target height / reference height` (metres).
+    /// Scale by `target height / reference height` (metres). The height is
+    /// measured from the target's own meshes (their bounding box) once they
+    /// exist.
     TargetHeight(f32),
 }
 
-/// A named point on the target, used when the target's model has no such
-/// node: a node name (or none = the target root) plus a local offset.
+/// A named point on the target: a node of the target's hierarchy (an entity
+/// with this `Name`) or none = the target root, plus a local offset in
+/// metres (scaled like the instance, see [`FitDef`]).
+///
+/// A layer attached to a socket name that no package socket has uses the
+/// node with that name directly.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
 pub struct SocketDef {
@@ -391,10 +406,23 @@ pub enum AttachDef {
     /// The target's root.
     #[default]
     Target,
-    /// A socket (package socket or node name).
+    /// A socket (package socket or node name): the layer follows it.
     Socket(String),
-    /// The segment between two sockets.
+    /// The segment between two sockets: the layer sits at the target root
+    /// and the runtime writes both ends into the properties `segment_a` /
+    /// `segment_b` every frame.
     Segment { from: String, to: String },
+}
+
+impl AttachDef {
+    /// The socket names this attachment uses.
+    pub fn socket_names(&self) -> Vec<&str> {
+        match self {
+            AttachDef::Target => Vec::new(),
+            AttachDef::Socket(name) => vec![name.as_str()],
+            AttachDef::Segment { from, to } => vec![from.as_str(), to.as_str()],
+        }
+    }
 }
 
 /// Space particles are simulated in.
@@ -569,8 +597,121 @@ pub enum PreviewCamera {
 /// Movement of the preview target.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 pub enum PreviewMotion {
-    /// Circle of `radius` metres at `speed` m/s.
+    /// Circle of `radius` metres around the origin at `speed` m/s.
     Circle { radius: f32, speed: f32 },
-    /// Back and forth over `distance` metres at `speed` m/s.
+    /// Back and forth along X over `distance` metres (centred on the origin)
+    /// at `speed` m/s.
     BackAndForth { distance: f32, speed: f32 },
+}
+
+/// Speed of a running character, the default preview motion speed (m/s).
+pub const DEFAULT_MOTION_SPEED: f32 = 3.6;
+
+impl PreviewMotion {
+    pub fn speed(&self) -> f32 {
+        match *self {
+            PreviewMotion::Circle { speed, .. } | PreviewMotion::BackAndForth { speed, .. } => speed,
+        }
+    }
+
+    /// Position and unit direction of travel after `t` seconds. Starts at
+    /// `(radius, 0, 0)` / the origin.
+    pub fn sample(&self, t: f32) -> (Vec3, Vec3) {
+        match *self {
+            PreviewMotion::Circle { radius, speed } => {
+                let radius = radius.max(0.01);
+                let angle = t * speed / radius;
+                let (sin, cos) = angle.sin_cos();
+                let position = Vec3::new(radius * cos, 0.0, radius * sin);
+                let direction = Vec3::new(-sin, 0.0, cos) * speed.signum();
+                (position, direction)
+            }
+            PreviewMotion::BackAndForth { distance, speed } => {
+                let half = (distance * 0.5).max(0.005);
+                // Triangle wave: 0 → +half → −half → 0 over one period.
+                let period = 4.0 * half / speed.abs().max(0.001);
+                let phase = (t / period).rem_euclid(1.0);
+                let (x, forward) = if phase < 0.25 {
+                    (phase * 4.0 * half, true)
+                } else if phase < 0.75 {
+                    (half - (phase - 0.25) * 4.0 * half, false)
+                } else {
+                    (-half + (phase - 0.75) * 4.0 * half, true)
+                };
+                (Vec3::new(x, 0.0, 0.0), if forward { Vec3::X } else { Vec3::NEG_X })
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::*;
+
+    #[test]
+    fn preview_motion_paths() {
+        let circle = PreviewMotion::Circle { radius: 2.0, speed: 4.0 };
+        let (start, dir) = circle.sample(0.0);
+        assert!((start - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-5);
+        assert!((dir - Vec3::Z).length() < 1e-5);
+        // A quarter circle (π m) takes π / 4 s.
+        let (p, _) = circle.sample(std::f32::consts::PI / 4.0);
+        assert!((p - Vec3::new(0.0, 0.0, 2.0)).length() < 1e-4, "{}", p);
+
+        let back = PreviewMotion::BackAndForth { distance: 4.0, speed: 2.0 };
+        assert_eq!(back.sample(0.0).0, Vec3::ZERO);
+        assert!((back.sample(1.0).0.x - 2.0).abs() < 1e-5, "end after 2 m at 2 m/s");
+        assert_eq!(back.sample(1.5).1, Vec3::NEG_X);
+        assert!((back.sample(3.0).0.x + 2.0).abs() < 1e-5);
+        assert!(back.sample(4.0).0.length() < 1e-5, "back at the start after one period");
+        assert_eq!(back.speed(), 2.0);
+    }
+
+    #[test]
+    fn segment_properties_are_declared_once() {
+        let project = ProjectV2::from_ron_str(
+            r#"(layers: [Particles((
+                name: "edge",
+                attach: Segment(from: "a", to: "b"),
+                effect: (init_modifiers: [
+                    SetAttribute((attr: "position", attr_expr: Operator(Add(Property("segment_a"), Operator(Multiply(Operator(Subtract(Property("segment_b"), Property("segment_a"))), RandFloat)))))),
+                ]),
+            ))])"#,
+        )
+        .unwrap();
+        let (_, layer) = project.particle_layers().next().unwrap();
+        assert_eq!(layer.effect.properties_read(), vec!["segment_a".to_string(), "segment_b".to_string()]);
+        let mut warnings = Vec::new();
+        let effect = layer.produce(&mut warnings);
+        assert!(warnings.is_empty(), "{:?}", warnings);
+        let names: Vec<&str> = effect.properties().iter().map(|p| p.name()).collect();
+        assert_eq!(names, vec!["segment_a", "segment_b"]);
+        assert_eq!(project.layers[0].as_particles().unwrap().attach.socket_names(), vec!["a", "b"]);
+
+        // An unknown property reads 0.0, with a warning.
+        let mut def = layer.clone();
+        def.effect.init_modifiers = vec![ModifierEditor::SetAttribute(SetAttributeModifierEditor {
+            attr: Attribute::LIFETIME,
+            attr_expr: ExprWriterEditor::Property("nope".into()),
+        })];
+        let mut warnings = Vec::new();
+        let effect = def.produce(&mut warnings);
+        assert!(effect.properties().is_empty());
+        assert!(warnings[0].contains("Property(\"nope\") is not a runtime property"), "{:?}", warnings);
+    }
+
+    #[test]
+    fn one_shot_emit_duration() {
+        let mut effect = ParticleEffectDef::default();
+        effect.spawner.cycle_count = 0;
+        assert_eq!(effect.emit_duration(), None);
+        effect.spawner.cycle_count = 1;
+        effect.spawner.spawn_duration = crate::format::CpuValueDef::Single(0.5);
+        assert_eq!(effect.emit_duration(), Some(0.5));
+        effect.spawner.cycle_count = 3;
+        effect.spawner.period = crate::format::CpuValueDef::Uniform((0.5, 2.0));
+        // Two full cycles of the longest period, then the last spawn.
+        assert_eq!(effect.emit_duration(), Some(4.5));
+    }
 }

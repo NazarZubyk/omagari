@@ -253,6 +253,12 @@ fn eval(e: &ExprWriterEditor, env: &mut Env) -> Result<Val, String> {
         ExprWriterEditor::Time => Val::F(env.time),
         ExprWriterEditor::Age => env.attrs.get(Attribute::AGE),
         ExprWriterEditor::Operator(op) => eval_op(op, env)?,
+        // Read as zero of their type; the runtime writes the real values.
+        ExprWriterEditor::Property(name) => match runtime_property(name) {
+            Some(RuntimePropertyType::Float) => Val::F(0.0),
+            Some(RuntimePropertyType::Vec3) => Val::V3(Vec3::ZERO),
+            None => return Err(format!("Property(\"{}\") is not a runtime property", name)),
+        },
     })
 }
 

@@ -10,7 +10,8 @@ use bevy_hanabi::prelude::*;
 
 use super::builtin::{resolve_asset_path, resolve_asset_path_in};
 use crate::format::{
-    AttachDef, PlayDef, ProjectV2, TextureAssetDef, TextureColorSpace, TextureFilter, TextureWrap,
+    AttachDef, PlayDef, ProjectV2, SimulationSpaceDef, TextureAssetDef, TextureColorSpace,
+    TextureFilter, TextureWrap,
 };
 
 /// Stop duration used for a layer whose particle lifetime cannot be estimated.
@@ -24,6 +25,10 @@ pub struct VfxPackage {
     pub project: ProjectV2,
     /// One entry per particle layer, in layer order.
     pub particle_layers: Vec<PreparedParticleLayer>,
+    /// Seconds after which an instance finishes by itself: set when every
+    /// root particle layer is one-shot (`play: OnStart` with a finite
+    /// `cycle_count`); the last spawn plus the longest particle life.
+    pub auto_finish: Option<f32>,
 }
 
 /// A particle layer ready to be spawned.
@@ -38,6 +43,10 @@ pub struct PreparedParticleLayer {
     /// Seconds particles of this layer (including those spawned by parent
     /// layers) can live after the instance stops emitting.
     pub linger: f32,
+    pub attach: AttachDef,
+    pub simulation_space: SimulationSpaceDef,
+    /// Properties the produced effect declares (e.g. `segment_a`).
+    pub properties: Vec<String>,
 }
 
 /// Where [`VfxPackage::build`] puts the effects and textures it creates.
@@ -168,13 +177,16 @@ impl VfxPackage {
         let mut textures: Vec<(String, Handle<Image>)> = Vec::new();
         let mut particle_layers = Vec::new();
         let mut lifetimes = Vec::new();
+        // When each layer's spawner has emitted its last particle (one-shot
+        // layers only).
+        let mut emit_ends: Vec<Option<f32>> = Vec::new();
         let layer_names: Vec<&str> = project.particle_layers().map(|(_, l)| l.name.as_str()).collect();
 
         for (layer_index, layer) in project.particle_layers() {
-            if layer.attach != AttachDef::Target {
+            if project.fit.is_some() && layer.simulation_space == SimulationSpaceDef::Global {
                 warnings.push(format!(
-                    "[{}] attach {:?} is not supported yet; the layer is attached to the target",
-                    layer.name, layer.attach
+                    "[{}] fit does not scale Global layers (bevy_hanabi applies only the emitter position to them)",
+                    layer.name
                 ));
             }
             if matches!(layer.play, PlayDef::OnTrigger(_) | PlayDef::While(..)) {
@@ -217,6 +229,7 @@ impl VfxPackage {
             }));
 
             let effect = layer.produce(warnings);
+            let properties = effect.properties().iter().map(|p| p.name().to_string()).collect();
             particle_layers.push(PreparedParticleLayer {
                 layer_index,
                 name: layer.name.clone(),
@@ -224,13 +237,22 @@ impl VfxPackage {
                 effect: assets.add_effect(format!("Layer{}", layer_index), effect),
                 texture,
                 linger: 0.0,
+                attach: layer.attach.clone(),
+                simulation_space: layer.simulation_space,
+                properties,
+            });
+            emit_ends.push(match layer.play {
+                PlayDef::OnStart => layer.effect.emit_duration(),
+                _ => None,
             });
         }
 
         // A layer's particles can be spawned by its parents until their
         // particles die, so its linger includes the whole parent chain.
+        let mut auto_finish = (!particle_layers.is_empty()).then_some(0.0f32);
         for i in 0..particle_layers.len() {
             let mut linger = lifetimes[i];
+            let mut root = i;
             let mut current = particle_layers[i].parent;
             let mut depth = 0;
             while let Some(p) = current {
@@ -239,15 +261,23 @@ impl VfxPackage {
                     break;
                 }
                 linger += lifetimes[p];
+                root = p;
                 current = particle_layers[p].parent;
                 depth += 1;
             }
             particle_layers[i].linger = linger;
+            // Children are spawned by their root's particles, so the root's
+            // spawner decides when they end.
+            auto_finish = match (auto_finish, emit_ends[root]) {
+                (Some(end), Some(emit)) => Some(end.max(emit + linger)),
+                _ => None,
+            };
         }
 
         VfxPackage {
             project,
             particle_layers,
+            auto_finish,
         }
     }
 
@@ -290,5 +320,66 @@ impl AssetLoader for VfxPackageLoader {
 
     fn extensions(&self) -> &[&str] {
         &["vfx.ron", "omagari.ron"]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds without an app: effects and textures get placeholder handles.
+    struct NoAssets;
+
+    impl PackageAssets for NoAssets {
+        fn add_effect(&mut self, _label: String, _effect: EffectAsset) -> Handle<EffectAsset> {
+            Handle::default()
+        }
+
+        fn load_texture(&mut self, _texture: &TextureAssetDef) -> Handle<Image> {
+            Handle::default()
+        }
+    }
+
+    fn build(ron: &str) -> (VfxPackage, Vec<String>) {
+        let mut warnings = Vec::new();
+        let package = VfxPackage::build(ProjectV2::from_ron_str(ron).unwrap(), &mut NoAssets, &mut warnings);
+        (package, warnings)
+    }
+
+    #[test]
+    fn auto_finish_covers_children_of_one_shot_roots() {
+        // A burst (particles up to 1 s) whose particles spawn children living
+        // 0.5 s: done 1.5 s after the burst.
+        let (package, warnings) = build(
+            r#"(layers: [
+                Particles((name: "rocket", play: OnStart, effect: (
+                    spawner: (count: Single(5.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1),
+                ))),
+                Particles((name: "spark", parent: Some("rocket"), effect: (
+                    init_modifiers: [SetAttribute((attr: "lifetime", attr_expr: Float(0.5)))],
+                ))),
+            ])"#,
+        );
+        assert!(warnings.is_empty(), "{:?}", warnings);
+        assert_eq!(package.auto_finish, Some(1.5));
+        assert_eq!(package.stop_duration(), 1.5);
+
+        // One looping root: runs until stopped.
+        let (package, _) = build(
+            r#"(layers: [
+                Particles((name: "burst", play: OnStart, effect: (spawner: (cycle_count: 1)))),
+                Particles((name: "loop", play: Loop)),
+            ])"#,
+        );
+        assert_eq!(package.auto_finish, None);
+    }
+
+    #[test]
+    fn fit_warns_about_global_layers() {
+        let (_, warnings) = build(r#"(fit: Some(TargetScale), layers: [Particles((name: "smoke", simulation_space: Global))])"#);
+        assert!(warnings[0].contains("fit does not scale Global layers"), "{:?}", warnings);
+        let (package, warnings) = build(r#"(sockets: [(name: "s")], layers: [Particles((name: "a", attach: Socket("s")))])"#);
+        assert!(warnings.is_empty(), "attach is supported: {:?}", warnings);
+        assert_eq!(package.particle_layers[0].attach, AttachDef::Socket("s".into()));
     }
 }

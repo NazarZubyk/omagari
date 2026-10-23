@@ -1,12 +1,108 @@
 //! Expression model: a serializable tree of literals, random values,
 //! attributes and operators that builds bevy_hanabi expressions.
 
+use std::cell::RefCell;
+use std::ops::Deref;
+use std::rc::Rc;
+
 use bevy::prelude::*;
 use bevy_hanabi::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 
 use super::hanabi_serde;
+
+/// Properties the runtime writes on a layer's particle entity every frame,
+/// readable in expressions with `Property("<name>")`: name, value type and
+/// what it holds.
+///
+/// Positions are in the layer's simulation space: relative to the layer for
+/// `Local`, relative to the emitter position (world axes) for `Global`, i.e.
+/// the space position modifiers write.
+pub const RUNTIME_PROPERTIES: [(&str, RuntimePropertyType, &str); 2] = [
+    ("segment_a", RuntimePropertyType::Vec3, "first end (`from`) of a Segment-attached layer"),
+    ("segment_b", RuntimePropertyType::Vec3, "second end (`to`) of a Segment-attached layer"),
+];
+
+/// Value type of a [`RUNTIME_PROPERTIES`] entry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RuntimePropertyType {
+    Float,
+    Vec3,
+}
+
+impl RuntimePropertyType {
+    /// The property's default value (zero).
+    pub fn default_value(self) -> Value {
+        match self {
+            RuntimePropertyType::Float => Value::from(0.0f32),
+            RuntimePropertyType::Vec3 => Value::from(Vec3::ZERO),
+        }
+    }
+}
+
+/// The runtime property with this name, if any.
+pub fn runtime_property(name: &str) -> Option<RuntimePropertyType> {
+    RUNTIME_PROPERTIES
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, t, _)| *t)
+}
+
+/// The bevy_hanabi [`ExprWriter`] used by `produce()`, plus what the plain
+/// writer cannot do: declaring each property once, however many expressions
+/// read it, and collecting warnings. Derefs to the [`ExprWriter`].
+pub struct EffectWriter {
+    writer: ExprWriter,
+    module: Rc<RefCell<Module>>,
+    warnings: RefCell<Vec<String>>,
+}
+
+impl Default for EffectWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EffectWriter {
+    pub fn new() -> Self {
+        let module = Rc::new(RefCell::new(Module::default()));
+        EffectWriter {
+            writer: ExprWriter::from_module(module.clone()),
+            module,
+            warnings: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Reads a property, declaring it on first use.
+    pub fn property(&self, name: &str, default_value: Value) -> WriterExpr {
+        let existing = self.module.borrow().get_property_by_name(name);
+        let handle = match existing {
+            Some(handle) => handle,
+            None => self.writer.add_property(name, default_value),
+        };
+        self.writer.prop(handle)
+    }
+
+    /// Adds a warning returned by [`EffectWriter::finish`].
+    pub fn warn(&self, warning: String) {
+        self.warnings.borrow_mut().push(warning);
+    }
+
+    /// The finished module and the warnings.
+    pub fn finish(self) -> (Module, Vec<String>) {
+        let warnings = self.warnings.take();
+        (self.writer.finish(), warnings)
+    }
+}
+
+impl Deref for EffectWriter {
+    type Target = ExprWriter;
+
+    fn deref(&self) -> &ExprWriter {
+        &self.writer
+    }
+}
 
 pub const ALL_ATTRS: [(Attribute, &str); 39] = [
     (Attribute::ID, "ID"),
@@ -85,7 +181,7 @@ pub enum ExprOperatorEditor {
 }
 
 impl ExprOperatorEditor {
-    pub fn produce(&self, writer: &ExprWriter) -> WriterExpr {
+    pub fn produce(&self, writer: &EffectWriter) -> WriterExpr {
         match self {
             ExprOperatorEditor::Uniform(lit1, lit2) => {
                 lit1.produce(writer).uniform(lit2.produce(writer))
@@ -130,10 +226,13 @@ pub enum ExprWriterEditor {
     Vec4(Vec4),
     Time,
     Age,
+    /// A runtime property (see [`RUNTIME_PROPERTIES`]), e.g.
+    /// `Property("segment_a")`.
+    Property(String),
 }
 
 impl ExprWriterEditor {
-    pub fn produce(&self, writer: &ExprWriter) -> WriterExpr {
+    pub fn produce(&self, writer: &EffectWriter) -> WriterExpr {
         match self {
             ExprWriterEditor::Operator(o) => o.produce(writer),
             ExprWriterEditor::RandU32 => writer.rand(ValueType::Scalar(ScalarType::Uint)),
@@ -146,6 +245,17 @@ impl ExprWriterEditor {
             ExprWriterEditor::Time => writer.time(),
             ExprWriterEditor::Placeholder => writer.lit(0.0),
             ExprWriterEditor::Age => writer.attr(Attribute::AGE),
+            ExprWriterEditor::Property(name) => match runtime_property(name) {
+                Some(t) => writer.property(name, t.default_value()),
+                None => {
+                    writer.warn(format!(
+                        "Property(\"{}\") is not a runtime property ({}); it reads 0.0",
+                        name,
+                        RUNTIME_PROPERTIES.map(|(n, _, _)| n).join(", ")
+                    ));
+                    writer.lit(0.0)
+                }
+            },
         }
     }
 }
@@ -157,6 +267,61 @@ impl Default for ExprWriterEditor {
 }
 
 impl ExprWriterEditor {
+    /// Calls `f` on this expression and every sub-expression.
+    pub fn visit<'a>(&'a self, f: &mut impl FnMut(&'a ExprWriterEditor)) {
+        f(self);
+        if let ExprWriterEditor::Operator(op) = self {
+            use ExprOperatorEditor as O;
+            match op.as_ref() {
+                O::Uniform(a, b) | O::Multiply(a, b) | O::Subtract(a, b) | O::Add(a, b) | O::Distance(a, b) => {
+                    a.visit(f);
+                    b.visit(f);
+                }
+                O::Sin(a) | O::Cos(a) | O::Pack4x8UNorm(a) | O::Normalized(a) => a.visit(f),
+                O::Vec3(a, b, c) => {
+                    a.visit(f);
+                    b.visit(f);
+                    c.visit(f);
+                }
+                O::Vec4(a, b, c, d) => {
+                    a.visit(f);
+                    b.visit(f);
+                    c.visit(f);
+                    d.visit(f);
+                }
+                O::Attr(_) | O::ParentAttr(_) => {}
+            }
+        }
+    }
+
+    /// Calls `f` on this expression and every sub-expression, parents
+    /// first; `f` may replace an expression (its new children are visited).
+    pub fn visit_mut(&mut self, f: &mut impl FnMut(&mut ExprWriterEditor)) {
+        f(self);
+        if let ExprWriterEditor::Operator(op) = self {
+            use ExprOperatorEditor as O;
+            match op.as_mut() {
+                O::Uniform(a, b) | O::Multiply(a, b) | O::Subtract(a, b) | O::Add(a, b) | O::Distance(a, b) => {
+                    a.visit_mut(f);
+                    b.visit_mut(f);
+                }
+                O::Sin(a) | O::Cos(a) | O::Pack4x8UNorm(a) | O::Normalized(a) => a.visit_mut(f),
+                O::Vec3(a, b, c) => {
+                    a.visit_mut(f);
+                    b.visit_mut(f);
+                    c.visit_mut(f);
+                }
+                O::Vec4(a, b, c, d) => {
+                    a.visit_mut(f);
+                    b.visit_mut(f);
+                    c.visit_mut(f);
+                    d.visit_mut(f);
+                }
+                O::Attr(_) | O::ParentAttr(_) => {}
+            }
+        }
+    }
+
     /// Smallest and largest value of a scalar expression, when they are known
     /// without simulating (literals, random values and arithmetic on them).
     pub fn scalar_range(&self) -> Option<(f32, f32)> {
