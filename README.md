@@ -36,7 +36,7 @@ On Windows you can also double-click `start.bat`, which builds the editor (and t
 
 - **Top toolbar**: the open project's name (`• unsaved` when it has changes), **NEW** (empty, or from one of the guide's recipes), **OPEN**, **SAVE**, **SAVE AS…**, **EXPORT**, undo / redo, **STAGE** (air, floor, around a rock), **CAMERA** (Orbit or Game, see below), the backdrop and **⚙ SETTINGS**.
 - **Left: LAYERS**. Click a layer to edit it. ➕ ADD, ⬆ / ⬇ to reorder, DUPLICATE, DELETE (asks first); right-click a layer for the same commands. 👁 hides a layer and **S** solos it in the preview only (hidden layers still spawn their child layers; nothing about this is saved). A `⛔` / `⚠` badge shows the layer's problems.
-- **Right: tabs**. **LAYER** is the inspector of the selected layer: its problems, name, capacity, texture, parent, simulation space (**Local**: particles follow the target; **Global**: they stay where they were emitted and trail behind a moving target), attach, play mode, blending, the spawner and the init / update / render modifiers. **SOCKETS & FIT**: named points on the target and size fit. **PREVIEW**: stage, camera, backdrop and target motion. **PARAMETERS** and **TRIGGERS** (P2) show what the project declares. **ASSETS** is the project's texture library (see below). Hover any label for a short explanation with units.
+- **Right: tabs**. **LAYER** is the inspector of the selected layer: its problems, name, capacity, texture, parent, simulation space (**Local**: particles follow the target; **Global**: they stay where they were emitted and trail behind a moving target), attach, play mode, blending, the spawner and the init / update / render modifiers. **SOCKETS & FIT**: named points on the target and size fit. **PREVIEW**: stage, camera, backdrop and target motion. **PARAMETERS**: the values the game sets (add, rename — every use is renamed too —, number or colour, default, range, smoothing), each with a live slider or colour picker that drives the preview like the game's `set_param` and an **animate** button (min → max → min). **TRIGGERS**: the events the game fires (add, rename, pulses), with **FIRE**, **at random point** (a payload near the target) and **auto-fire every N s**. A layer's **Play** can be **OnTrigger** or **While**, its **Rate** a constant or a curve over a parameter, and **Visible** a parameter range. **ASSETS** is the project's texture library (see below). Hover any label for a short explanation with units.
 - **Bottom bar**: **RENDER** rebuilds the effect and plays it through the same runtime a game uses; **STOP** stops it the way a game does (no new particles, live ones finish); **RESTART** clears every particle and plays again. **Live** rebuilds the preview a moment after each edit. **⏸** pauses and **Speed** slows the preview down. The problems counter (the same checks as the MCP `check_project`) opens the Problems list; `⚠ n build` lists warnings of the last preview build.
 - **Undo / redo** cover every project edit (layers, sockets, fit, the preview block); a drag or a typed word is one step. NEW, OPEN, an MCP preview and closing the window ask before throwing away unsaved changes.
 - **Shortcuts**: Ctrl+S save, Ctrl+E export, Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo, Delete delete layer, Ctrl+D duplicate layer, F focus the camera on the target, Space render. While a text field has focus only Ctrl+S and Ctrl+E work.
@@ -105,13 +105,48 @@ fn finished(mut done: MessageReader<VfxFinished>) {
 }
 ```
 
+Parameters and triggers are how the game talks to an effect. The package declares them under any names (the plugin knows none); the game maps its own rules to them:
+
+```rust
+use omagari::{ParamValue, TriggerArgs, VfxSpawn};
+
+// Start with values (not smoothed from the defaults).
+let aura = commands.spawn_vfx_with(&package, enemy, VfxSpawn { params: &[("tint", Color::srgb(0.2, 0.9, 1.0).into())] });
+
+// A game rule drives a parameter every frame: here a status's stack count.
+fn status_intensity(statuses: Query<(&Poisoned, &PoisonVfx)>, mut vfx: VfxControl) {
+    for (poison, fx) in statuses.iter() {
+        vfx.set_param(fx.instance, "intensity", poison.stacks as f32 / 5.0); // smoothed, clamped to the range
+    }
+}
+
+// Game events fire triggers.
+fn on_damage(mut ticks: MessageReader<PoisonTick>, mut vfx: VfxControl) {
+    for tick in ticks.read() {
+        vfx.trigger(tick.vfx, "tick"); // OnTrigger layers burst, pulses flash
+    }
+}
+fn on_hit(mut hits: MessageReader<WeaponHit>, mut vfx: VfxControl) {
+    for hit in hits.read() {
+        vfx.trigger_at(hit.vfx, "hit", TriggerArgs::at(hit.point).with_direction(hit.normal).with_strength(hit.force));
+    }
+}
+
+let now: Option<ParamValue> = vfx.param(instance, "intensity"); // current (smoothed) value
+vfx.set_param_now(instance, "intensity", 1.0);                  // no smoothing
+```
+
+- **Parameters** (`parameters: [(name, default: Float(..) | Color(..), min, max, smoothing)]`): per instance a target (what the game set, clamped to `[min, max]` for numbers) and a current value that follows it, `current += (target - current) × (1 - e^(-dt / smoothing))` (colours per channel; `smoothing: 0` jumps). Layers read the current value in expressions (`Param("intensity")`, uploaded into the effect's Hanabi properties only when it changes), in `rate` (particles per second as a curve over a parameter), `visible` (a parameter range the layer shows in, fading at its edges) and `play: While(param, threshold)`. Values set before the package has loaded apply when it has; they survive hot reload and `replace_package`.
+- **Triggers** (`triggers: [(name, pulses: [(param, to, decay)])]`): layers with `play: OnTrigger(name)` burst (the spawner restarts; such layers do not play at the start or on `restart`), and pulses make a number parameter jump to `to` and return over `decay` seconds. `trigger_at` writes the position, direction and strength into the properties `trigger_pos` / `trigger_dir` / `trigger_strength` of the bursting layers (in their simulation space) first; without them the layer's origin and +Y are used. A trigger fired while the instance is still loading waits for it. Packages with `OnTrigger` layers do not finish by themselves; stop them.
+- Unknown parameter or trigger names and values of the wrong kind (a number for a colour) are ignored with one warning per package and name; nothing panics.
+
 - **Lifecycle.** An instance spawns its layers once the package and its textures have loaded. `stop` is graceful; `restart` while stopping plays it again. An instance whose root layers are all one-shot (`play: OnStart` with a finite `cycle_count`) finishes by itself after its last spawn plus its longest particle life, so `spawn_vfx_at` one-shots clean up without code; looping ones run until `stop`. `VfxFinished { instance, target }` is sent once whenever an instance ends: finished, stopped, its target despawned (then `target` no longer exists), or despawned by other code. For `spawn_vfx_at` instances `target` is the instance itself.
 - **Attach.** Per layer `attach: Target | Socket("name") | Segment(from: "a", to: "b")`. A socket is a package socket (`sockets: [(name, node: Some("mixamorig:RightHand") | None, offset)]`) or, when no package socket has that name, an entity with that `Name` under the target. The layer follows the node (it becomes its child); until the node exists (a glTF scene still loading) the layer sits at the target's origin, and it re-resolves when the hierarchy changes. Segment layers get the two ends every frame as Hanabi properties `segment_a` / `segment_b`, readable in expressions with `Property("segment_a")`.
 - **Size fit.** `fit: None` keeps the authored size whatever the target's scale, `Some(TargetScale)` inherits it, `Some(TargetHeight(1.8))` scales by the height of the target's own meshes / 1.8 m. Fit scales `Local` layers only: Hanabi applies the emitter's full transform to Local particles but only its position to Global ones.
 - **Own model.** Mesh searches under a target (fit now, surface layers later) stop at nested glTF scenes (`WorldAssetRoot`, e.g. a weapon in a hand bone) and at entities marked `omagari::VfxSeparateModel`.
 - **Hot reload.** When a package asset changes (Bevy's file watcher, `AssetPlugin { watch_for_changes_override: Some(true), .. }` with the `file_watcher` feature), running instances rebuild their layers in place: old particles finish, new layers start, the instance entity and its state stay. `VfxControl::replace_package` does the same with another package (the editor's RENDER uses it).
 
-Texture paths in a package are relative to the game's `assets/` folder (`vfx/textures/smoke.png`); built-ins are `omagari://textures/<file>`. Each texture loads with its settings (wrap, colour space, filter) as loader settings, so the game passes nothing. PNG works with Bevy's default features; for JPG textures enable Bevy's `jpeg` feature (`bevy = { version = "0.19", features = ["jpeg"] }`). The editor previews packages through this same API. See `docs/VFX_SYSTEM_PLAN.md` for what comes next (parameters, triggers, more layer kinds).
+Texture paths in a package are relative to the game's `assets/` folder (`vfx/textures/smoke.png`); built-ins are `omagari://textures/<file>`. Each texture loads with its settings (wrap, colour space, filter) as loader settings, so the game passes nothing; a hot reload that changes them applies them to the already loaded image. PNG works with Bevy's default features; for JPG textures enable Bevy's `jpeg` feature (`bevy = { version = "0.19", features = ["jpeg"] }`). The editor previews packages through this same API (its PARAMETERS sliders call `set_param`, its FIRE buttons `trigger` / `trigger_at`). See `docs/VFX_SYSTEM_PLAN.md` for what comes next (full Hanabi coverage, model preview, more layer kinds).
 
 Legacy: `EffectComplex::spawn` returns the spawned entities, and its `despawn_in` timer now stops the spawners and despawns each effect once its last particle has died.
 
