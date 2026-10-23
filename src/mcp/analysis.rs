@@ -1190,13 +1190,13 @@ pub struct Diagnostics {
 }
 
 impl Diagnostics {
-    fn error(&mut self, effect: &str, msg: impl AsRef<str>) {
+    pub(crate) fn error(&mut self, effect: &str, msg: impl AsRef<str>) {
         self.errors.push(format!("[{}] {}", effect, msg.as_ref()));
     }
-    fn warn(&mut self, effect: &str, msg: impl AsRef<str>) {
+    pub(crate) fn warn(&mut self, effect: &str, msg: impl AsRef<str>) {
         self.warnings.push(format!("[{}] {}", effect, msg.as_ref()));
     }
-    fn note(&mut self, effect: &str, msg: impl AsRef<str>) {
+    pub(crate) fn note(&mut self, effect: &str, msg: impl AsRef<str>) {
         self.notes.push(format!("[{}] {}", effect, msg.as_ref()));
     }
 
@@ -2070,7 +2070,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
     let resolved = resolve_for_analysis(project, &[]);
     let resolved_layers = particle_layers(&resolved);
 
-    if layers.is_empty() {
+    if project.layers.is_empty() {
         d.errors.push("project has no layers".into());
         return d;
     }
@@ -2114,7 +2114,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
             }
         }
         check_texture_settings(&mut d, &label, t, assets_root);
-        if !layers.iter().any(|l| l.texture.as_deref() == Some(asset.id.as_str())) {
+        if project.asset_users(&asset.id).is_empty() {
             d.warn(&label, "not used by any layer");
         }
     }
@@ -2396,6 +2396,8 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
             }
         }
     }
+
+    super::surface_check::check_surface_layers(&mut d, project, assets_root);
 
     match package_string(project) {
         Ok(text) => match ProjectV2::from_ron_str_with_warnings(&text) {
@@ -2858,7 +2860,7 @@ fn simulate_project(project: &ProjectV2, n_samples: usize, seed: u64) -> (Vec<Ef
 // Report
 // ---------------------------------------------------------------------------
 
-fn fmt_num(x: f32) -> String {
+pub(crate) fn fmt_num(x: f32) -> String {
     if !x.is_finite() {
         return format!("{}", x);
     }
@@ -2907,7 +2909,7 @@ fn percentile(sorted: &[f32], p: f32) -> f32 {
 }
 
 /// Human name for a linear RGB color, plus its intensity (max channel).
-fn color_name(c: Vec3) -> String {
+pub(crate) fn color_name(c: Vec3) -> String {
     let max = c.max_element();
     if max <= 1e-3 {
         return "black".into();
@@ -3521,6 +3523,7 @@ fn parameters_report(project: &ProjectV2, n_samples: usize, sets: &[(String, Par
             rows[i].push(layer_summary(&effect.effect, sim));
         }
     }
+    super::surface_check::surface_sets_report(project, sets, only_effect, out);
     for (effect, rows) in effects.iter().zip(rows.iter()) {
         if only_effect.is_some_and(|o| o != effect.name) {
             continue;
@@ -3737,7 +3740,15 @@ pub fn analyze_project_with_sets(
         let _ = writeln!(out, "  alive over time: {}", timeline_text(&sim.alive, horizon));
     }
 
-    if only_effect.is_none() {
+    for (index, layer) in project.surface_layers() {
+        if only_effect.is_none_or(|o| o == layer.name) {
+            super::surface_check::describe_surface_layer(project, index, layer, &mut out);
+        }
+    }
+
+    if only_effect.is_none() && effects.is_empty() {
+        let _ = writeln!(out, "\n## Whole project\n  no particle layers");
+    } else if only_effect.is_none() {
         let _ = writeln!(out, "\n## Whole project");
         let peak = total_alive.iter().cloned().fold(0.0, f32::max);
         if any_forever {
@@ -4237,7 +4248,7 @@ mod tests {
             render_modifiers: [ParticleTexture(())],"#;
         let looping = |space: &str| {
             let mut p = layer_project(&format!("simulation_space: {}, play: Loop,", space), effect);
-            let LayerDef::Particles(l) = &mut p.layers[0];
+            let l = p.layers[0].as_particles_mut().unwrap();
             l.effect.spawner.cycle_count = 0;
             p
         };

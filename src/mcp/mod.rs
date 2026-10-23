@@ -22,6 +22,7 @@ use crate::controller::Folder;
 use crate::settings::GameAssets;
 
 pub mod analysis;
+pub mod surface_check;
 
 /// The guide served by the `guide` tool.
 pub const GUIDE: &str = include_str!("../../docs/CLAUDE_VFX_GUIDE.md");
@@ -1512,7 +1513,7 @@ mod tests {
 
     #[test]
     fn guide_sections_are_listed() {
-        for section in ["workflow", "format", "layers", "attach", "model", "textures", "assets", "recipes", "game"] {
+        for section in ["workflow", "format", "layers", "attach", "model", "textures", "assets", "surfaces", "recipes", "game"] {
             assert!(!guide_section(Some(section)).starts_with("No section"), "{}", section);
         }
     }
