@@ -6,6 +6,7 @@ use bevy_hanabi::prelude::*;
 use omagari::format::*;
 
 use super::helpers::*;
+use super::hints;
 use super::AppContext;
 
 /// Name of a modifier in the editor's menus and headers.
@@ -30,9 +31,12 @@ impl UiProvider for SetAttributeModifierEditor {
                         .selected_text(selected_text)
                         .show_ui(ui, |ui| {
                             ALL_ATTRS.iter().for_each(|(attr, label)| {
-                                ui.selectable_value(&mut self.attr, *attr, *label);
+                                ui.selectable_value(&mut self.attr, *attr, *label)
+                                    .on_hover_text(hints::attribute(label));
                             });
-                        });
+                        })
+                        .response
+                        .on_hover_text(hints::attribute(selected_text));
                 })
                 .body(|ui| {
                     self.attr_expr.draw_ui(app, ui, 1);
@@ -82,7 +86,7 @@ impl UiProvider for SetVelocityCircleModifierEditor {
             unique_collapsing(2, "Axis", ui).show(ui, |ui| {
                 self.axis_expr.draw_ui(app, ui, 2);
             });
-            unique_collapsing(3, "Speed", ui).show(ui, |ui| {
+            unique_collapsing(3, "Speed (m/s)", ui).show(ui, |ui| {
                 self.speed_expr.draw_ui(app, ui, 3);
             });
         });
@@ -101,7 +105,7 @@ impl UiProvider for SetVelocitySphereModifierEditor {
             unique_collapsing(1, "Origin", ui).show(ui, |ui| {
                 self.center_expr.draw_ui(app, ui, 1);
             });
-            unique_collapsing(3, "Speed", ui).show(ui, |ui| {
+            unique_collapsing(3, "Speed (m/s)", ui).show(ui, |ui| {
                 self.speed_expr.draw_ui(app, ui, 3);
             });
         });
@@ -123,7 +127,7 @@ impl UiProvider for SetVelocityTangentModifierEditor {
             unique_collapsing(index, "Axis", ui).show(ui, |ui| {
                 self.axis_expr.draw_ui(app, ui, 2);
             });
-            unique_collapsing(index, "Speed", ui).show(ui, |ui| {
+            unique_collapsing(index, "Speed (m/s)", ui).show(ui, |ui| {
                 self.speed_expr.draw_ui(app, ui, 3);
             });
         });
@@ -145,7 +149,7 @@ impl UiProvider for SetPositionCircleModifierEditor {
             unique_collapsing(index, "Axis", ui).show(ui, |ui| {
                 self.axis_expr.draw_ui(app, ui, 2);
             });
-            unique_collapsing(index, "Radius", ui).show(ui, |ui| {
+            unique_collapsing(index, "Radius (m)", ui).show(ui, |ui| {
                 self.radius_expr.draw_ui(app, ui, 3);
             });
             ui.horizontal(|ui| {
@@ -168,7 +172,7 @@ impl UiProvider for SetPositionSphereModifierEditor {
             unique_collapsing(index, "Center", ui).show(ui, |ui| {
                 self.center_expr.draw_ui(app, ui, 1);
             });
-            unique_collapsing(index, "Radius", ui).show(ui, |ui| {
+            unique_collapsing(index, "Radius (m)", ui).show(ui, |ui| {
                 self.radius_expr.draw_ui(app, ui, 3);
             });
             ui.horizontal(|ui| {
@@ -187,11 +191,14 @@ impl ModifierLabel for AccelModifierEditor {
 
 impl UiProvider for AccelModifierEditor {
     fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
-        unique_collapsing(index, Self::label(), ui).show(ui, |ui| {
-            unique_collapsing(index, "Origin", ui).show(ui, |ui| {
-                self.accel_expr.draw_ui(app, ui, 1);
-            });
-        });
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                unique_collapsing(index, "Acceleration (m/s²)", ui).show(ui, |ui| {
+                    self.accel_expr.draw_ui(app, ui, 1);
+                });
+            })
+            .header_response
+            .on_hover_text(hints::ACCEL);
     }
 }
 
@@ -203,11 +210,14 @@ impl ModifierLabel for LinearDragModifierEditor {
 
 impl UiProvider for LinearDragModifierEditor {
     fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
-        unique_collapsing(index, Self::label(), ui).show(ui, |ui| {
-            unique_collapsing(index, "Drag", ui).show(ui, |ui| {
-                self.drag_expr.draw_ui(app, ui, 1);
-            });
-        });
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                unique_collapsing(index, "Drag (per second)", ui).show(ui, |ui| {
+                    self.drag_expr.draw_ui(app, ui, 1);
+                });
+            })
+            .header_response
+            .on_hover_text(hints::DRAG);
     }
 }
 
@@ -272,9 +282,12 @@ impl ModifierLabel for SizeOverLifetimeModifierEditor {
 
 impl UiProvider for SizeOverLifetimeModifierEditor {
     fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
-        unique_collapsing(index, Self::label(), ui).show(ui, |ui| {
-            unique_collapsing(1, "Gradient", ui).show(ui, |ui| self.gradient.draw_ui(app, ui, 1));
-        });
+        unique_collapsing(index, Self::label(), ui)
+            .show(ui, |ui| {
+                unique_collapsing(1, "Gradient (size in m)", ui).show(ui, |ui| self.gradient.draw_ui(app, ui, 1));
+            })
+            .header_response
+            .on_hover_text(hints::SIZE_OVER_LIFETIME);
     }
 }
 
@@ -286,26 +299,32 @@ impl ModifierLabel for ColorOverLifetimeModifierEditor {
 
 impl UiProvider for ColorOverLifetimeModifierEditor {
     fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
-        unique_collapsing(index, Self::label(), ui).show(ui, |ui| {
-            unique_collapsing(1, "Gradient", ui).show(ui, |ui| self.gradient.draw_ui(app, ui, 0));
+        let response = unique_collapsing(index, Self::label(), ui).show(ui, |ui| {
+            unique_collapsing(1, "Gradient (r, g, b, opacity)", ui).show(ui, |ui| self.gradient.draw_ui(app, ui, 0));
             unique_collapsing(2, "Blend", ui).show(ui, |ui| {
                 let mut blend = self.blend.unwrap_or(ColorBlendMode::default());
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut blend, ColorBlendMode::Add, "Add");
-                    ui.radio_value(&mut blend, ColorBlendMode::Modulate, "Modulate");
-                    ui.radio_value(&mut blend, ColorBlendMode::Overwrite, "Overwrite");
+                    ui.radio_value(&mut blend, ColorBlendMode::Add, "Add")
+                        .on_hover_text("Adds the gradient to the colour set at birth");
+                    ui.radio_value(&mut blend, ColorBlendMode::Modulate, "Modulate")
+                        .on_hover_text("Multiplies the colour set at birth by the gradient");
+                    ui.radio_value(&mut blend, ColorBlendMode::Overwrite, "Overwrite")
+                        .on_hover_text("The gradient replaces the colour set at birth");
                 });
                 self.blend = Some(blend);
             });
             unique_collapsing(3, "Mask", ui).show(ui, |ui| {
                 let mut mask = self.mask.unwrap_or(ColorBlendMask::default());
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut mask, ColorBlendMask::RGB, "RGB");
-                    ui.radio_value(&mut mask, ColorBlendMask::RGBA, "RGBA");
+                    ui.radio_value(&mut mask, ColorBlendMask::RGB, "RGB")
+                        .on_hover_text("Changes the colour only, not the opacity");
+                    ui.radio_value(&mut mask, ColorBlendMask::RGBA, "RGBA")
+                        .on_hover_text("Changes colour and opacity");
                 });
                 self.mask = Some(mask);
             });
         });
+        response.header_response.on_hover_text(hints::COLOR_OVER_LIFETIME);
     }
 }
 
@@ -318,9 +337,9 @@ impl UiProvider for GradientVec3Editor {
                     if let Some(list_command) = ui_for_list_item(ui, index, n_keys) {
                         return Some(list_command);
                     } else {
-                        ui.label("t:");
+                        ui.label("t:").on_hover_text(hints::GRADIENT_T);
                         *t = ui_for_f32(ui, *t);
-                        ui.label("vec3:");
+                        ui.label("x y z:");
                         *v = ui_for_vec3(ui, *v);
                         None
                     }
@@ -346,9 +365,9 @@ impl UiProvider for GradientVec4Editor {
                     if let Some(list_command) = ui_for_list_item(ui, index, n_keys) {
                         return Some(list_command);
                     } else {
-                        ui.label("t:");
+                        ui.label("t:").on_hover_text(hints::GRADIENT_T);
                         *t = ui_for_f32(ui, *t);
-                        ui.label("vec4:");
+                        ui.label("r g b a:");
                         *v = ui_for_vec4(ui, *v);
                     }
                     None

@@ -6,10 +6,10 @@ use bevy_egui::*;
 use omagari::format::*;
 
 use super::helpers::*;
+use super::hints;
 
 /// The preview motion of the open project (saved in its `preview` block).
-pub fn motion_menu(ui: &mut egui::Ui, project: &mut ProjectV2) {
-    ui.set_min_width(300.0);
+pub fn motion_panel(ui: &mut egui::Ui, project: &mut ProjectV2) {
     let current = project.preview.as_ref().and_then(|p| p.motion);
     let speed = current.map(|m| m.speed()).unwrap_or(DEFAULT_MOTION_SPEED);
     let mut motion = current;
@@ -63,10 +63,10 @@ fn speed_row(ui: &mut egui::Ui, speed: &mut f32) {
 }
 
 /// The package's sockets (named points on the target) and its size fit.
-pub fn sockets_and_fit_menu(ui: &mut egui::Ui, project: &mut ProjectV2) {
-    ui.set_min_width(460.0);
-    ui.label("Fit (scales the instance to its target; Local layers only):");
-    ui.horizontal(|ui| {
+pub fn sockets_and_fit_panel(ui: &mut egui::Ui, project: &mut ProjectV2) {
+    ui.strong("Size fit").on_hover_text(hints::FIT);
+    ui.label("Scales the effect to its target (Local layers only).");
+    ui.horizontal_wrapped(|ui| {
         let fit = project.fit;
         if ui.radio(fit.is_none(), "None").on_hover_text("Authored size, whatever the target's scale").clicked() {
             project.fit = None;
@@ -81,21 +81,21 @@ pub fn sockets_and_fit_menu(ui: &mut egui::Ui, project: &mut ProjectV2) {
         let height = matches!(fit, Some(FitDef::TargetHeight(_)));
         if ui
             .radio(height, "Target height")
-            .on_hover_text("Scaled by the height of the target's meshes / the reference height the effect was made for")
+            .on_hover_text("Scales by the target's model height ÷ the height the effect was made for: made for 1.8 m, on a 3.6 m enemy = twice as big")
             .clicked()
             && !height
         {
             project.fit = Some(FitDef::TargetHeight(1.8));
         }
         if let Some(FitDef::TargetHeight(reference)) = &mut project.fit {
-            ui.label("made for");
+            ui.label("made for").on_hover_text("Height of the character the effect was made for");
             *reference = ui_for_f32_ex(ui, *reference, 0.01, 100.0, 0.01);
             ui.label("m");
         }
     });
     ui.separator();
-    ui.label("Sockets (attach layers with Socket / Segment):")
-        .on_hover_text("A node name of the target's model (or none = the target root) plus an offset in metres");
+    ui.strong("Sockets").on_hover_text(hints::SOCKETS);
+    ui.label("Named points on the target; layers attach to them with Socket / Segment.");
     let mut remove = None;
     for (index, socket) in project.sockets.iter_mut().enumerate() {
         ui.horizontal(|ui| {
@@ -114,13 +114,18 @@ pub fn sockets_and_fit_menu(ui: &mut egui::Ui, project: &mut ProjectV2) {
             )
             .on_hover_text("Name of an entity under the target, e.g. a bone; empty = the target root");
             socket.node = (!node.is_empty()).then_some(node);
+            ui.add_space(2.0);
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            ui.label("offset (m):").on_hover_text("Metres from the node (or the target root), in its own axes");
             socket.offset = ui_for_vec3(ui, socket.offset);
         });
     }
     if let Some(index) = remove {
         project.sockets.remove(index);
     }
-    if ui.button("+ socket").clicked() {
+    if ui.button("➕ socket").on_hover_text("Add a named point on the target").clicked() {
         let mut name = "socket".to_string();
         let mut n = 2;
         while project.socket(&name).is_some() {

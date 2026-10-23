@@ -5,6 +5,7 @@ use bevy_egui::*;
 use omagari::format::*;
 
 use super::helpers::*;
+use super::hints;
 use super::modifiers::ModifierLabel;
 use super::AppContext;
 
@@ -19,7 +20,8 @@ fn ui_for_modifiers_list<T, R>(
     T: UiProvider,
 {
     let id = id.with(label);
-    unique_collapsing(id.value(), label, ui).show(ui, |ui| {
+    let header = format!("{} ({})", label, modifiers.len());
+    let response = egui::CollapsingHeader::new(header).id_salt(id).show(ui, |ui| {
         let n_modifiers = modifiers.len();
         for (index, n) in modifiers.iter_mut().enumerate() {
             let swap = ui
@@ -46,6 +48,11 @@ fn ui_for_modifiers_list<T, R>(
         }
 
         ui.menu_button("+", |ui| add_contents(ui, &mut modifiers));
+    });
+    response.header_response.on_hover_text(match label {
+        "Init" => hints::INIT_LIST,
+        "Update" => hints::UPDATE_LIST,
+        _ => hints::RENDER_LIST,
     });
 }
 
@@ -81,8 +88,7 @@ impl UiProvider for RenderModifierEditor {
 impl UiProvider for ParticleTextureModifierEditor {
     fn draw_ui(&mut self, _app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
         ui.horizontal(|ui| {
-            ui.label(ParticleTextureModifierEditor::label())
-                .on_hover_text("Samples the layer's texture. Particles can't pick the G/B/A channels.");
+            ui.label(ParticleTextureModifierEditor::label()).on_hover_text(hints::TEXTURE_MAPPING);
             let id = ui.make_persistent_id(format!("sample mapping {}", index));
             egui::ComboBox::from_id_salt(id)
                 .selected_text(sample_mapping_label(self.sample_mapping))
@@ -112,16 +118,20 @@ fn sample_mapping_label(mapping: ImageSampleMappingDef) -> &'static str {
 
 fn sample_mapping_hint(mapping: ImageSampleMappingDef) -> &'static str {
     match mapping {
-        ImageSampleMappingDef::Modulate => "color × texture (RGBA)",
-        ImageSampleMappingDef::ModulateRGB => "color.rgb × texture.rgb, alpha unchanged",
-        ImageSampleMappingDef::ModulateOpacityFromR => "the texture's red channel is opacity (grayscale sprites)",
+        ImageSampleMappingDef::Modulate => {
+            "Particle colour × texture colour, including the texture's transparency (colour sprites)"
+        }
+        ImageSampleMappingDef::ModulateRGB => "Particle colour × texture colour; the texture's transparency is ignored",
+        ImageSampleMappingDef::ModulateOpacityFromR => {
+            "The texture's brightness (red channel) becomes the opacity: grey sprites tinted by the particle colour"
+        }
     }
 }
 
 impl UiProvider for OrientModifierEditor {
     fn draw_ui(&mut self, _app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
         ui.horizontal(|ui| {
-            ui.label(OrientModifierEditor::label());
+            ui.label(OrientModifierEditor::label()).on_hover_text(hints::ORIENT);
             let id = ui.make_persistent_id(format!("orient mode {}", index));
             egui::ComboBox::from_id_salt(id)
                 .selected_text(orient_mode_label(self.mode))
@@ -151,9 +161,11 @@ fn orient_mode_label(mode: OrientModeDef) -> &'static str {
 
 fn orient_mode_hint(mode: OrientModeDef) -> &'static str {
     match mode {
-        OrientModeDef::AlongVelocity => "stretched along the velocity; motionless particles may be invisible",
-        OrientModeDef::ParallelCameraDepthPlane => "flat to the screen (billboards)",
-        OrientModeDef::FaceCameraPosition => "facing the camera position",
+        OrientModeDef::AlongVelocity => {
+            "Points along the direction of travel (sparks, streaks); particles that don't move may be invisible"
+        }
+        OrientModeDef::ParallelCameraDepthPlane => "Always flat to the screen (billboards): smoke, glows, most sprites",
+        OrientModeDef::FaceCameraPosition => "Turned towards the camera's position; like flat-to-screen, differs at the screen edges",
     }
 }
 
@@ -180,30 +192,42 @@ fn ui_for_cpu_value(ui: &mut egui::Ui, value: &mut CpuValueDef, max: f32, speed:
 }
 
 fn ui_for_spawner(ui: &mut egui::Ui, spawner: &mut SpawnerDef) {
-    ui.horizontal(|ui| {
-        ui.label("Count:")
-            .on_hover_text("Particles spawned over the spawn duration, every cycle");
-        ui_for_cpu_value(ui, &mut spawner.count, 10000.0, 1.0);
+    egui::Grid::new("spawner grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+        ui.label("Count").on_hover_text(hints::COUNT);
+        ui.horizontal(|ui| ui_for_cpu_value(ui, &mut spawner.count, 10000.0, 1.0))
+            .response
+            .on_hover_text(hints::COUNT);
+        ui.end_row();
+        ui.label("Duration").on_hover_text(hints::DURATION);
+        ui.horizontal(|ui| {
+            ui_for_cpu_value(ui, &mut spawner.spawn_duration, 10000.0, 0.01);
+            ui.label("s");
+        })
+        .response
+        .on_hover_text(hints::DURATION);
+        ui.end_row();
+        ui.label("Period").on_hover_text(hints::PERIOD);
+        ui.horizontal(|ui| {
+            ui_for_cpu_value(ui, &mut spawner.period, 10000.0, 0.01);
+            ui.label("s");
+        })
+        .response
+        .on_hover_text(hints::PERIOD);
+        ui.end_row();
+        ui.label("Cycles").on_hover_text(hints::CYCLES);
+        ui.horizontal(|ui| {
+            spawner.cycle_count = ui_for_u32_ex(ui, spawner.cycle_count, 0, 10000, 1);
+            if spawner.cycle_count == 0 {
+                ui.label("(forever)");
+            }
+        })
+        .response
+        .on_hover_text(hints::CYCLES);
+        ui.end_row();
     });
     ui.horizontal(|ui| {
-        ui.label("Duration:")
-            .on_hover_text("Seconds over which Count particles are spawned; 0 = all at once");
-        ui_for_cpu_value(ui, &mut spawner.spawn_duration, 10000.0, 0.01);
-        ui.label("s");
-    });
-    ui.horizontal(|ui| {
-        ui.label("Period:").on_hover_text("Seconds between the starts of two cycles");
-        ui_for_cpu_value(ui, &mut spawner.period, 10000.0, 0.01);
-        ui.label("s");
-    });
-    ui.horizontal(|ui| {
-        ui.label("Cycles:").on_hover_text("Number of cycles; 0 = forever");
-        spawner.cycle_count = ui_for_u32_ex(ui, spawner.cycle_count, 0, 10000, 1);
-    });
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut spawner.starts_active, "Starts active")
-            .on_hover_text("Off: game code must activate the spawner");
-        ui.checkbox(&mut spawner.emit_on_start, "Emit on start");
+        ui.checkbox(&mut spawner.starts_active, "Starts active").on_hover_text(hints::STARTS_ACTIVE);
+        ui.checkbox(&mut spawner.emit_on_start, "Emit on start").on_hover_text(hints::EMIT_ON_START);
     });
 }
 
@@ -300,7 +324,7 @@ fn attach_label(attach: &AttachDef) -> &'static str {
 /// A socket name field with a menu of the package's sockets.
 fn ui_for_socket_name(ui: &mut egui::Ui, name: &mut String, sockets: &[String], hint: &str) {
     ui.add(egui::TextEdit::singleline(name).hint_text(hint).desired_width(90.0)).on_hover_text(
-        "A package socket (⚓ SOCKETS & FIT), or the name of a node in the target's model",
+        "A socket of this package (⚓ SOCKETS & FIT tab), or the name of a node (bone) in the target's model",
     );
     if !sockets.is_empty() {
         ui.menu_button("⏷", |ui| {
@@ -344,7 +368,7 @@ fn ui_for_attach(ui: &mut egui::Ui, attach: &mut AttachDef, sockets: &[String], 
         AttachDef::Socket(name) => ui_for_socket_name(ui, name, sockets, "socket"),
         AttachDef::Segment { from, to } => {
             ui_for_socket_name(ui, from, sockets, "from");
-            ui.label("→");
+            ui.label("➡");
             ui_for_socket_name(ui, to, sockets, "to");
         }
     }
@@ -363,17 +387,18 @@ fn alpha_mode_label(mode: AlphaModeDef) -> &'static str {
 
 fn alpha_mode_hint(mode: AlphaModeDef) -> &'static str {
     match mode {
-        AlphaModeDef::Blend => "regular alpha blending",
-        AlphaModeDef::Premultiply => "premultiplied alpha",
-        AlphaModeDef::Add => "additive: glows, gets brighter where particles overlap",
-        AlphaModeDef::Multiply => "darkens what is behind",
-        AlphaModeDef::Mask(_) => "opaque cut-out: alpha below the cutoff is discarded",
-        AlphaModeDef::Opaque => "opaque quads",
+        AlphaModeDef::Blend => "Normal transparency: smoke, dust, mist",
+        AlphaModeDef::Premultiply => "Transparency for textures with premultiplied alpha",
+        AlphaModeDef::Add => "Adds light: glows, fire, sparks; gets brighter where particles overlap",
+        AlphaModeDef::Multiply => "Darkens what is behind (shadows, soot)",
+        AlphaModeDef::Mask(_) => "Solid cut-out: pixels below the cutoff opacity are not drawn",
+        AlphaModeDef::Opaque => "Solid squares, no transparency",
     }
 }
 
-/// The settings of a particle layer (name, parent, space, play, texture,
-/// alpha mode), its spawner and its modifier lists.
+/// The inspector of a particle layer: its settings (name, capacity,
+/// texture, parent, space, attach, play, blend), its spawner and its
+/// modifier lists.
 pub fn draw_particles_layer(
     layer: &mut ParticlesLayerDef,
     assets: &mut Vec<AssetDef>,
@@ -382,194 +407,221 @@ pub fn draw_particles_layer(
     index: u64,
 ) {
     let id = ui.make_persistent_id(format!("layer {}", index));
-    ui.vertical(|ui| {
-        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
-            .show_header(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.set_max_width(260.0);
-                    ui.label("✨ Particles:");
-                    ui.text_edit_singleline(&mut layer.name);
-                });
-            })
-            .body(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Capacity:").on_hover_text("Most particles alive at once");
-                    layer.effect.capacity = ui_for_u32_ex(ui, layer.effect.capacity, 0, 16384, 1);
-                    ui.label("Texture:");
-                    ui_for_texture(ui, &mut layer.texture, assets, index);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Parent layer:").on_hover_text(
-                        "Particles of this layer are spawned by the parent's EmitSpawnEvent modifiers",
-                    );
-                    let parent = layer.parent.clone().unwrap_or_else(|| "NONE".to_string());
-                    ui.menu_button(parent, |ui| {
-                        if ui.button("NONE").clicked() {
-                            layer.parent = None;
-                            ui.close();
-                        }
-                        for name in app.layer_names.iter() {
-                            if *name != layer.name && ui.button(name).clicked() {
-                                layer.parent = Some(name.clone());
-                                ui.close();
-                            }
-                        }
-                    });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Space:");
-                    ui.radio_value(&mut layer.simulation_space, SimulationSpaceDef::Local, "Local")
-                        .on_hover_text("Particles move with the target");
-                    ui.radio_value(&mut layer.simulation_space, SimulationSpaceDef::Global, "Global")
-                        .on_hover_text("Particles stay where they were emitted: a moving target leaves a trail");
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Attach:").on_hover_text(
-                        "Where the layer sits on the target: its root, a socket (follows it), or a segment between two sockets (Property segment_a / segment_b)",
-                    );
-                    ui_for_attach(ui, &mut layer.attach, &app.socket_names, id);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Play:").on_hover_text(
-                        "When the layer plays. How long it emits is set by the spawner (Cycles: 0 = loop).",
-                    );
-                    egui::ComboBox::from_id_salt(id.with("play"))
-                        .selected_text(play_label(&layer.play))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut layer.play, PlayDef::Loop, "Loop")
-                                .on_hover_text("For as long as the instance runs");
-                            ui.selectable_value(&mut layer.play, PlayDef::OnStart, "OnStart")
-                                .on_hover_text("Once when the instance starts");
-                            ui.add_enabled(false, egui::Button::selectable(false, "OnTrigger (later)"));
-                            ui.add_enabled(false, egui::Button::selectable(false, "While (later)"));
-                        });
-                    let cycles = layer.effect.spawner.cycle_count;
-                    let mismatch = match layer.play {
-                        PlayDef::Loop => cycles != 0,
-                        PlayDef::OnStart => cycles == 0,
-                        _ => false,
+    egui::Grid::new(id.with("grid")).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        ui.label("Name").on_hover_text(hints::NAME);
+        ui.add(egui::TextEdit::singleline(&mut layer.name).desired_width(180.0))
+            .on_hover_text(hints::NAME);
+        ui.end_row();
+
+        ui.label("Capacity").on_hover_text(hints::CAPACITY);
+        ui.horizontal(|ui| {
+            layer.effect.capacity = ui_for_u32_ex(ui, layer.effect.capacity, 0, 16384, 1);
+            ui.label("particles");
+        })
+        .response
+        .on_hover_text(hints::CAPACITY);
+        ui.end_row();
+
+        ui.label("Texture").on_hover_text(hints::TEXTURE);
+        ui.horizontal(|ui| ui_for_texture(ui, &mut layer.texture, assets, index));
+        ui.end_row();
+
+        ui.label("Parent layer").on_hover_text(hints::PARENT);
+        let parent = layer.parent.clone().unwrap_or_else(|| "NONE".to_string());
+        ui.menu_button(parent, |ui| {
+            if ui.button("NONE").clicked() {
+                layer.parent = None;
+                ui.close();
+            }
+            for name in app.layer_names.iter() {
+                if *name != layer.name && ui.button(name).clicked() {
+                    layer.parent = Some(name.clone());
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text(hints::PARENT);
+        ui.end_row();
+
+        ui.label("Space").on_hover_text(hints::SPACE);
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut layer.simulation_space, SimulationSpaceDef::Local, "Local")
+                .on_hover_text(hints::SPACE_LOCAL);
+            ui.radio_value(&mut layer.simulation_space, SimulationSpaceDef::Global, "Global")
+                .on_hover_text(hints::SPACE_GLOBAL);
+        });
+        ui.end_row();
+
+        ui.label("Attach").on_hover_text(hints::ATTACH);
+        ui.horizontal(|ui| ui_for_attach(ui, &mut layer.attach, &app.socket_names, id));
+        ui.end_row();
+
+        ui.label("Play").on_hover_text(hints::PLAY);
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt(id.with("play"))
+                .selected_text(play_label(&layer.play))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut layer.play, PlayDef::Loop, "Loop")
+                        .on_hover_text("Plays for as long as the effect runs");
+                    ui.selectable_value(&mut layer.play, PlayDef::OnStart, "OnStart")
+                        .on_hover_text("Plays once when the effect starts");
+                    ui.add_enabled(false, egui::Button::selectable(false, "OnTrigger (P2)"));
+                    ui.add_enabled(false, egui::Button::selectable(false, "While (P2)"));
+                })
+                .response
+                .on_hover_text(hints::PLAY);
+            let cycles = layer.effect.spawner.cycle_count;
+            let mismatch = match layer.play {
+                PlayDef::Loop => cycles != 0,
+                PlayDef::OnStart => cycles == 0,
+                _ => false,
+            };
+            if mismatch {
+                ui.colored_label(egui::Color32::from_hex("#FFCC66").unwrap(), "⚠").on_hover_text(
+                    "Play doesn't match the spawner: Loop usually has Cycles 0, OnStart a finite number.",
+                );
+            }
+        });
+        ui.end_row();
+
+        ui.label("Blend").on_hover_text(hints::BLEND);
+        ui.horizontal(|ui| {
+            let current = layer.effect.alpha_mode;
+            egui::ComboBox::from_id_salt(id.with("alpha"))
+                .selected_text(alpha_mode_label(current))
+                .show_ui(ui, |ui| {
+                    let cutoff = match current {
+                        AlphaModeDef::Mask(c) => c,
+                        _ => 0.5,
                     };
-                    if mismatch {
-                        ui.colored_label(egui::Color32::from_hex("#FFCC66").unwrap(), "⚠").on_hover_text(
-                            "Play doesn't match the spawner: Loop usually has Cycles 0, OnStart a finite number.",
-                        );
+                    for mode in [
+                        AlphaModeDef::Blend,
+                        AlphaModeDef::Add,
+                        AlphaModeDef::Premultiply,
+                        AlphaModeDef::Multiply,
+                        AlphaModeDef::Mask(cutoff),
+                        AlphaModeDef::Opaque,
+                    ] {
+                        let selected = alpha_mode_label(current) == alpha_mode_label(mode);
+                        if ui
+                            .selectable_label(selected, alpha_mode_label(mode))
+                            .on_hover_text(alpha_mode_hint(mode))
+                            .clicked()
+                        {
+                            layer.effect.alpha_mode = mode;
+                        }
                     }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Blend:");
-                    let current = layer.effect.alpha_mode;
-                    egui::ComboBox::from_id_salt(id.with("alpha"))
-                        .selected_text(alpha_mode_label(current))
-                        .show_ui(ui, |ui| {
-                            let cutoff = match current {
-                                AlphaModeDef::Mask(c) => c,
-                                _ => 0.5,
-                            };
-                            for mode in [
-                                AlphaModeDef::Blend,
-                                AlphaModeDef::Add,
-                                AlphaModeDef::Premultiply,
-                                AlphaModeDef::Multiply,
-                                AlphaModeDef::Mask(cutoff),
-                                AlphaModeDef::Opaque,
-                            ] {
-                                let selected = alpha_mode_label(current) == alpha_mode_label(mode);
-                                if ui
-                                    .selectable_label(selected, alpha_mode_label(mode))
-                                    .on_hover_text(alpha_mode_hint(mode))
-                                    .clicked()
-                                {
-                                    layer.effect.alpha_mode = mode;
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text(alpha_mode_hint(current));
-                    if let AlphaModeDef::Mask(cutoff) = &mut layer.effect.alpha_mode {
-                        ui.label("cutoff:");
-                        *cutoff = ui_for_f32_ex(ui, *cutoff, 0.0, 1.0, 0.01);
-                    }
-                });
+                })
+                .response
+                .on_hover_text(alpha_mode_hint(current));
+            if let AlphaModeDef::Mask(cutoff) = &mut layer.effect.alpha_mode {
+                ui.label("cutoff:").on_hover_text("Pixels less opaque than this (0..1) are not drawn");
+                *cutoff = ui_for_f32_ex(ui, *cutoff, 0.0, 1.0, 0.01);
+            }
+        });
+        ui.end_row();
+    });
 
-                unique_collapsing(1, "Spawner", ui).show(ui, |ui| {
-                    ui_for_spawner(ui, &mut layer.effect.spawner);
-                });
+    ui.add_space(4.0);
+    egui::CollapsingHeader::new("Spawner")
+        .id_salt(id.with("spawner"))
+        .default_open(true)
+        .show(ui, |ui| ui_for_spawner(ui, &mut layer.effect.spawner))
+        .header_response
+        .on_hover_text(hints::SPAWNER);
 
-                let effect = &mut layer.effect;
-                ui_for_modifiers_list(app, ui, &mut effect.init_modifiers, "Init", id, |ui, list| {
-                    if ui.button(SetAttributeModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::SetAttribute(SetAttributeModifierEditor::default()));
-                    }
-                    if ui.button(SetPositionCircleModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::SetPositionCircle(
-                            SetPositionCircleModifierEditor::default(),
-                        ));
-                    }
-                    if ui.button(SetPositionSphereModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::SetPositionSphere(
-                            SetPositionSphereModifierEditor::default(),
-                        ));
-                    }
-                    if ui.button(SetVelocityCircleModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::SetVelocityCircle(
-                            SetVelocityCircleModifierEditor::default(),
-                        ));
-                    }
-                    if ui.button(SetVelocitySphereModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::SetVelocitySphere(
-                            SetVelocitySphereModifierEditor::default(),
-                        ));
-                    }
-                    if ui.button(SetVelocityTangentModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::SetVelocityTangent(
-                            SetVelocityTangentModifierEditor::default(),
-                        ));
-                    }
-                    if ui.button(InheritAttributeModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::InheritAttribute(
-                            InheritAttributeModifierEditor::default(),
-                        ));
-                    }
-                });
-                ui_for_modifiers_list(app, ui, &mut effect.update_modifiers, "Update", id, |ui, list| {
-                    if ui.button(AccelModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::AccelModifier(AccelModifierEditor::default()));
-                    }
-                    if ui.button(LinearDragModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::LinearDragModifier(LinearDragModifierEditor::default()));
-                    }
-                    if ui.button(EmitSpawnEventModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::EmitSpawnEventModifier(
-                            EmitSpawnEventModifierEditor::default(),
-                        ));
-                    }
-                    if ui.button(ConformToSphereModifierEditor::label()).clicked() {
-                        list.push(ModifierEditor::ConformToSphereModifier(
-                            ConformToSphereModifierEditor::default(),
-                        ));
-                    }
-                });
-                ui_for_modifiers_list(app, ui, &mut effect.render_modifiers, "Render", id, |ui, list| {
-                    if ui.button(SizeOverLifetimeModifierEditor::label()).clicked() {
-                        list.push(RenderModifierEditor::SizeOverLifetime(
-                            SizeOverLifetimeModifierEditor::default(),
-                        ));
-                    }
-                    if ui.button(ColorOverLifetimeModifierEditor::label()).clicked() {
-                        list.push(RenderModifierEditor::ColorOverLifetime(
-                            ColorOverLifetimeModifierEditor::default(),
-                        ));
-                    }
-                    if ui.button(ParticleTextureModifierEditor::label()).clicked() {
-                        list.push(RenderModifierEditor::ParticleTexture(
-                            ParticleTextureModifierEditor::default(),
-                        ));
-                    }
-                    if ui.button(OrientModifierEditor::label()).clicked() {
-                        list.push(RenderModifierEditor::Orient(OrientModifierEditor::default()));
-                    }
-                });
-            });
+    let effect = &mut layer.effect;
+    ui_for_modifiers_list(app, ui, &mut effect.init_modifiers, "Init", id, |ui, list| {
+        if ui.button(SetAttributeModifierEditor::label()).on_hover_text(hints::SET_ATTRIBUTE).clicked() {
+            list.push(ModifierEditor::SetAttribute(SetAttributeModifierEditor::default()));
+        }
+        if ui
+            .button(SetPositionCircleModifierEditor::label())
+            .on_hover_text("Particles start on (or inside) a circle")
+            .clicked()
+        {
+            list.push(ModifierEditor::SetPositionCircle(SetPositionCircleModifierEditor::default()));
+        }
+        if ui
+            .button(SetPositionSphereModifierEditor::label())
+            .on_hover_text("Particles start on (or inside) a sphere")
+            .clicked()
+        {
+            list.push(ModifierEditor::SetPositionSphere(SetPositionSphereModifierEditor::default()));
+        }
+        if ui
+            .button(SetVelocityCircleModifierEditor::label())
+            .on_hover_text("Particles fly outwards in a flat circle (speed in m/s)")
+            .clicked()
+        {
+            list.push(ModifierEditor::SetVelocityCircle(SetVelocityCircleModifierEditor::default()));
+        }
+        if ui
+            .button(SetVelocitySphereModifierEditor::label())
+            .on_hover_text("Particles fly outwards in all directions (speed in m/s)")
+            .clicked()
+        {
+            list.push(ModifierEditor::SetVelocitySphere(SetVelocitySphereModifierEditor::default()));
+        }
+        if ui
+            .button(SetVelocityTangentModifierEditor::label())
+            .on_hover_text("Particles spin around an axis (speed in m/s)")
+            .clicked()
+        {
+            list.push(ModifierEditor::SetVelocityTangent(SetVelocityTangentModifierEditor::default()));
+        }
+        if ui
+            .button(InheritAttributeModifierEditor::label())
+            .on_hover_text("Copies a value from the parent particle (child layers only)")
+            .clicked()
+        {
+            list.push(ModifierEditor::InheritAttribute(InheritAttributeModifierEditor::default()));
+        }
+    });
+    ui_for_modifiers_list(app, ui, &mut effect.update_modifiers, "Update", id, |ui, list| {
+        if ui.button(AccelModifierEditor::label()).on_hover_text(hints::ACCEL).clicked() {
+            list.push(ModifierEditor::AccelModifier(AccelModifierEditor::default()));
+        }
+        if ui.button(LinearDragModifierEditor::label()).on_hover_text(hints::DRAG).clicked() {
+            list.push(ModifierEditor::LinearDragModifier(LinearDragModifierEditor::default()));
+        }
+        if ui.button(EmitSpawnEventModifierEditor::label()).on_hover_text(hints::EMIT_SPAWN_EVENT).clicked() {
+            list.push(ModifierEditor::EmitSpawnEventModifier(EmitSpawnEventModifierEditor::default()));
+        }
+        if ui
+            .button(ConformToSphereModifierEditor::label())
+            .on_hover_text("Pulls particles onto the surface of a sphere")
+            .clicked()
+        {
+            list.push(ModifierEditor::ConformToSphereModifier(ConformToSphereModifierEditor::default()));
+        }
+    });
+    ui_for_modifiers_list(app, ui, &mut effect.render_modifiers, "Render", id, |ui, list| {
+        if ui
+            .button(SizeOverLifetimeModifierEditor::label())
+            .on_hover_text(hints::SIZE_OVER_LIFETIME)
+            .clicked()
+        {
+            list.push(RenderModifierEditor::SizeOverLifetime(SizeOverLifetimeModifierEditor::default()));
+        }
+        if ui
+            .button(ColorOverLifetimeModifierEditor::label())
+            .on_hover_text(hints::COLOR_OVER_LIFETIME)
+            .clicked()
+        {
+            list.push(RenderModifierEditor::ColorOverLifetime(ColorOverLifetimeModifierEditor::default()));
+        }
+        if ui
+            .button(ParticleTextureModifierEditor::label())
+            .on_hover_text(hints::TEXTURE_MAPPING)
+            .clicked()
+        {
+            list.push(RenderModifierEditor::ParticleTexture(ParticleTextureModifierEditor::default()));
+        }
+        if ui.button(OrientModifierEditor::label()).on_hover_text(hints::ORIENT).clicked() {
+            list.push(RenderModifierEditor::Orient(OrientModifierEditor::default()));
+        }
     });
 }
 
