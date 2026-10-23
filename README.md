@@ -56,6 +56,27 @@ Since `bevy_hanabi` 0.19, effect assets are serialized through Bevy's type regis
 
 > **Note:** `*.hanabi.ron` files exported by Omagari 0.17 or older can't be loaded by this version, because Hanabi's serialization format changed. Load the `*.omagari.ron` project in the editor and export it again.
 
+### Library API (in progress): VFX packages
+
+The library can also load a project directly (`*.omagari.ron`, v1 or v2, or a `*.vfx.ron` package) and play it attached to any entity. Effects are built from the project at load time, so no Hanabi type registration is needed, and the built-in textures are embedded in the library (`omagari://textures/<file>`).
+
+```rust
+app.add_plugins((DefaultPlugins, HanabiPlugin, omagari::OmagariPlugin));
+
+use omagari::{VfxCommandsExt, VfxControl, VfxFinished, VfxPackage};
+
+let package: Handle<VfxPackage> = asset_server.load("vfx/fireworks.omagari.ron");
+let instance: Entity = commands.spawn_vfx(&package, target); // child of `target`
+
+fn stop_it(mut vfx: VfxControl) {
+    vfx.stop(instance); // stops emitting, despawns when the last particle died
+    vfx.is_alive(instance);
+}
+// then a `VfxFinished { instance, target }` message is sent once.
+```
+
+The editor still saves v1 projects and exports `*.hanabi.ron`; switching it to the v2 format is the next step (see `docs/VFX_SYSTEM_PLAN.md`).
+
 ## Compatibility
 
 | `Omagari`    | `bevy_hanabi` | `bevy` | Notes |

@@ -66,31 +66,36 @@ Hard requirements from the user:
 
 ## 2. Current state (facts, read from the code)
 
-### Editor project format `*.omagari.ron`
-- `OmagariProject { effects: Vec<EffectEditor> }`: `src/controller.rs:18-21`. No other fields, no `#[serde(default)]` anywhere in the repo.
-- `EffectEditor { name, parent, capacity, spawner_settings, texture_index, init_modifiers, update_modifiers, render_modifiers }`: `src/effect.rs:154-164`.
-- The data model (`src/effect.rs`, `src/modifiers.rs`, `src/expr.rs`) is part of the **editor binary** and is mixed with egui UI code (`draw_ui`, `UiProvider`). The library cannot use it.
-- `EffectEditor::produce()` builds a hanabi `EffectAsset` (`src/effect.rs:369-447`). It always adds: one texture slot `"color"`, `AlphaMode::Blend`, `ParticleTextureModifier`, `OrientModifier::AlongVelocity`. Simulation space is never set (hanabi default **Global**).
-- Expressions: `ExprWriterEditor` / `ExprOperatorEditor` in `src/expr.rs` (literals, Rand*, Time, Age, Add/Sub/Mul, Uniform, Sin, Cos, Distance, Normalized, Vec3/Vec4, Pack4x8UNorm, Attr, ParentAttr). No property expression, no Mix/Clamp/Smoothstep.
-- Save: toolbar SAVE `src/main.rs:549-563`. Load: `load_project` `src/controller.rs:112-120`. Export: `export_effects_to_files` `src/controller.rs:75-95` (copy in `src/mcp/analysis.rs:753-766`).
-- `src/complex.rs` is dead code (not a module).
+Updated after P0a (data model split) and the library half of P0b (format v2 + runtime slice).
 
-### Export format `*.hanabi.ron` and library (`src/lib.rs`)
-- `ExportedProject { effects: Vec<ExportedEffect> }`, `ExportedEffect { name, parent, texture_index, effect_asset }`; the hanabi `EffectAsset` is serialized through **Bevy reflection** with hand-written (de)serializers (`lib.rs:164-391`). Consequences: depends on hanabi's internal type paths, every modifier must be reflection-registered in the game (`register_missing_hanabi_modifiers`, `lib.rs:40`), unknown fields are errors, old files cannot be migrated.
-- `OmagariPlugin` (`lib.rs:21-32`) registers the `EffectComplex` asset + loader and `despawn_effects_on_timer`.
-- `EffectComplex::spawn(commands, textures, pos, despawn_in)` (`lib.rs:65-103`): fixed world position, returns nothing, textures passed by the game in the editor's fixed order (`PARTICLE_TEXTURES`, `src/effect.rs:470-499`), abrupt despawn (TODO `lib.rs:153`).
+### Data model (`src/format/`, library, serde only)
+- **v1** `OmagariProject { effects: Vec<EffectEditor> }` (`format/mod.rs`), `EffectEditor` + v1 `produce()` (`format/particles.rs`), modifiers (`format/modifiers.rs`), expressions (`format/expr.rs`). The editor and MCP still use v1; their egui code lives in `src/editor/`. v1 `produce()` keeps the hard-coded texture slot `"color"`, `AlphaMode::Blend`, `ParticleTexture(ModulateOpacityFromR)`, `Orient(AlongVelocity)` and silently drops wrong-list modifiers (legacy path, golden-tested).
+- **v2** `ProjectV2` and its defs (`format/project.rs`): parameters (`ParamDef`, kind = variant of `default: Float(..) | Color(..)`), triggers + pulses, assets (`AssetDef { id, kind: Texture(TextureAssetDef) }`, purpose/wrap/color_space/filter/grid, `None` = purpose default), `fit: Option<FitDef>`, `layers: Vec<LayerDef>` (only `Particles(ParticlesLayerDef)` so far), sockets, `preview: Option<PreviewDef>`; `Binding<T> = Const | Param(name, keys)` with `evaluate`. Every struct is `#[serde(default)]`; unknown struct fields are ignored (no warning yet). Parameters, triggers, fit, sockets, `rate`, `visible`, `play` (beyond Loop/OnStart) and non-`Target` attach are data only.
+- `ParticleEffectDef { capacity, spawner: SpawnerDef, alpha_mode, init/update/render modifiers }` + `produce(name, simulation_space, warnings)` (`format/particles.rs`): texture sampling and orientation are render modifiers (`ParticleTexture`, `Orient`), blending is `alpha_mode`; the texture slot is added only with a `ParticleTexture` modifier. Wrong-list modifiers are skipped with a warning (checked with hanabi's `Modifier::context()`).
+- `format/hanabi_serde.rs`: the file format of the hanabi values in the model is Omagari's (attribute names, `SpawnerDef`/`CpuValueDef`, `ShapeDimension`, `EventEmitCondition`, `ColorBlendMode/Mask`), byte-identical to hanabi 0.19's serde. In memory the model still holds hanabi's `Attribute` etc.
+- `ProjectV2::from_ron_str[_with_warnings]` reads v1 (no `version` + `effects`) or v2; `migrate_v1` (`format/migrate.rs`) per 4.5 (built-in textures become `omagari://textures/<file>` assets with ids `cloud`, `glow1`, ...; v1-dropped modifiers are dropped with a warning). `to_package()` clears `preview`.
+- Tests: `tests/format_golden.rs` (v1 goldens; migrated projects export byte-identical to them; v2 goldens in `tests/golden/v2/`, incl. a hand-written `inputs/showcase.omagari.ron`).
+
+### Runtime (`src/runtime/`, added by `OmagariPlugin`)
+- Built-in textures (`runtime/builtin.rs`): the PNGs in `assets/` are `include_bytes!`-embedded into Bevy's `embedded` source as `embedded://omagari/textures/<file>`; `resolve_asset_path` maps `omagari://textures/<file>` to it (a real `omagari` source would need registering before `AssetPlugin`).
+- `VfxPackage` + `VfxPackageLoader` (`runtime/package.rs`, extensions `vfx.ron`, `omagari.ron`): migrates, loads textures as dependencies (loader settings from the texture def when not the sprite default), one `EffectAsset` per particle layer as labeled sub-asset `Layer<i>`, logs warnings (unsupported attach/play, missing texture/parent, wrong-list modifiers). `VfxPackage::build(project, &mut impl PackageAssets, warnings)` also builds from an in-memory project (`(&mut Assets<EffectAsset>, &AssetServer)`).
+- Instances (`runtime/instance.rs`): `commands.spawn_vfx(&pkg, target)` → `VfxInstance` entity `ChildOf(target)`; layers spawn as its children when the package and textures are loaded (`ParticleEffect`, `EffectMaterial`, `EffectParent`). `VfxControl::{stop, is_alive, state}`; stop deactivates `EffectSpawner`s, despawns after `VfxPackage::stop_duration()` (max init lifetime incl. parent chain, 5 s if unknown) and sends `VfxFinished` once. Lifecycle state machine `VfxLifecycle` (Starting/Running/Stopping/Finished). Despawning the target despawns its instances (no `VfxFinished`). Tests: `tests/runtime_instance.rs` (MinimalPlugins).
+
+### Legacy export `*.hanabi.ron` (`src/lib.rs`)
+- `ExportedProject` / `ExportedEffect` serialized through **Bevy reflection** (hand-written (de)serializers in `lib.rs`); every modifier must be reflection-registered in the game (`register_missing_hanabi_modifiers`). Still written by the editor EXPORT and MCP.
+- `EffectComplex::spawn(commands, textures, pos, despawn_in)`: fixed world position, returns nothing, textures passed in `PARTICLE_TEXTURES` order, abrupt despawn. Unchanged.
 
 ### Editor scene and UI (`src/main.rs`)
-- `Stage` = Air / Floor / Object (rock), `Backdrop` = light / dark / black (`main.rs:108-219`).
-- Camera: perspective `PanOrbitCamera`, `Hdr` + `Bloom::NATURAL` (`main.rs:62-99`). The game uses an orthographic isometric camera.
-- Preview entities are respawned only by RENDER or by `poll_preview_requests` (`src/controller.rs:30-64`). **Editing does not live-update. No undo/redo.**
-- UI: egui top toolbar + left effects panel (`app_ui`, `main.rs:439-635`), widgets in `src/helpers.rs`.
+- `Stage` = Air / Floor / Object (rock), `Backdrop` = light / dark / black (`main.rs`).
+- Camera: perspective `PanOrbitCamera`, `Hdr` + `Bloom::NATURAL` (`main.rs`). The game uses an orthographic isometric camera.
+- Preview entities are respawned only by RENDER or by `poll_preview_requests` (`spawn_particle_effects`, `src/controller.rs`), not through the runtime yet. **Editing does not live-update. No undo/redo.**
+- UI: egui top toolbar + left effects panel (`app_ui`, `main.rs`), widgets in `src/editor/`. Save: toolbar SAVE (v1); load: `load_project`; export: `export_effects_to_files` (`src/controller.rs`, `*.hanabi.ron`).
 - No glTF, animation, custom materials or WGSL yet.
 
 ### MCP server (`src/mcp/`)
-- `mod.rs`: JSON-RPC over stdio, tool list `mod.rs:113-213`, dispatch `mod.rs:215-322`; `preview_in_editor` writes `saved_effects/.preview_request`.
-- `analysis.rs`: `check_project` (`:770-924`), CPU simulation `simulate_project` (`:1189`), `analyze_project` (`:1625`), tests `:1857-1940` (guide recipes must pass with zero warnings).
-- `docs/CLAUDE_VFX_GUIDE.md` is compiled in (`include_str!`, `mod.rs:20`); keep it in sync with `analysis.rs`.
+- `mod.rs`: JSON-RPC over stdio, tool list and dispatch; `preview_in_editor` writes `saved_effects/.preview_request`. Works on v1 `OmagariProject`.
+- `analysis.rs`: `check_project`, CPU simulation `simulate_project`, `analyze_project`, tests at the end (guide recipes must pass with zero warnings).
+- `docs/CLAUDE_VFX_GUIDE.md` is compiled in (`include_str!`, `mod.rs`); keep it in sync with `analysis.rs`.
 
 ---
 
