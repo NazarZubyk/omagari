@@ -16,3 +16,4 @@ Use the `omagari` MCP server (`omagari --mcp`, configured in `.mcp.json`). Call 
 - `tests/format_golden.rs` compares exports and re-saved projects with `tests/golden/`; after an intended format/produce change, rerun it with `OMAGARI_UPDATE_GOLDEN=1` and review the diff. v1 golden inputs live in `tests/golden/inputs/`; `examples/` must equal `tests/golden/v2/`.
 - The game assets folder comes from `--game-assets <dir>` > `OMAGARI_GAME_ASSETS` > `omagari_settings.ron` (repo root, git-ignored) > the repo's `assets/`. It is registered as the `game` asset source at startup, so changes need a restart.
 - The VFX roadmap is `docs/VFX_SYSTEM_PLAN.md`.
+- To check the editor UI without seeing the screen, use the developer flags (`--open`, `--camera`, `--tab`, `--screenshot <png>`, … see README "Development") and read the saved screenshot.
