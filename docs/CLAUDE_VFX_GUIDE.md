@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game.
 
 ## Workflow
 
@@ -11,7 +11,7 @@ Fetch one section at a time with `guide(section: "...")`: workflow, format, laye
 3. **Save with `write_project(name, ron)`.** It refuses to save on errors and returns the analysis. Fix every ERROR. Read every WARNING; most are real problems.
 4. **Tune with `analyze_project(name)` until the numbers match the intent.** Check: spawn pattern, peak count vs capacity, lifetime, motion extents (is it the right size? does it go up/down/outward?), size in world units, colors and the alpha window, simulation space. Use `effect: "<layer name>"` to describe a single layer and save tokens.
 5. **For small changes, edit the saved file directly** (`saved_effects/<name>.omagari.ron`) with your file-edit tool, then call `check_project(name)` or `analyze_project(name)`. This is far cheaper than resending the whole RON.
-6. **Show it to the user with `preview_in_editor(name, stage, motion)`**, with stage `air`, `floor` or `object` (see section "design") and, for effects on moving characters, a `motion` such as `{"type": "circle", "radius": 3.0, "speed": 3.6}`. Ask what they see and what to change, in words ("too fast", "too dim", "should spread wider"). Section "design" maps common feedback to parameters. This replaces any unsaved edits the user had open in the editor, so say so if they were editing.
+6. **Show it to the user with `preview_in_editor(name, stage, motion)`**, with stage `air`, `floor`, `object`, `capsule` or `model` (see sections "design" and "model"; effects on characters belong on `model`, e.g. `model: "anim/tpose.glb", animation: "mixamo.com", animation_file: "anim/run.glb"`) and, for effects on moving characters, a `motion` such as `{"type": "circle", "radius": 3.0, "speed": 3.6}`. Ask what they see and what to change, in words ("too fast", "too dim", "should spread wider"). Section "design" maps common feedback to parameters. This replaces any unsaved edits the user had open in the editor, so say so if they were editing.
 7. **Export with `export_project(name, copy_to?)`** when the user is happy. It writes `<name>.vfx.ron` into the game assets folder's `vfx/` (or `exported_effects/` when none is configured). Section "game" says how the game plays it.
 
 The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSphere is approximate, the target stands still). Trust it for scale, timing, counts and colors, not for exact looks.
@@ -86,7 +86,7 @@ Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` 
 **Where a layer sits** (`attach`, per layer):
 - `Target` (default): the origin of the entity the game spawns the effect on.
 - `Socket("name")`: the layer follows a socket. A **package socket** is an entry of the project's `sockets` list: `(name: "head", node: Some("mixamorig:Head"), offset: (0.0, 0.1, 0.0))` is the node with that `Name` in the target's hierarchy (a bone or part of the game's model) plus an offset in metres in the node's space; `node: None` is an offset from the target's origin. A socket name that is not in `sockets` is used as a node name directly. Until the node exists (the model is still loading), and if it never does, the layer sits at the target's origin (+ the offset); the game logs a warning after 3 s.
-- `Segment(from: "a", to: "b")`: a line between two sockets, e.g. a blade's base and tip. The layer sits at the target's origin and every frame the runtime writes the two ends into `Property("segment_a")` and `Property("segment_b")` (vec3, in the layer's simulation space). Read them in init expressions to spawn along the line, e.g. position = `Operator(Add(Property("segment_a"), Operator(Multiply(Operator(Subtract(Property("segment_b"), Property("segment_a"))), RandFloat))))` (recipe "Blade edge sparks"). A Segment layer that reads neither gets a warning, and so does a layer that reads them without being a Segment.
+- `Segment(from: "a", to: "b")`: a line between two sockets, e.g. a blade's base and tip. The layer sits at the target's origin and every frame the runtime writes the two ends into `Property("segment_a")` and `Property("segment_b")` (vec3, in the layer's simulation space). Read them in init expressions to spawn along the line, e.g. position = `Operator(Add(Property("segment_a"), Operator(Multiply(Operator(Subtract(Property("segment_b"), Property("segment_a"))), RandFloat))))` (recipe "Blade edge sparks"), or within a radius around it (a capsule along the blade) with the editor's preset "Random point on segment with radius": `Mix(segment_a, segment_b, RandFloat) + Normalized(Cross(segment_b − segment_a, RandVec3 × 2 − 1) + Vec3((0.000001, 0.0, 0.0))) × radius × Sqrt(RandFloat)` (recipe "Blade sparks with a radius"). A Segment layer that reads neither gets a warning, and so does a layer that reads them without being a Segment.
 
 ```ron
 sockets: [
@@ -96,7 +96,7 @@ sockets: [
 ],
 ```
 
-Socket names and nodes come from the game's model: ask the user (bone names like `mixamorig:RightHand`, or the weapon entity's name). `check_project` lists socket names that are not package sockets as NOTES (they must exist as nodes in the model); the editor's preview target has no model, so the user sees nodes at the target's origin. Package sockets with `node: None` work everywhere. Give a child layer the same `attach` as its parent (the check warns otherwise).
+Socket names and nodes come from the game's model: `describe_model("anim/tpose.glb")` lists a model's node names (bones like `mixamorig:RightHand`), or ask the user (e.g. the weapon entity's name). With a preview model in the project (section "model"), `check_project` checks every socket node and attach name against the nodes below the preview target in that model and reports the missing ones as ERRORS; without one, names that are not package sockets are NOTES (they must exist as nodes in the game's model) and the editor shows such sockets at the target's origin. Package sockets with `node: None` work everywhere. In the editor the sockets show as dots with labels on the model (segments as lines); the user drags them or types offsets, so a weapon's base and tip need no change to the weapon file. Give a child layer the same `attach` as its parent (the check warns otherwise).
 
 **Size fit** (`fit`, per project):
 - `None` (default): the effect keeps its authored size, even on a scaled target.
@@ -106,6 +106,34 @@ Socket names and nodes come from the game's model: ask the user (bone names like
 Fit scales `Local` layers only: bevy_hanabi gives `Global` layers the emitter's position, not its scale, so the check warns about `Global` layers in a fitted project.
 
 **Lifecycle** (the game controls it, section "game"): an instance plays once its package has loaded and runs until the game stops it; stopping is smooth (no new particles, live ones finish), and restarting while stopping plays it again on the same instance. An instance whose root layers are all one-shot (`play: OnStart` with `cycle_count` ≥ 1) finishes by itself after its last spawn plus its longest particle life, so one-shot effects clean up without code; looping ones run until stopped.
+
+## Model
+
+The editor previews effects on the game's own models: the project's `preview` block (editor only, not exported) names a glTF model of the game assets folder, an animation clip, where the instance is attached and an optional weapon. `list_assets` lists the models (`.glb` / `.gltf`) with their height and clips; `describe_model(path)` gives a model's node hierarchy (bones marked, rest positions), mesh entities and materials, clips with lengths and the rest-pose bounds.
+
+```ron
+preview: Some((
+    stage: Model,                         // Air | Floor | Object | Capsule | Model
+    camera: Game,
+    model: Some("anim/tpose.glb"),        // glTF in the game assets folder
+    root_height: 0.9,                     // the target (game entity root) is 0.9 m above the model's feet
+    animation: Some("mixamo.com"),        // clip name in the file
+    animation_file: Some("anim/run.glb"), // clip from another file with the same skeleton (None = the model's file)
+    animation_speed: 1.0,
+    animation_triggers: [("swing", 0.3)], // fire "swing" at 0.3 s of every loop
+    attach_to: None,                      // node the instance is attached to (None = the model's root)
+    target: Body,                         // Body | Weapon: which model attach_to and the instance use
+    weapon: Some((model: "weapons/sword.glb", node: Some("mixamorig:RightHand"), offset: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0), scale: 1.0)),
+    motion: Some(Circle(radius: 3.0, speed: 3.6)),
+)),
+```
+
+- **Stages.** `Capsule`: a 0.7 × 1.8 m capsule whose centre is the target (a character's collider; floor 0.9 below). `Model`: the model, `root_height` metres below the target and turned to face the direction of travel (glTF +Z = forward); the capsule when no model is set or the file is missing. With `motion`, the model runs along the path.
+- **Animations.** Mixamo clips are separate files with the same skeleton, all named `"mixamo.com"`: pick the file with `animation_file` and the clip by name. They play by node names (no retargeting); the check warns when the clip's nodes are not in the model. The user pauses, loops, scrubs and changes the speed in the editor's bottom bar.
+- **Attach.** The instance is spawned on the target root, or on `attach_to` (a node of the body, or of the weapon with `target: Weapon`), like the game's `spawn_vfx(&package, entity)`. Sockets are found below it.
+- **Weapon.** A second model held by a node of the body, with a local offset (metres, ignoring the bone's scale) and rotation (degrees). It is a separate model: the own-model rule keeps body effects (fit height, later surface layers) off it. Put a weapon effect on it with `target: Weapon`, or give its sockets offsets from the hand bone without a weapon file.
+- **Checks.** With a model, `check_project` reports socket nodes, attach names, `attach_to` and the weapon node that the model does not have as errors, a clip the file does not have as an error, and a missing model file as a warning (the editor then shows the capsule).
+- `preview_in_editor(name, stage: "model", model: "anim/tpose.glb", animation: "mixamo.com", animation_file: "anim/run.glb", attach_to: "", root_height: 0.9)` shows it. In the editor's TRIGGERS tab, "at random point" fires at a point on the model's mesh bounds and "fire at clip time" sets `animation_triggers`.
 
 ## Parameters
 
@@ -146,7 +174,7 @@ A trigger does two things:
 
 **Payload.** `trigger_at` carries a world position, a direction and a strength (default: none, none, 1). Before an OnTrigger layer bursts, they are written into `Property("trigger_pos")` (vec3), `Property("trigger_dir")` (vec3, unit length) and `Property("trigger_strength")` (f32), in the layer's simulation space; without a position the layer's own origin is used, without a direction +Y. Spawn at the contact point with `SetAttribute((attr: "position", attr_expr: Property("trigger_pos")))` and fly along the direction with `Operator(Multiply(Property("trigger_dir"), ...))`. Use `simulation_space: Global` so the burst stays where it hit. Recipe "Hit burst at the contact point".
 
-`check_project` reports OnTrigger layers whose trigger does not exist, pulses on unknown or colour parameters, and notes triggers that do nothing. `analyze_project` simulates an OnTrigger layer as if its trigger fired once at t = 0. `preview_in_editor(name, trigger: "hit")` fires a trigger for the user; the editor's TRIGGERS tab has a FIRE button, "at random point" (a payload near the target), and auto-fire every N seconds (saved in the project's preview block as `auto_triggers: [("tick", 1.0)]`).
+`check_project` reports OnTrigger layers whose trigger does not exist, pulses on unknown or colour parameters, and notes triggers that do nothing. `analyze_project` simulates an OnTrigger layer as if its trigger fired once at t = 0. `preview_in_editor(name, trigger: "hit")` fires a trigger for the user; the editor's TRIGGERS tab has a FIRE button, "at random point" (a payload on the preview model's or capsule's bounds, near the target without one), auto-fire every N seconds (saved in the project's preview block as `auto_triggers: [("tick", 1.0)]`) and fire at a clip time of the preview animation (`animation_triggers: [("swing", 0.3)]`, section "model").
 
 ## Spawner
 
@@ -867,6 +895,84 @@ The radius (1.4) is just outside the rock; the lower part of the bubble is under
 
 In the game, give the sockets the weapon's node (`node: Some("Sword")`) or put the package on the weapon entity and keep `node: None` with offsets along the blade. `Global` leaves the sparks behind during a swing; `Local` keeps them on the blade.
 
+### Blade sparks with a radius (segment preset, swing burst, capsule preview)
+
+```ron
+(
+    version: 2,
+    triggers: [(name: "swing")],
+    assets: [(id: "spark1", kind: Texture((path: "omagari://textures/spark1.png")))],
+    sockets: [
+        (name: "blade_base", node: None, offset: (0.3, 0.0, 0.0)),
+        (name: "blade_tip", node: None, offset: (0.3, 0.9, 0.0)),
+    ],
+    layers: [
+        Particles((
+            name: "blade_glow",
+            attach: Segment(from: "blade_base", to: "blade_tip"),
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("spark1"),
+            effect: (
+                capacity: 128,
+                spawner: (count: Single(60.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.3), Float(0.6))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.04))),
+                    SetAttribute((attr: "position", attr_expr: Operator(Add(Operator(Mix(Property("segment_a"), Property("segment_b"), RandFloat)), Operator(Multiply(Operator(Normalized(Operator(Add(Operator(Cross(Operator(Subtract(Property("segment_b"), Property("segment_a"))), Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))))), Vec3((0.000001, 0.0, 0.0)))))), Operator(Multiply(Float(0.04), Operator(Sqrt(RandFloat)))))))))),
+                    SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 0.3, 0.0)))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (1.0, 2.0, 4.0, 0.0)), (0.2, (1.0, 2.0, 4.0, 1.0)), (1.0, (0.3, 0.6, 2.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+        Particles((
+            name: "swing_burst",
+            attach: Segment(from: "blade_base", to: "blade_tip"),
+            simulation_space: Global,
+            play: OnTrigger("swing"),
+            texture: Some("spark1"),
+            effect: (
+                capacity: 128,
+                spawner: (count: Single(60.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.3), Float(0.6))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.05))),
+                    SetAttribute((attr: "position", attr_expr: Operator(Add(Operator(Mix(Property("segment_a"), Property("segment_b"), RandFloat)), Operator(Multiply(Operator(Normalized(Operator(Add(Operator(Cross(Operator(Subtract(Property("segment_b"), Property("segment_a"))), Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))))), Vec3((0.000001, 0.0, 0.0)))))), Operator(Multiply(Float(0.05), Operator(Sqrt(RandFloat)))))))))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Float(2.5))))),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((drag_expr: Float(3.0))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (6.0, 3.0, 1.0, 1.0)), (1.0, (2.0, 0.5, 0.1, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule, camera: Game, auto_triggers: [("swing", 1.0)])),
+)
+```
+
+The glow fills a 4 cm capsule around the blade (the editor's Position preset "Random point on segment with radius" writes this expression); `swing` bursts sparks off the whole blade. On a model, give the sockets a hand bone (`node: Some("mixamorig:RightHand")`, offsets along the hand's Y axis) or the weapon's nodes, and use `animation_triggers: [("swing", 0.3)]` in the preview to fire it at the hit frame of a swing clip (section "model").
+
 ### Intensity progression (one parameter drives rate, colour and size)
 
 ```ron
@@ -1096,6 +1202,8 @@ Made for a 1.8 m character: the socket sits 1 m up, particles start at the feet 
 - `air`: the spawn point is in the middle of the room, nothing nearby. Shows everything, including particles that fall.
 - `floor`: the floor is at y = 0, under the spawn point, like ground in a game. Particles below y = 0 are hidden; `analyze_project` warns about that.
 - `object`: a rock about 2 units wide (radius ~1, 1.6 tall) is centered on the spawn point and rests on the floor. Use it for shields, barriers, auras and hit effects on a body; particles inside the rock are hidden.
+- `capsule`: a 0.7 × 1.8 m capsule (a character) whose centre is the spawn point, standing on the floor 0.9 below.
+- `model`: the game's model from the project's preview block (section "model"), e.g. a Mixamo character running with a clip of another file; the capsule without one.
 
 Pick the stage that matches how the game uses the effect. The PREVIEW tab's target motion (or `preview_in_editor(..., motion: {"type": "circle", "radius": 3.0, "speed": 3.6})`, also `back_and_forth` with `distance`, or `none`) moves the target, so the user sees whether layers stay on a running character (`Local`) or trail behind (`Global`); the setting is saved in the project's `preview` block. The BG button (or the PREVIEW tab) switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow. STOP stops the effect the way the game does: no new particles, live ones finish. To judge how big an effect reads in the game, ask the user to switch CAMERA to GAME (the game's orthographic isometric view, 16 m visible height).
 

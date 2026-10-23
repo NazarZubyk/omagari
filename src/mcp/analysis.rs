@@ -1485,14 +1485,32 @@ fn texture_label(project: &ProjectV2, layer: &ParticlesLayerDef) -> String {
     }
 }
 
-/// Attach checks of one layer: socket names, segment property use.
-fn check_attach(d: &mut Diagnostics, project: &ProjectV2, layers: &[&ParticlesLayerDef], index: usize) {
+/// Attach checks of one layer: socket names (against the preview model's
+/// nodes when there is one), segment property use.
+fn check_attach(
+    d: &mut Diagnostics,
+    project: &ProjectV2,
+    layers: &[&ParticlesLayerDef],
+    index: usize,
+    model: Option<&PreviewModelNodes>,
+) {
     let layer = layers[index];
     let name = layer.name.as_str();
     for socket in layer.attach.socket_names() {
         if socket.is_empty() {
             d.error(name, "attach names an empty socket");
-        } else if project.socket(socket).is_none() {
+        } else if project.socket(socket).is_some() {
+        } else if let Some(model) = model {
+            if !model.names.iter().any(|n| n == socket) {
+                d.error(
+                    name,
+                    format!(
+                        "\"{}\" is neither a package socket nor a node {}; the layer would sit at the target root",
+                        socket, model.place
+                    ),
+                );
+            }
+        } else {
             let has_model = project.preview.as_ref().is_some_and(|p| p.model.is_some());
             d.note(
                 name,
@@ -1633,6 +1651,14 @@ fn check_params_and_triggers(d: &mut Diagnostics, project: &ProjectV2) {
             }
             if !(*every > 0.0) {
                 d.warnings.push(format!("preview auto-fires \"{}\" every {} s; use more than 0", name, every));
+            }
+        }
+        for (name, at) in preview.animation_triggers.iter() {
+            if project.trigger(name).is_none() {
+                d.warnings.push(format!("preview fires \"{}\" at clip time {} s, which is not a trigger", name, at));
+            }
+            if !(*at >= 0.0) {
+                d.warnings.push(format!("preview fires \"{}\" at clip time {} s; use 0 or more", name, at));
             }
         }
     }
@@ -1880,6 +1906,161 @@ fn check_render_modifiers(d: &mut Diagnostics, project: &ProjectV2, layer: &Part
     }
 }
 
+/// The nodes sockets can resolve to: those below the preview instance's
+/// target in the preview model(s).
+pub struct PreviewModelNodes {
+    pub names: Vec<String>,
+    /// "of the preview model <file>" / "below <node> in ...", for messages.
+    pub place: String,
+}
+
+/// Checks the preview block's model settings against the files in the game
+/// assets folder (model, weapon, animation clip and its skeleton, animation
+/// triggers, attach_to) and returns the node names sockets can use, when a
+/// model is there to check against.
+pub fn check_preview_model(d: &mut Diagnostics, project: &ProjectV2, assets_root: &Path) -> Option<PreviewModelNodes> {
+    use crate::model_info::ModelInfo;
+    let preview = project.preview.as_ref()?;
+    let load = |d: &mut Diagnostics, what: &str, path: &str| -> Option<std::sync::Arc<ModelInfo>> {
+        let file = assets_root.join(path);
+        if !file.is_file() {
+            d.warn(
+                "preview",
+                format!(
+                    "{} {} is not in the game assets folder ({}); the editor shows the capsule and sockets are not checked against it",
+                    what,
+                    path,
+                    assets_root.display()
+                ),
+            );
+            return None;
+        }
+        match ModelInfo::cached(&file) {
+            Ok(info) => Some(info),
+            Err(e) => {
+                d.error("preview", format!("{} {}", what, e));
+                None
+            }
+        }
+    };
+    let body = preview.model.as_deref().and_then(|m| load(d, "model", m));
+    let weapon_def = preview.weapon.as_ref().filter(|w| !w.model.is_empty());
+    let weapon = weapon_def.and_then(|w| load(d, "weapon", &w.model));
+    if let (Some(w), Some(body)) = (weapon_def, &body) {
+        if let Some(node) = w.node.as_deref().filter(|n| body.node(n).is_none()) {
+            d.error(
+                "preview",
+                format!("weapon node \"{}\" is not a node of the model {}", node, preview.model.as_deref().unwrap_or_default()),
+            );
+        }
+    }
+    if preview.weapon.as_ref().is_some_and(|w| w.model.is_empty()) {
+        d.warn("preview", "the weapon has no model file");
+    }
+
+    // The animation clip and whether it fits the model's skeleton.
+    if let Some(clip_name) = &preview.animation {
+        match preview.animation_source() {
+            None => d.warn("preview", format!("animation \"{}\" without a model or animation_file", clip_name)),
+            Some(source) => {
+                let info = if Some(source) == preview.model.as_deref() { body.clone() } else { load(d, "animation file", source) };
+                if let Some(info) = info {
+                    match info.animation(clip_name) {
+                        None => {
+                            let known: Vec<String> = info.animations.iter().map(|a| format!("\"{}\"", a.label())).collect();
+                            d.error(
+                                "preview",
+                                format!(
+                                    "{} has no animation \"{}\" ({})",
+                                    source,
+                                    clip_name,
+                                    if known.is_empty() { "it has none".into() } else { format!("it has {}", known.join(", ")) }
+                                ),
+                            );
+                        }
+                        Some(clip) => {
+                            if let Some(body) = &body {
+                                let matching = body.matching_targets(clip);
+                                if matching < clip.targets.len() {
+                                    d.warn(
+                                        "preview",
+                                        format!(
+                                            "{} of the {} nodes animation \"{}\" ({}) moves are not in the model {} (Bevy matches them by their name path from the scene root): they stay still",
+                                            clip.targets.len() - matching,
+                                            clip.targets.len(),
+                                            clip_name,
+                                            source,
+                                            preview.model.as_deref().unwrap_or_default()
+                                        ),
+                                    );
+                                }
+                            }
+                            for (name, at) in preview.animation_triggers.iter() {
+                                if *at > clip.duration + 1e-4 {
+                                    d.warn(
+                                        "preview",
+                                        format!(
+                                            "\"{}\" fires at clip time {} s, after the end of the {:.2} s clip: it never fires",
+                                            name, at, clip.duration
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else if !preview.animation_triggers.is_empty() {
+        d.warn("preview", "animation triggers are set, but no animation plays");
+    }
+
+    // The nodes below the instance target.
+    let (info, file) = match preview.target {
+        PreviewTargetModel::Weapon => match (&weapon, weapon_def) {
+            (Some(info), Some(w)) => (info.clone(), w.model.clone()),
+            _ => {
+                if weapon_def.is_none() {
+                    d.error("preview", "target is Weapon, but there is no weapon");
+                }
+                return None;
+            }
+        },
+        PreviewTargetModel::Body => (body.clone()?, preview.model.clone().unwrap_or_default()),
+    };
+    let (mut names, place): (Vec<String>, String) = match &preview.attach_to {
+        None => (info.nodes.iter().map(|n| n.name.clone()).collect(), format!("of the preview model {}", file)),
+        Some(node) => match info.node(node) {
+            None => {
+                d.error(
+                    "preview",
+                    format!("attach_to \"{}\" is not a node of the preview model {} (describe_model lists them)", node, file),
+                );
+                return None;
+            }
+            Some(at) => (
+                (0..info.nodes.len())
+                    .filter(|&i| i != at && info.is_under(i, at))
+                    .map(|i| info.nodes[i].name.clone())
+                    .collect(),
+                format!("below \"{}\" in the preview model {}", node, file),
+            ),
+        },
+    };
+    // A weapon held below the body target is part of its hierarchy too.
+    if let (PreviewTargetModel::Body, Some(w), Some(winfo)) = (preview.target, weapon_def, &weapon) {
+        let held = match (&w.node, &preview.attach_to) {
+            (_, None) => true,
+            (Some(n), Some(_)) => names.contains(n),
+            (None, Some(_)) => false,
+        };
+        if held {
+            names.extend(winfo.nodes.iter().map(|n| n.name.clone()));
+        }
+    }
+    Some(PreviewModelNodes { names, place })
+}
+
 /// Runs every static check on a project: structure, assets, expression types,
 /// the bevy_hanabi shader generation and a package round trip. Relative
 /// texture paths are looked up in `assets_root` (the game assets folder).
@@ -1939,6 +2120,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
     }
 
     check_params_and_triggers(&mut d, project);
+    let model_nodes = check_preview_model(&mut d, project, assets_root);
 
     for (i, socket) in project.sockets.iter().enumerate() {
         let label = format!("socket \"{}\"", socket.name);
@@ -1950,6 +2132,10 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         }
         if socket.node.as_deref() == Some("") {
             d.error(&label, "node is an empty name; use None for the target root");
+        } else if let (Some(node), Some(model)) = (&socket.node, &model_nodes) {
+            if !model.names.iter().any(|n| n == node) {
+                d.error(&label, format!("node \"{}\" is not a node {}; the socket would sit at the target root", node, model.place));
+            }
         }
         if !layers.iter().any(|l| l.attach.socket_names().contains(&socket.name.as_str())) {
             d.warn(&label, "not used by any layer");
@@ -1997,7 +2183,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
             None => {}
         }
 
-        check_attach(&mut d, project, &layers, i);
+        check_attach(&mut d, project, &layers, i, model_nodes.as_ref());
         check_layer_bindings(&mut d, project, layer);
 
         if let Some(parent) = &layer.parent {
@@ -3687,6 +3873,70 @@ mod tests {
 
     fn has(list: &[String], needle: &str) -> bool {
         list.iter().any(|m| m.contains(needle))
+    }
+
+    /// With a preview model, socket nodes, attach names, `attach_to`, the
+    /// weapon node and the clip are checked against the model's files.
+    #[test]
+    fn sockets_and_preview_are_checked_against_the_model() {
+        let dir = crate::asset_library::tests::temp_dir("check_model");
+        crate::model_info::tests::write_fixture(&dir.join("hero.gltf"), Some(("Wave", 1.5)));
+        crate::model_info::tests::write_fixture(&dir.join("swing.gltf"), Some(("Swing", 0.5)));
+        let effect = |init: &str| format!("init_modifiers: [SetAttribute((attr: \"age\", attr_expr: Float(0.0))), {}],", init);
+        let mut p = layer_project(r#"play: OnStart, attach: Segment(from: "hand", to: "Spine"),"#, &effect(SEGMENT_POSITION));
+        p.sockets = vec![SocketDef { name: "hand".into(), node: Some("RightHand".into()), offset: Vec3::Y }];
+        // Without a model: node names are notes.
+        let d = check_project(&p, &dir);
+        assert!(d.errors.is_empty() && has(&d.notes, "\"Spine\" is not a package socket"), "{}", d.render());
+
+        p.preview = Some(PreviewDef { stage: PreviewStage::Model, model: Some("hero.gltf".into()), ..Default::default() });
+        let d = check_project(&p, &dir);
+        assert!(d.errors.is_empty() && d.notes.is_empty() && !has(&d.warnings, "preview"), "{}", d.render());
+
+        // Nodes the model does not have are errors.
+        p.sockets[0].node = Some("LeftHand".into());
+        p.layers[0].as_particles_mut().unwrap().attach = AttachDef::Segment { from: "hand".into(), to: "Tail".into() };
+        let d = check_project(&p, &dir);
+        assert!(has(&d.errors, "[socket \"hand\"] node \"LeftHand\" is not a node of the preview model hero.gltf"), "{}", d.render());
+        assert!(has(&d.errors, "\"Tail\" is neither a package socket nor a node of the preview model hero.gltf"), "{}", d.render());
+        assert!(!has(&d.notes, "Tail"), "{}", d.render());
+
+        // attach_to: sockets must be below it.
+        p.sockets[0].node = Some("RightHand".into());
+        p.layers[0].as_particles_mut().unwrap().attach = AttachDef::Segment { from: "hand".into(), to: "Hips".into() };
+        p.preview.as_mut().unwrap().attach_to = Some("Spine".into());
+        let d = check_project(&p, &dir);
+        assert!(has(&d.errors, "\"Hips\" is neither a package socket nor a node below \"Spine\""), "{}", d.render());
+        assert!(!has(&d.errors, "socket \"hand\""), "RightHand is below Spine: {}", d.render());
+        p.preview.as_mut().unwrap().attach_to = Some("Neck".into());
+        assert!(has(&check_project(&p, &dir).errors, "attach_to \"Neck\" is not a node of the preview model"));
+        p.preview.as_mut().unwrap().attach_to = None;
+
+        // Clips: by name in the animation file, triggers within the clip.
+        let preview = p.preview.as_mut().unwrap();
+        preview.animation = Some("Swing".into());
+        preview.animation_file = Some("swing.gltf".into());
+        preview.animation_triggers = vec![("hit".into(), 0.8)];
+        let d = check_project(&p, &dir);
+        assert!(!has(&d.errors, "animation"), "{}", d.render());
+        assert!(has(&d.warnings, "\"hit\" fires at clip time 0.8 s, after the end of the 0.50 s clip"), "{}", d.render());
+        assert!(has(&d.warnings, "preview fires \"hit\" at clip time 0.8 s, which is not a trigger"), "{}", d.render());
+        p.preview.as_mut().unwrap().animation = Some("Run".into());
+        assert!(has(&check_project(&p, &dir).errors, "swing.gltf has no animation \"Run\" (it has \"Swing\")"));
+
+        // A weapon held by a node the body lacks; a missing model file.
+        let preview = p.preview.as_mut().unwrap();
+        preview.animation = None;
+        preview.animation_triggers.clear();
+        preview.weapon = Some(PreviewWeaponDef { model: "swing.gltf".into(), node: Some("Claw".into()), ..Default::default() });
+        assert!(has(&check_project(&p, &dir).errors, "weapon node \"Claw\" is not a node of the model hero.gltf"));
+        let preview = p.preview.as_mut().unwrap();
+        preview.weapon = None;
+        preview.model = Some("villain.glb".into());
+        let d = check_project(&p, &dir);
+        assert!(has(&d.warnings, "model villain.glb is not in the game assets folder"), "{}", d.render());
+        assert!(d.errors.is_empty() && has(&d.notes, "\"Hips\" is not a package socket"), "no model, notes again: {}", d.render());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The editor shows each layer's messages next to the layer.
