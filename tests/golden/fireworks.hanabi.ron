@@ -1,0 +1,455 @@
+(
+    effects: [
+        (
+            name: "Rocket",
+            parent: None,
+            texture_index: Some(5),
+            effect_asset: (
+                name: "Rocket",
+                capacity: 1,
+                spawner: (
+                    count: Single(3.0),
+                    spawn_duration: Single(0.1),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                z_layer_2d: 0.0,
+                simulation_space: Global,
+                simulation_condition: WhenVisible,
+                prng_seed: 0,
+                init_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "velocity",
+                            value: "#10",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "age",
+                            value: "#11",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "lifetime",
+                            value: "#14",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "u32_0",
+                            value: "#21",
+                        ),
+                    },
+                ],
+                update_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::accel::AccelModifier": (
+                            accel: "#22",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::force::LinearDragModifier": (
+                            drag: "#23",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::EmitSpawnEventModifier": (
+                            condition: Always,
+                            count: "#24",
+                            child_index: 0,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::EmitSpawnEventModifier": (
+                            condition: OnDie,
+                            count: "#25",
+                            child_index: 1,
+                        ),
+                    },
+                ],
+                render_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::output::ParticleTextureModifier": (
+                            texture_slot: "#26",
+                            sample_mapping: ModulateOpacityFromR,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::OrientModifier": (
+                            mode: AlongVelocity,
+                            rotation: None,
+                        ),
+                    },
+                ],
+                motion_integration: PostUpdate,
+                module: (
+                    expressions: [
+                        Literal(Scalar(Float(-10.0))),
+                        Literal(Scalar(Float(10.0))),
+                        Binary(
+                            op: UniformRand,
+                            left: "#1",
+                            right: "#2",
+                        ),
+                        Literal(Scalar(Float(140.0))),
+                        Literal(Scalar(Float(160.0))),
+                        Binary(
+                            op: UniformRand,
+                            left: "#4",
+                            right: "#5",
+                        ),
+                        Literal(Scalar(Float(-10.0))),
+                        Literal(Scalar(Float(10.0))),
+                        Binary(
+                            op: UniformRand,
+                            left: "#7",
+                            right: "#8",
+                        ),
+                        Ternary(
+                            op: Vec3,
+                            first: "#3",
+                            second: "#6",
+                            third: "#9",
+                        ),
+                        Literal(Scalar(Float(0.0))),
+                        Literal(Scalar(Float(0.8))),
+                        Literal(Scalar(Float(1.2))),
+                        Binary(
+                            op: UniformRand,
+                            left: "#12",
+                            right: "#13",
+                        ),
+                        BuiltIn((
+                            operator: Rand(Scalar(Float)),
+                        )),
+                        BuiltIn((
+                            operator: Rand(Scalar(Float)),
+                        )),
+                        BuiltIn((
+                            operator: Rand(Scalar(Float)),
+                        )),
+                        Ternary(
+                            op: Vec3,
+                            first: "#15",
+                            second: "#16",
+                            third: "#17",
+                        ),
+                        Literal(Scalar(Float(1.0))),
+                        Binary(
+                            op: Vec4XyzW,
+                            left: "#18",
+                            right: "#19",
+                        ),
+                        Unary(
+                            op: Pack4x8unorm,
+                            expr: "#20",
+                        ),
+                        Literal(Vector(Vec3((0.0, -16.0, 0.0)))),
+                        Literal(Scalar(Float(4.0))),
+                        Literal(Scalar(Uint(5))),
+                        Literal(Scalar(Uint(1000))),
+                        Literal(Scalar(Uint(0))),
+                    ],
+                    properties: [],
+                    texture_layout: (
+                        layout: [
+                            (
+                                name: "color",
+                            ),
+                        ],
+                    ),
+                ),
+                alpha_mode: Blend,
+                mesh: None,
+            ),
+        ),
+        (
+            name: "Sparkle",
+            parent: Some("Rocket"),
+            texture_index: Some(5),
+            effect_asset: (
+                name: "Sparkle",
+                capacity: 1000,
+                spawner: (
+                    count: Single(1.0),
+                    spawn_duration: Single(0.0),
+                    period: Single(0.0),
+                    cycle_count: 1,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                z_layer_2d: 0.0,
+                simulation_space: Global,
+                simulation_condition: WhenVisible,
+                prng_seed: 0,
+                init_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "velocity",
+                            value: "#7",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "lifetime",
+                            value: "#8",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::InheritAttributeModifier": (
+                            attribute: "position",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "color",
+                            value: "#9",
+                        ),
+                    },
+                ],
+                update_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::accel::AccelModifier": (
+                            accel: "#10",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::force::LinearDragModifier": (
+                            drag: "#11",
+                        ),
+                    },
+                ],
+                render_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::output::ColorOverLifetimeModifier": (
+                            gradient: (
+                                keys: [
+                                    (
+                                        ratio: 0.0,
+                                        value: (4.0, 4.0, 4.0, 1.0),
+                                    ),
+                                    (
+                                        ratio: 0.8,
+                                        value: (4.0, 4.0, 4.0, 1.0),
+                                    ),
+                                    (
+                                        ratio: 1.0,
+                                        value: (4.0, 4.0, 4.0, 0.0),
+                                    ),
+                                ],
+                            ),
+                            blend: Modulate,
+                            mask: (15),
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::ParticleTextureModifier": (
+                            texture_slot: "#12",
+                            sample_mapping: ModulateOpacityFromR,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::OrientModifier": (
+                            mode: AlongVelocity,
+                            rotation: None,
+                        ),
+                    },
+                ],
+                motion_integration: PostUpdate,
+                module: (
+                    expressions: [
+                        BuiltIn((
+                            operator: Rand(Vector((
+                                elem_type: Float,
+                                count: 3,
+                            ))),
+                        )),
+                        Literal(Vector(Vec3((2.0, 2.0, 2.0)))),
+                        Binary(
+                            op: Mul,
+                            left: "#1",
+                            right: "#2",
+                        ),
+                        Literal(Vector(Vec3((1.0, 1.0, 1.0)))),
+                        Binary(
+                            op: Sub,
+                            left: "#3",
+                            right: "#4",
+                        ),
+                        Literal(Vector(Vec3((12.0, 12.0, 12.0)))),
+                        Binary(
+                            op: Mul,
+                            left: "#5",
+                            right: "#6",
+                        ),
+                        Literal(Scalar(Float(0.2))),
+                        ParentAttribute((
+                            attr: "u32_0",
+                        )),
+                        Literal(Vector(Vec3((0.0, -16.0, 0.0)))),
+                        Literal(Scalar(Float(4.0))),
+                        Literal(Scalar(Uint(0))),
+                    ],
+                    properties: [],
+                    texture_layout: (
+                        layout: [
+                            (
+                                name: "color",
+                            ),
+                        ],
+                    ),
+                ),
+                alpha_mode: Blend,
+                mesh: None,
+            ),
+        ),
+        (
+            name: "Trails",
+            parent: Some("Rocket"),
+            texture_index: Some(5),
+            effect_asset: (
+                name: "Trails",
+                capacity: 16384,
+                spawner: (
+                    count: Single(500.0),
+                    spawn_duration: Single(1.0),
+                    period: Single(1.0),
+                    cycle_count: 0,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                z_layer_2d: 0.0,
+                simulation_space: Global,
+                simulation_condition: WhenVisible,
+                prng_seed: 0,
+                init_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::attr::InheritAttributeModifier": (
+                            attribute: "position",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "velocity",
+                            value: "#10",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "lifetime",
+                            value: "#11",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "color",
+                            value: "#12",
+                        ),
+                    },
+                ],
+                update_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::accel::AccelModifier": (
+                            accel: "#13",
+                        ),
+                    },
+                ],
+                render_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::output::ColorOverLifetimeModifier": (
+                            gradient: (
+                                keys: [
+                                    (
+                                        ratio: 0.3,
+                                        value: (4.0, 4.0, 0.0, 1.0),
+                                    ),
+                                    (
+                                        ratio: 0.6,
+                                        value: (4.0, 4.0, 4.0, 0.0),
+                                    ),
+                                    (
+                                        ratio: 1.0,
+                                        value: (4.0, 4.0, 4.0, 0.0),
+                                    ),
+                                ],
+                            ),
+                            blend: Modulate,
+                            mask: (15),
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::ParticleTextureModifier": (
+                            texture_slot: "#14",
+                            sample_mapping: ModulateOpacityFromR,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::OrientModifier": (
+                            mode: AlongVelocity,
+                            rotation: None,
+                        ),
+                    },
+                ],
+                motion_integration: PostUpdate,
+                module: (
+                    expressions: [
+                        BuiltIn((
+                            operator: Rand(Vector((
+                                elem_type: Float,
+                                count: 3,
+                            ))),
+                        )),
+                        Literal(Scalar(Float(2.0))),
+                        Binary(
+                            op: Mul,
+                            left: "#1",
+                            right: "#2",
+                        ),
+                        Literal(Scalar(Float(1.0))),
+                        Binary(
+                            op: Sub,
+                            left: "#3",
+                            right: "#4",
+                        ),
+                        Unary(
+                            op: Normalize,
+                            expr: "#5",
+                        ),
+                        Literal(Scalar(Float(40.0))),
+                        Literal(Scalar(Float(60.0))),
+                        Binary(
+                            op: UniformRand,
+                            left: "#7",
+                            right: "#8",
+                        ),
+                        Binary(
+                            op: Mul,
+                            left: "#6",
+                            right: "#9",
+                        ),
+                        Literal(Scalar(Float(2.08))),
+                        ParentAttribute((
+                            attr: "u32_0",
+                        )),
+                        Literal(Vector(Vec3((0.0, -16.0, 0.0)))),
+                        Literal(Scalar(Uint(0))),
+                    ],
+                    properties: [],
+                    texture_layout: (
+                        layout: [
+                            (
+                                name: "color",
+                            ),
+                        ],
+                    ),
+                ),
+                alpha_mode: Blend,
+                mesh: None,
+            ),
+        ),
+    ],
+)
