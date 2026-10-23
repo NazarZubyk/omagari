@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, recipes, design, game.
 
 ## Workflow
 
@@ -18,7 +18,7 @@ The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSph
 
 ## Format
 
-A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"). All layers play at the same point, the target (the origin in the editor); Y is up.
+A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"); a `Shape` layer draws a simple 3D shape (sphere, ring, arc, ...) with the same shader (section "shapes"). All layers play at the same point, the target (the origin in the editor); Y is up.
 
 ```ron
 (
@@ -75,7 +75,7 @@ Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` 
 | `texture` | `None` / `Some("asset id")` | The texture the `ParticleTexture` render modifier samples. |
 | `effect` | struct | Capacity, spawner, blending, modifiers. |
 
-The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces".
+The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces"; so do `Shape` layers (shield bubbles, ground rings, shockwaves, slash arcs): section "shapes".
 
 **Simulation space** matters as soon as the target moves (a running character, a swung weapon):
 - `Local`: particles move with the target. Use it for anything that should stay on the character: auras, shields, orbiting sparks, status effects. It is the default.
@@ -153,6 +153,7 @@ parameters: [
 Where a parameter is used:
 - **Expressions**: `Param("intensity")` is f32 for a number parameter, vec4 for a colour. Init modifiers read it when a particle is born, update modifiers every frame. Typical: `Operator(Mix(a, b, Param("intensity")))` blends from `a` at 0 to `b` at 1 (sizes, speeds, colours). A colour parameter goes straight into `hdr_color`: `SetAttribute((attr: "hdr_color", attr_expr: Param("tint")))`. ColorOverLifetime gradients cannot read parameters: set the colour with `hdr_color` and shape the alpha with a white gradient and `blend: Some(Modulate)`.
 - **`rate`** (layer): particles per second, `Const(20.0)` or a curve `Param("intensity", [(0.0, 5.0), (1.0, 40.0)])`: keys (parameter value, rate) sorted by parameter value, straight lines between, flat outside. It replaces the spawner's count while the spawner plays; use a looping spawner (`cycle_count: 0`). Rate 0 = the layer spawns nothing.
+- **Curves over age**: any binding (`rate`, every surface and shape value) can instead be `Age([(0.0, 40.0), (2.0, 0.0)])`: keys (seconds, value) over the layer's **age** — the seconds since the layer started, since its trigger last played it (`OnTrigger`), or since a `While` parameter switched it on; a `restart` of the effect starts it over. Use it for one-shots that grow and fade without code (section "shapes"). `analyze_project` simulates a particle `rate` over age at its age-0 value and describes shapes over their age.
 - **`visible`** (layer): `Some((param: "intensity", from: 0.6, to: 1.0, fade: 0.1))` spawns only while the parameter is in the range, fading the spawn rate to 0 over `fade` parameter units outside it. Two layers with neighbouring ranges cross-fade (a weak look and a strong look). The factor (0..1) is also `Property("visibility")`; multiply a colour by it to fade new particles' alpha too.
 - **`play: While("intensity", 0.8)`** (layer): emits while the parameter is ≥ 0.8 (an extra layer at full power).
 - **Pulses** of triggers (section "triggers").
@@ -469,6 +470,55 @@ Surface((
 - **fade** in when the instance starts, out when the game stops it; a `restart` during the fade out fades back in. Surface layers loop: a package with one does not finish by itself.
 
 The editor's 🎨 Surface layer (➕ ADD) has every value with tooltips, a texture picker with the channel, a target picker from the preview model and a shell list (presets "skin" and "thick glow"). Preview surface layers on the `capsule` stage, or on `model` with the game's character (`preview_in_editor(name, stage: "model", model: "anim/tpose.glb", animation: "mixamo.com", animation_file: "anim/run.glb", root_height: 0.9)`). Recipes "Status skin", "Energy shell" and "Frost from the feet up" show the common uses.
+
+Every material value can also be a curve over the layer's age (`Age([...])`, section "parameters"); a surface layer's age runs from the effect's start.
+
+## Shapes
+
+A **shape layer** draws a simple 3D shape with Omagari's effect shader (the same material as surface layers: colour, noise, rim, pulse, flash, dissolve, fill, mask): a shield bubble, a ground ring, an expanding shockwave, a slash arc, a column of light. It is attached to the target like a particle layer but not bent by the skeleton. Shapes have no particles: `analyze_project` describes their size, opacity and look over their age and at each parameter set.
+
+```ron
+Shape((
+    name: "shockwave",                  // unique among all layers
+    attach: Target,                     // Target | Socket("name") | Segment(from: "a", to: "b") (the middle, Y along the segment)
+    follow: PositionYaw,                // Full | Position | PositionYaw
+    shape: Ring(inner: 0.8, outer: 1.0),// see the table; metres at scale 1
+    transform: (offset: (0.0, -0.86, 0.0), rotation_deg: (0.0, 0.0, 0.0)),
+    scale: Age([(0.0, (0.2, 1.0, 0.2)), (0.6, (3.0, 1.0, 3.0))]),   // (x, y, z) × the shape's size
+    rotation_speed: Const(0.0),         // degrees per second around rotation_axis
+    rotation_axis: (0.0, 1.0, 0.0),     // in the shape's own space
+    play: OnTrigger("slam"),            // Loop | OnStart | OnTrigger("name") | While("param", threshold)
+    duration: Some(0.6),                // seconds: a one-shot for OnStart / OnTrigger; the age repeats for Loop / While
+    fade: (in: 0.0, out: 0.3),
+    visible: None,                      // a parameter range, like other layers
+    sort_bias: 0.0,                     // metres added to its draw-order distance (+ = drawn later, on top)
+    material: ( /* EffectMaterialDef, section "surfaces" */ ),
+))
+```
+
+| Shape | Fields (metres, defaults) | Mesh and UVs |
+| :-- | :-- | :-- |
+| `Sphere(radius: 1.0)` | radius | u around, v bottom → top |
+| `Capsule(radius: 0.5, length: 1.0)` | `length` = between the centres of the round ends (total height = length + 2 × radius), along Y | u around, v bottom → top |
+| `Cylinder(radius: 0.5, height: 1.0, open_ends: false)` | along Y; `open_ends: true` = a tube without caps, drawn inside and out | side: u around, v bottom → top |
+| `Ring(inner: 0.8, outer: 1.0)` | flat in XZ (facing up), drawn from both sides | u around, v inner → outer edge |
+| `Torus(major: 1.0, minor: 0.1)` | ring radius, tube radius, around Y | u around the ring, v around the tube |
+| `Cone(radius: 0.5, height: 1.0)` | base at the bottom, tip up, along Y | side: u around, v base → tip |
+| `Quad(size: (1.0, 1.0), facing: Fixed)` | (X, Z) metres, flat in XZ, both sides; `facing: Camera` = always faces the camera (a glow sprite; rotation ignored) | u along X, v along Z |
+| `Arc(radius: 1.0, width: 0.3, angle_deg: 120.0, taper: 0.0)` | a flat band in XZ **in front (-Z)**, `radius` to its middle, `angle_deg` degrees wide, `taper` 0 = even width, 1 = pointed ends; both sides | u along the arc from the left end (-X side) to the right, v inner → outer edge |
+
+Every shape is centred on its attach point (the cylinder and capsule from -height/2 to +height/2). The game's character root is often 0.9 m above the feet (capsule stage: the capsule's centre): a ground ring needs `offset: (0.0, -0.88, 0.0)` (2 cm above the floor, so it does not flicker with it).
+
+- **follow**: `Full` moves, turns and tilts with the attach point (a shape on a hand bone turns with the hand); `Position` only moves (world axes; a shield sphere); `PositionYaw` moves and turns to face where the target faces but never tilts: a **ground ring stays flat** while the body leans and animates, even on a bone like `mixamorig:Hips`. The offset is in the attach point's space (`Full`), in world axes (`Position`), or turned with the heading (`PositionYaw`); it scales with the size fit.
+- **scale** and **rotation_speed** are bindings: `Const`, a curve over a parameter (a shield that swells with `charge`), or over the age. A spin is integrated over time, so changing its speed never jumps.
+- **play**: `Loop` while the effect runs; `OnStart` once at the start; `OnTrigger("name")` each time the game fires the trigger (the age starts over; a trigger during the play restarts it; with `trigger_at` the shape plays at the payload position); `While("param", t)` while the parameter is ≥ t (the age starts over each time it switches on). A trigger shape needs the trigger declared in `triggers`.
+- **duration**: with `OnStart` / `OnTrigger` the shape is a **one-shot**: it plays `duration` seconds, fading in over `fade.in` after it starts and out over `fade.out` before its end, then it is gone (an `OnTrigger` shape waits for the next trigger). Without a duration an `OnTrigger` shape stays after its first trigger until the effect stops (warning). With `Loop` / `While` the age starts over every `duration` seconds, so age curves repeat (a pulsing ring). Every shape fades out over `fade.out` when the game stops the effect.
+- **Lifecycle**: a package whose layers are all one-shots (particles `OnStart` with `cycle_count` ≥ 1, shapes `OnStart` with a duration) finishes by itself; anything else runs until stopped.
+- **Material**: as in section "surfaces". On shapes, `Uv` mapping sticks to the shape (it grows with it), `Triplanar` is in the shape's own space in metres (it turns with the shape; a growing shape grows through the pattern). `fill` takes `axis: U` or `V` (the mesh's UVs, 0..1) besides X / Y / Z: `fill: Some((axis: U, to: Age([(0.0, 0.0), (0.15, 1.0)])))` sweeps a slash arc across in 0.15 s; `axis: V, from: 0.3, to: 0.7, softness: 0.4` gives a ring soft inner and outer edges; on a flat shape a fill along Y has no length (warning). `Add` for light (glows, energy); `Blend` for smoke-like or solid looks — an opaque `Blend` sphere around the target hides the character (warning).
+- **Draw order**: see-through things are drawn back to front by their centre; a shape around the target and particles inside it can swap order as the camera turns. `sort_bias` (metres) pushes the shape later (positive, on top) or earlier.
+- **Checks**: sizes ≤ 0 and an inner ring radius ≥ the outer are errors; shapes over ~20 m across (size × scale) warn; `OnTrigger` with an unknown trigger is an error; age curves with keys past the duration (never reached), fades longer than the one-shot, and a trigger shape without a duration warn; socket names are checked like other layers.
+
+The editor's 🔷 Shape layer (➕ ADD) has every value with tooltips and preset buttons ("shield bubble", "ground ring", "shockwave", "slash arc", "glow column"). Preview on the `capsule` stage, or on `model` with the game's character running (`motion`); fire triggers in the TRIGGERS tab (or `preview_in_editor(..., trigger: "slam")`). Recipes "Shield bubble", "Ground ring", "Shockwave" and "Slash arc".
 
 ## Recipes
 
@@ -1342,6 +1392,138 @@ A cyan energy field with thickness: three copies of the body 0.5, 2 and 3.5 cm o
 
 Pale blue frost covering the model from the feet up to `frost` × its height (0 = none, 0.5 = up to the hips, 1 = all), with a soft edge and a still, crystalline noise. The game raises `frost` with `vfx.set_param(instance, "frost", value)`; smoothing 0.5 s makes it creep. The PARAMETERS tab's slider (or "animate") shows it rising.
 
+### Shield bubble (shape: sphere, opacity from a parameter)
+
+```ron
+(
+    version: 2,
+    parameters: [
+        (name: "shield", default: Float(1.0), min: 0.0, max: 1.0, smoothing: 0.3),
+    ],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Shape((
+            name: "bubble",
+            attach: Target,
+            follow: Position,
+            shape: Sphere(radius: 1.1),
+            scale: Param("shield", [(0.0, (0.9, 0.9, 0.9)), (1.0, (1.0, 1.0, 1.0))]),
+            rotation_speed: Const(12.0),
+            play: Loop,
+            fade: (in: 0.3, out: 0.4),
+            material: (
+                blend: Add,
+                color: Const((0.3, 0.7, 1.6, 0.25)),
+                opacity: Param("shield", [(0.0, 0.0), (1.0, 1.0)]),
+                emissive: Const(1.0),
+                noise_a: Some((texture: (asset: "noise"), mapping: Triplanar, scale: Const(2.0), scroll: Const((0.05, 0.15)), strength: Const(0.6), contrast: Const(1.5))),
+                rim: Some((color: Const((0.5, 1.2, 2.5, 0.8)), power: Const(2.5), intensity: Param("shield", [(0.0, 0.0), (1.0, 2.0)]))),
+                pulse: Some((frequency: Const(0.7), amount: Const(0.2))),
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule, params: [("shield", Float(1.0))])),
+)
+```
+
+A faint blue sphere 2.2 m across around the character, with a bright edge where it curves away from the camera, slow drifting noise, a gentle breathing and a slow turn. The game sets `shield` 0..1 (`vfx.set_param(instance, "shield", hp_fraction)`): at 0 the bubble is gone (opacity and rim 0) and 10% smaller, so it shrinks as it fades; smoothing 0.3 s eases the change. Additive, so the character stays visible inside.
+
+### Ground ring (shape: flat ring at the feet, stays flat, pulses)
+
+```ron
+(
+    version: 2,
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Shape((
+            name: "ring",
+            attach: Target,
+            follow: PositionYaw,
+            shape: Ring(inner: 0.55, outer: 0.75),
+            transform: (offset: (0.0, -0.88, 0.0)),
+            scale: Age([(0.0, (1.0, 1.0, 1.0)), (0.6, (1.08, 1.0, 1.08)), (1.2, (1.0, 1.0, 1.0))]),
+            rotation_speed: Const(30.0),
+            play: Loop,
+            duration: Some(1.2),
+            fade: (in: 0.3, out: 0.4),
+            material: (
+                blend: Add,
+                color: Const((1.6, 0.7, 0.2, 0.8)),
+                noise_a: Some((texture: (asset: "noise"), mapping: Uv, scale: Const(3.0), scroll: Const((0.1, 0.0)), strength: Const(0.5), contrast: Const(1.5))),
+                pulse: Some((frequency: Const(0.83), amount: Const(0.35))),
+                fill: Some((axis: V, from: Const(0.3), to: Const(0.7), softness: Const(0.4))),
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule, motion: Some(Circle(radius: 3.0, speed: 3.6)))),
+)
+```
+
+An orange ring on the ground around the feet (0.55–0.75 m from the centre, 2 cm above the floor), with soft inner and outer edges, turning 30°/s and breathing every 1.2 s (it grows 8% and brightens; the age repeats every `duration`). `PositionYaw` keeps it level and turned with the character while it runs and leans. A status marker or an aura's base.
+
+### Shockwave (shape: ring growing over its age, played by a trigger)
+
+```ron
+(
+    version: 2,
+    triggers: [(name: "slam")],
+    layers: [
+        Shape((
+            name: "shockwave",
+            attach: Target,
+            follow: PositionYaw,
+            shape: Ring(inner: 0.8, outer: 1.0),
+            transform: (offset: (0.0, -0.86, 0.0)),
+            scale: Age([(0.0, (0.2, 1.0, 0.2)), (0.6, (3.0, 1.0, 3.0))]),
+            play: OnTrigger("slam"),
+            duration: Some(0.6),
+            fade: (in: 0.0, out: 0.3),
+            material: (
+                blend: Add,
+                color: Const((0.6, 1.2, 2.5, 1.0)),
+                emissive: Const(1.5),
+                fill: Some((axis: V, from: Const(0.3), to: Const(0.7), softness: Const(0.4))),
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule, auto_triggers: [("slam", 1.5)])),
+)
+```
+
+Each `vfx.trigger(instance, "slam")` sends a bright cyan ring along the ground from 0.4 m to 6 m across in 0.6 s, fading out over its second half; a new trigger during the wave starts it over. With `trigger_at(instance, "slam", TriggerArgs::at(point))` it starts at that point. Nothing shows between triggers.
+
+### Slash arc (shape: arc swept by fill over its age, played by a trigger)
+
+```ron
+(
+    version: 2,
+    triggers: [(name: "swing")],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Shape((
+            name: "slash",
+            attach: Target,
+            follow: Full,
+            shape: Arc(radius: 1.0, width: 0.35, angle_deg: 150.0, taper: 1.0),
+            transform: (offset: (0.0, 0.2, 0.0), rotation_deg: (0.0, 0.0, -25.0)),
+            play: OnTrigger("swing"),
+            duration: Some(0.35),
+            fade: (in: 0.0, out: 0.1),
+            material: (
+                blend: Add,
+                color: Const((2.5, 2.2, 1.6, 1.0)),
+                emissive: Const(1.5),
+                noise_a: Some((texture: (asset: "noise"), mapping: Uv, scale: Const(2.0), scroll: Const((-3.0, 0.0)), strength: Const(0.5), contrast: Const(2.0))),
+                fill: Some((axis: U, from: Age([(0.1, 0.0), (0.35, 1.0)]), to: Age([(0.0, 0.0), (0.15, 1.0)]), softness: Const(0.25))),
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule, auto_triggers: [("swing", 1.0)])),
+)
+```
+
+A white-hot crescent 1 m in front of the chest, tilted 25°, pointed at both ends: on each `swing` trigger it sweeps across from the left end in 0.15 s (fill `to` over the age), its tail follows from 0.1 s (fill `from`) and it is gone at 0.35 s, with streaky noise running along it. Mirror it with `rotation_deg: (0.0, 180.0, 25.0)` for a swing the other way. For a trail that follows a real blade, wait for trail layers.
+
 ## Design
 
 **Scale.** Everything is in world units and seconds. The editor camera starts 5 units from the origin and shows about ±2 units; `analyze_project` says when an effect is bigger. Size the effect to the user's game, not to the editor view.
@@ -1400,6 +1582,10 @@ Pick the stage that matches how the game uses the effect. The PREVIEW tab's targ
 | the glow on the body is too thin / flat | more shells with larger offsets (1–4 cm), `blend: Add`, a stronger rim |
 | the pattern on the body is too busy / too coarse | noise `scale` (repeats per metre) and `strength`; slower `scroll` |
 | the model disappears under the effect | lower the surface colour's alpha / opacity, add noise, or use `blend: Add` |
+| a ring / bubble / column around the character, a shockwave, a slash | a shape layer (section "shapes"); presets in the editor |
+| the ground ring tilts or bobs with the body | `follow: PositionYaw`, attach to the target root (not a bone), offset about −0.88 m in Y |
+| the shockwave is too fast / too big | its `duration` and the last key of its `scale: Age([...])` |
+| the slash sweeps too slowly / lingers | the age keys of `fill.to` / `fill.from` and `duration` |
 
 ## Game
 
@@ -1425,6 +1611,6 @@ Tell the user which parameter and trigger names (and value ranges) the game must
 
 One-shot packages (every root layer `OnStart` with a finite `cycle_count`) finish and clean up by themselves; looping ones run until `stop`. Despawning the target removes its instances (and sends `VfxFinished`). Sockets with a `node` need that node name in the target's hierarchy (section "attach"). Editing the package file while the game runs updates running instances (hot reload, when the game enables Bevy's file watcher).
 
-Surface layers draw on the meshes under the instance's target that belong to its own model (a weapon's glTF scene in the hand is skipped; mark other separate parts with `VfxSeparateModel`); spawn the package on the character's root entity. The effect shader is embedded in the library: the game adds no shader files.
+Surface layers draw on the meshes under the instance's target that belong to its own model (a weapon's glTF scene in the hand is skipped; mark other separate parts with `VfxSeparateModel`); spawn the package on the character's root entity. Shape layers need nothing from the game (the meshes are generated); a trigger's `trigger_at` position places an `OnTrigger` shape. The effect shader is embedded in the library: the game adds no shader files.
 
 Built-in textures need nothing; other textures must exist at their path under the game's `assets/` folder (`import_asset` puts them there). JPG textures need Bevy's `jpeg` feature in the game. The game camera needs `Hdr` and `Bloom` for colors above 1.0 to glow. The game can also load `*.omagari.ron` projects directly.
