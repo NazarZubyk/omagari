@@ -44,6 +44,67 @@ pub enum Val {
     V2(Vec2),
     V3(Vec3),
     V4(Vec4),
+    /// ivec2..ivec4: component count, components.
+    IV(u8, [i32; 4]),
+    UV(u8, [u32; 4]),
+    BV(u8, [bool; 4]),
+}
+
+/// Element type of a value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Elem {
+    F,
+    I,
+    U,
+    B,
+}
+
+fn elem_of(scalar: ScalarType) -> Elem {
+    match scalar {
+        ScalarType::Int => Elem::I,
+        ScalarType::Uint => Elem::U,
+        ScalarType::Bool => Elem::B,
+        // `ScalarType` is non-exhaustive; every other kind is a float.
+        _ => Elem::F,
+    }
+}
+
+/// A value as `n` lanes of one element type (`n` = 0 for a scalar), for
+/// component-wise operators.
+#[derive(Clone, Copy, Debug)]
+struct Lanes {
+    elem: Elem,
+    n: usize,
+    f: [f32; 4],
+    i: [i32; 4],
+    u: [u32; 4],
+    b: [bool; 4],
+}
+
+impl Lanes {
+    fn new(elem: Elem, n: usize) -> Lanes {
+        Lanes { elem, n, f: [0.0; 4], i: [0; 4], u: [0; 4], b: [false; 4] }
+    }
+
+    /// Number of components (1 for a scalar).
+    fn count(&self) -> usize {
+        self.n.max(1)
+    }
+
+    fn to_val(self) -> Val {
+        match (self.elem, self.n) {
+            (Elem::F, 0) => Val::F(self.f[0]),
+            (Elem::I, 0) => Val::I(self.i[0]),
+            (Elem::U, 0) => Val::U(self.u[0]),
+            (Elem::B, 0) => Val::B(self.b[0]),
+            (Elem::F, 2) => Val::V2(Vec2::new(self.f[0], self.f[1])),
+            (Elem::F, 3) => Val::V3(Vec3::new(self.f[0], self.f[1], self.f[2])),
+            (Elem::F, _) => Val::V4(Vec4::from_array(self.f)),
+            (Elem::I, n) => Val::IV(n as u8, self.i),
+            (Elem::U, n) => Val::UV(n as u8, self.u),
+            (Elem::B, n) => Val::BV(n as u8, self.b),
+        }
+    }
 }
 
 impl Val {
@@ -56,11 +117,54 @@ impl Val {
             Val::V2(_) => "vec2",
             Val::V3(_) => "vec3",
             Val::V4(_) => "vec4",
+            Val::IV(n, _) => ["ivec2", "ivec3", "ivec4"][(*n as usize).clamp(2, 4) - 2],
+            Val::UV(n, _) => ["uvec2", "uvec3", "uvec4"][(*n as usize).clamp(2, 4) - 2],
+            Val::BV(n, _) => ["bvec2", "bvec3", "bvec4"][(*n as usize).clamp(2, 4) - 2],
         }
     }
 
     fn same_type(&self, other: &Val) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(other)
+        self.type_name() == other.type_name()
+    }
+
+    fn lanes(&self) -> Lanes {
+        let mut l = match self {
+            Val::F(_) | Val::V2(_) | Val::V3(_) | Val::V4(_) => Lanes::new(Elem::F, 0),
+            Val::I(_) | Val::IV(..) => Lanes::new(Elem::I, 0),
+            Val::U(_) | Val::UV(..) => Lanes::new(Elem::U, 0),
+            Val::B(_) | Val::BV(..) => Lanes::new(Elem::B, 0),
+        };
+        match *self {
+            Val::F(x) => l.f[0] = x,
+            Val::I(x) => l.i[0] = x,
+            Val::U(x) => l.u[0] = x,
+            Val::B(x) => l.b[0] = x,
+            Val::V2(v) => {
+                l.n = 2;
+                l.f[..2].copy_from_slice(&v.to_array());
+            }
+            Val::V3(v) => {
+                l.n = 3;
+                l.f[..3].copy_from_slice(&v.to_array());
+            }
+            Val::V4(v) => {
+                l.n = 4;
+                l.f = v.to_array();
+            }
+            Val::IV(n, c) => {
+                l.n = n as usize;
+                l.i = c;
+            }
+            Val::UV(n, c) => {
+                l.n = n as usize;
+                l.u = c;
+            }
+            Val::BV(n, c) => {
+                l.n = n as usize;
+                l.b = c;
+            }
+        }
+        l
     }
 
     /// Float scalar or vector as (component count, components).
@@ -92,18 +196,13 @@ impl Val {
     }
 
     fn zero_of(value_type: ValueType) -> Val {
-        match value_type {
-            ValueType::Scalar(ScalarType::Float) => Val::F(0.0),
-            ValueType::Scalar(ScalarType::Int) => Val::I(0),
-            ValueType::Scalar(ScalarType::Uint) => Val::U(0),
-            ValueType::Scalar(ScalarType::Bool) => Val::B(false),
-            ValueType::Vector(v) => match v.count() {
-                2 => Val::V2(Vec2::ZERO),
-                3 => Val::V3(Vec3::ZERO),
-                _ => Val::V4(Vec4::ZERO),
-            },
-            _ => Val::F(0.0),
-        }
+        let (elem, n) = match value_type {
+            ValueType::Scalar(s) => (s, 0),
+            ValueType::Vector(v) => (v.elem_type(), v.count() as usize),
+            _ => (ScalarType::Float, 0),
+        };
+        let elem = elem_of(elem);
+        Lanes::new(elem, n).to_val()
     }
 }
 
@@ -166,66 +265,22 @@ impl Attrs {
     }
 }
 
+/// Which shader an expression runs in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Ctx {
+    Init,
+    Update,
+    Render,
+}
+
 struct Env<'a> {
     rng: &'a mut StdRng,
     attrs: &'a Attrs,
     parent: Option<&'a Attrs>,
     time: f32,
-}
-
-#[derive(Clone, Copy)]
-enum Arith {
-    Add,
-    Sub,
-    Mul,
-}
-
-fn arith(op: Arith, a: Val, b: Val) -> Result<Val, String> {
-    let name = match op {
-        Arith::Add => "Add",
-        Arith::Sub => "Subtract",
-        Arith::Mul => "Multiply",
-    };
-    let f = |x: f32, y: f32| match op {
-        Arith::Add => x + y,
-        Arith::Sub => x - y,
-        Arith::Mul => x * y,
-    };
-    match (a, b) {
-        (Val::U(x), Val::U(y)) => {
-            return Ok(Val::U(match op {
-                Arith::Add => x.wrapping_add(y),
-                Arith::Sub => x.wrapping_sub(y),
-                Arith::Mul => x.wrapping_mul(y),
-            }))
-        }
-        (Val::I(x), Val::I(y)) => {
-            return Ok(Val::I(match op {
-                Arith::Add => x.wrapping_add(y),
-                Arith::Sub => x.wrapping_sub(y),
-                Arith::Mul => x.wrapping_mul(y),
-            }))
-        }
-        _ => {}
-    }
-    match (a.floats(), b.floats()) {
-        (Some((na, ca)), Some((nb, cb))) if na == nb || na == 1 || nb == 1 => {
-            let n = na.max(nb);
-            let mut out = [0.0; 4];
-            for i in 0..n {
-                let x = if na == 1 { ca[0] } else { ca[i] };
-                let y = if nb == 1 { cb[0] } else { cb[i] };
-                out[i] = f(x, y);
-            }
-            Ok(Val::from_floats(n, out))
-        }
-        _ => Err(format!(
-            "{} cannot combine {} and {} (only same types, or a vector with an f32)",
-            name,
-            a.type_name(),
-            b.type_name()
-        )),
-    }
+    ctx: Ctx,
+    /// The particle's alive flag (update modifiers).
+    is_alive: bool,
 }
 
 fn pack4x8unorm(v: Vec4) -> u32 {
@@ -238,34 +293,88 @@ fn unpack4x8unorm(u: u32) -> Vec4 {
     Vec4::new(b(0), b(8), b(16), b(24))
 }
 
+fn pack4x8snorm(v: Vec4) -> u32 {
+    let b = |x: f32| (((x.clamp(-1.0, 1.0) * 127.0).round() as i32) as u32) & 0xFF;
+    b(v.x) | (b(v.y) << 8) | (b(v.z) << 16) | (b(v.w) << 24)
+}
+
+fn unpack4x8snorm(u: u32) -> Vec4 {
+    let b = |s: u32| ((((u >> s) & 0xFF) as u8 as i8) as f32 / 127.0).max(-1.0);
+    Vec4::new(b(0), b(8), b(16), b(24))
+}
+
+fn types_text(args: &[Val]) -> String {
+    args.iter().map(Val::type_name).collect::<Vec<_>>().join(", ")
+}
+
+/// Why an integer or bool `Rand` cannot be used.
+fn int_rand_error(what: &str) -> String {
+    format!(
+        "{} is not available: bevy_hanabi 0.19's shaders only have float random functions, so the shader fails on the GPU; use e.g. Operator(Cast(Operator(Multiply(RandFloat, Float(10.0))), U32))",
+        what
+    )
+}
+
 fn eval(e: &ExprWriterEditor, env: &mut Env) -> Result<Val, String> {
+    use ExprWriterEditor as E;
+    let rand_f = |env: &mut Env| env.rng.random::<f32>();
     Ok(match e {
-        ExprWriterEditor::Placeholder => Val::F(0.0),
-        ExprWriterEditor::RandU32 => Val::U(env.rng.random()),
-        ExprWriterEditor::RandFloat => Val::F(env.rng.random()),
-        ExprWriterEditor::RandVec3 => Val::V3(Vec3::new(
-            env.rng.random(),
-            env.rng.random(),
-            env.rng.random(),
-        )),
-        ExprWriterEditor::Float(x) => Val::F(*x),
-        ExprWriterEditor::U32(x) => Val::U(*x),
-        ExprWriterEditor::Vec3(v) => Val::V3(*v),
-        ExprWriterEditor::Vec4(v) => Val::V4(*v),
-        ExprWriterEditor::Time => Val::F(env.time),
-        ExprWriterEditor::Age => env.attrs.get(Attribute::AGE),
-        ExprWriterEditor::Operator(op) => eval_op(op, env)?,
+        E::Placeholder => Val::F(0.0),
+        E::RandU32 => return Err(int_rand_error("RandU32")),
+        E::RandFloat => Val::F(rand_f(env)),
+        E::RandVec3 => Val::V3(Vec3::new(rand_f(env), rand_f(env), rand_f(env))),
+        E::Rand(t) => {
+            if !t.is_float() {
+                return Err(int_rand_error(&format!("Rand({:?})", t)));
+            }
+            let n = t.parts().1 as usize;
+            let mut c = [0.0; 4];
+            for x in c.iter_mut().take(n) {
+                *x = rand_f(env);
+            }
+            Val::from_floats(n, c)
+        }
+        E::Float(x) => Val::F(*x),
+        E::U32(x) => Val::U(*x),
+        E::I32(x) => Val::I(*x),
+        E::Bool(x) => Val::B(*x),
+        E::Vec2(v) => Val::V2(*v),
+        E::Vec3(v) => Val::V3(*v),
+        E::Vec4(v) => Val::V4(*v),
+        E::IVec2(v) => Val::IV(2, [v.x, v.y, 0, 0]),
+        E::IVec3(v) => Val::IV(3, [v.x, v.y, v.z, 0]),
+        E::IVec4(v) => Val::IV(4, v.to_array()),
+        E::UVec2(v) => Val::UV(2, [v.x, v.y, 0, 0]),
+        E::UVec3(v) => Val::UV(3, [v.x, v.y, v.z, 0]),
+        E::UVec4(v) => Val::UV(4, v.to_array()),
+        E::BVec2(v) => Val::BV(2, [v.x, v.y, false, false]),
+        E::BVec3(v) => Val::BV(3, [v.x, v.y, v.z, false]),
+        E::BVec4(v) => Val::BV(4, [v.x, v.y, v.z, v.w]),
+        // The simulation clock: simulation, virtual and real time agree.
+        E::Time | E::VirtualTime | E::RealTime => Val::F(env.time),
+        E::DeltaTime | E::VirtualDeltaTime | E::RealDeltaTime => Val::F(DT),
+        // bevy_hanabi 0.19 writes `sim_params.alpha_cutoff`, which does not
+        // exist: the shader fails to compile wherever it is used.
+        E::AlphaCutoff => {
+            return Err(
+                "AlphaCutoff does not work in bevy_hanabi 0.19 (its shader reads sim_params.alpha_cutoff, which does not exist, so the layer fails to compile on the GPU); use the Mask cutoff number instead".into(),
+            )
+        }
+        E::IsAlive => match env.ctx {
+            Ctx::Update => Val::B(env.is_alive),
+            _ => return Err("IsAlive exists only in update modifiers".into()),
+        },
+        E::Age => env.attrs.get(Attribute::AGE),
+        E::Operator(op) => eval_op(op, env)?,
         // The simulation substitutes real values first (`resolve_for_analysis`).
-        ExprWriterEditor::Property(name) => match runtime_property(name) {
+        E::Property(name) => match runtime_property(name) {
             Some(RuntimePropertyType::Float) => Val::F(0.0),
             Some(RuntimePropertyType::Vec3) => Val::V3(Vec3::ZERO),
             None => return Err(format!("Property(\"{}\") is not a runtime property", name)),
         },
         // Declared parameters are substituted by `resolve_for_analysis`;
         // what is left is unknown.
-        ExprWriterEditor::Param(name) => {
-            return Err(format!("Param(\"{}\") is not a parameter of this package", name))
-        }
+        E::Param(name) => return Err(format!("Param(\"{}\") is not a parameter of this package", name)),
     })
 }
 
@@ -279,11 +388,10 @@ fn componentwise(name: &str, args: &[Val], scalar_ok: &[bool], f: impl Fn(&[f32]
         None => false,
     });
     if !ok {
-        let types: Vec<&str> = args.iter().map(Val::type_name).collect();
         return Err(format!(
             "{} needs values of the same float type (f32, vec2, vec3 or vec4), got ({})",
             name,
-            types.join(", ")
+            types_text(args)
         ));
     }
     let mut out = [0.0; 4];
@@ -300,138 +408,423 @@ fn componentwise(name: &str, args: &[Val], scalar_ok: &[bool], f: impl Fn(&[f32]
     Ok(Val::from_floats(n, out))
 }
 
+/// A float-only operator applied per component.
+fn map_float(name: &str, a: Val, f: impl Fn(f32) -> f32) -> Result<Val, String> {
+    a.map_floats(f)
+        .ok_or_else(|| format!("{} needs a float value (f32, vec2, vec3 or vec4), got {}", name, a.type_name()))
+}
+
+/// A numeric operator applied per component (floats, i32, u32 and their
+/// vectors).
+fn map_num(
+    name: &str,
+    a: Val,
+    ff: impl Fn(f32) -> f32,
+    fi: impl Fn(i32) -> i32,
+    fu: impl Fn(u32) -> u32,
+) -> Result<Val, String> {
+    let mut l = a.lanes();
+    for k in 0..l.count() {
+        match l.elem {
+            Elem::F => l.f[k] = ff(l.f[k]),
+            Elem::I => l.i[k] = fi(l.i[k]),
+            Elem::U => l.u[k] = fu(l.u[k]),
+            Elem::B => return Err(format!("{} needs a number, got {}", name, a.type_name())),
+        }
+    }
+    Ok(l.to_val())
+}
+
+/// A numeric operator on two values of the same type, per component; with
+/// `broadcast` a vector may be combined with a scalar of its element type
+/// (WGSL `+ - * / %`).
+fn zip_num(
+    name: &str,
+    a: Val,
+    b: Val,
+    broadcast: bool,
+    ff: impl Fn(f32, f32) -> f32,
+    fi: impl Fn(i32, i32) -> i32,
+    fu: impl Fn(u32, u32) -> u32,
+) -> Result<Val, String> {
+    let (la, lb) = (a.lanes(), b.lanes());
+    let shape_ok = la.n == lb.n || (broadcast && (la.n == 0 || lb.n == 0));
+    if la.elem != lb.elem || la.elem == Elem::B || !shape_ok {
+        return Err(format!(
+            "{} needs two numbers of the same type{}, got ({})",
+            name,
+            if broadcast { " (or a vector and a number of its element type)" } else { "" },
+            types_text(&[a, b])
+        ));
+    }
+    let mut out = Lanes::new(la.elem, la.n.max(lb.n));
+    for k in 0..out.count() {
+        let (ka, kb) = (if la.n == 0 { 0 } else { k }, if lb.n == 0 { 0 } else { k });
+        match la.elem {
+            Elem::F => out.f[k] = ff(la.f[ka], lb.f[kb]),
+            Elem::I => out.i[k] = fi(la.i[ka], lb.i[kb]),
+            Elem::U => out.u[k] = fu(la.u[ka], lb.u[kb]),
+            Elem::B => unreachable!(),
+        }
+    }
+    Ok(out.to_val())
+}
+
+/// A comparison of two numbers of the same type: bool, or a bool vector.
+fn compare(name: &str, a: Val, b: Val, f: impl Fn(std::cmp::Ordering) -> bool) -> Result<Val, String> {
+    let (la, lb) = (a.lanes(), b.lanes());
+    if la.elem != lb.elem || la.elem == Elem::B || la.n != lb.n {
+        return Err(format!("{} needs two numbers of the same type, got ({})", name, types_text(&[a, b])));
+    }
+    let mut out = Lanes::new(Elem::B, la.n);
+    for k in 0..la.count() {
+        let ord = match la.elem {
+            Elem::F => la.f[k].partial_cmp(&lb.f[k]),
+            Elem::I => Some(la.i[k].cmp(&lb.i[k])),
+            Elem::U => Some(la.u[k].cmp(&lb.u[k])),
+            Elem::B => unreachable!(),
+        };
+        out.b[k] = ord.is_some_and(&f);
+    }
+    Ok(out.to_val())
+}
+
+/// Builds a vector from scalars of one type (`Vec2`, `Vec3`, `Vec4`).
+fn build_vector(name: &str, parts: &[Val]) -> Result<Val, String> {
+    let first = parts[0].lanes();
+    if parts.iter().any(|p| p.lanes().n != 0 || p.lanes().elem != first.elem) {
+        return Err(format!(
+            "{} operator needs {} numbers of the same type (f32, i32, u32 or bool), got ({})",
+            name,
+            parts.len(),
+            types_text(parts)
+        ));
+    }
+    let mut out = Lanes::new(first.elem, parts.len());
+    for (k, p) in parts.iter().enumerate() {
+        let l = p.lanes();
+        out.f[k] = l.f[0];
+        out.i[k] = l.i[0];
+        out.u[k] = l.u[0];
+        out.b[k] = l.b[0];
+    }
+    Ok(out.to_val())
+}
+
+/// `Cast(x, type)`, like WGSL's conversions: a scalar to any scalar, a
+/// scalar or a vector of the same size to a vector.
+fn cast(a: Val, target: ValueTypeDef) -> Result<Val, String> {
+    let (elem, n) = target.parts();
+    let n = if n == 1 { 0 } else { n as usize };
+    let l = a.lanes();
+    if (n == 0 && l.n != 0) || (n != 0 && l.n != 0 && l.n != n) {
+        return Err(format!("Cast cannot convert {} to {}", a.type_name(), target.name()));
+    }
+    let elem = elem_of(elem);
+    let mut out = Lanes::new(elem, n);
+    for k in 0..out.count() {
+        let src = if l.n == 0 { 0 } else { k };
+        let (f, i, u, b) = (l.f[src], l.i[src], l.u[src], l.b[src]);
+        match (l.elem, elem) {
+            (Elem::F, Elem::F) => out.f[k] = f,
+            (Elem::F, Elem::I) => out.i[k] = f as i32,
+            (Elem::F, Elem::U) => out.u[k] = f as u32,
+            (Elem::F, Elem::B) => out.b[k] = f != 0.0,
+            (Elem::I, Elem::F) => out.f[k] = i as f32,
+            (Elem::I, Elem::I) => out.i[k] = i,
+            (Elem::I, Elem::U) => out.u[k] = i as u32,
+            (Elem::I, Elem::B) => out.b[k] = i != 0,
+            (Elem::U, Elem::F) => out.f[k] = u as f32,
+            (Elem::U, Elem::I) => out.i[k] = u as i32,
+            (Elem::U, Elem::U) => out.u[k] = u,
+            (Elem::U, Elem::B) => out.b[k] = u != 0,
+            (Elem::B, Elem::F) => out.f[k] = if b { 1.0 } else { 0.0 },
+            (Elem::B, Elem::I) => out.i[k] = b as i32,
+            (Elem::B, Elem::U) => out.u[k] = b as u32,
+            (Elem::B, Elem::B) => out.b[k] = b,
+        }
+    }
+    Ok(out.to_val())
+}
+
+/// Whether bevy_hanabi knows an expression's type while writing the shader
+/// (literals, random and built-in values, attributes, casts). `Uniform` and
+/// `Normal` need it of both operands.
+fn has_known_type(e: &ExprWriterEditor) -> bool {
+    match e {
+        ExprWriterEditor::Param(_) | ExprWriterEditor::Property(_) => false,
+        ExprWriterEditor::Operator(op) => {
+            matches!(**op, ExprOperatorEditor::Attr(_) | ExprOperatorEditor::ParentAttr(_) | ExprOperatorEditor::Cast(..))
+        }
+        _ => true,
+    }
+}
+
+/// Whether an expression is a compile-time constant (literals and
+/// operators on them), which the GPU shader compiler evaluates itself.
+fn is_constant(e: &ExprWriterEditor) -> bool {
+    let mut constant = true;
+    e.visit(&mut |e| {
+        constant &= match e {
+            ExprWriterEditor::Operator(op) => !matches!(
+                **op,
+                ExprOperatorEditor::Attr(_) | ExprOperatorEditor::ParentAttr(_) | ExprOperatorEditor::Uniform(..) | ExprOperatorEditor::Normal(..)
+            ),
+            ExprWriterEditor::Placeholder
+            | ExprWriterEditor::Float(_)
+            | ExprWriterEditor::U32(_)
+            | ExprWriterEditor::I32(_)
+            | ExprWriterEditor::Bool(_)
+            | ExprWriterEditor::Vec2(_)
+            | ExprWriterEditor::Vec3(_)
+            | ExprWriterEditor::Vec4(_)
+            | ExprWriterEditor::IVec2(_)
+            | ExprWriterEditor::IVec3(_)
+            | ExprWriterEditor::IVec4(_)
+            | ExprWriterEditor::UVec2(_)
+            | ExprWriterEditor::UVec3(_)
+            | ExprWriterEditor::UVec4(_)
+            | ExprWriterEditor::BVec2(_)
+            | ExprWriterEditor::BVec3(_)
+            | ExprWriterEditor::BVec4(_) => true,
+            _ => false,
+        }
+    });
+    constant
+}
+
 fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
     let t = if high != low { ((x - low) / (high - low)).clamp(0.0, 1.0) } else if x < low { 0.0 } else { 1.0 };
     t * t * (3.0 - 2.0 * t)
 }
 
+/// A normally distributed value (Box-Muller, like bevy_hanabi's
+/// `rand_normal`).
+fn normal_sample(rng: &mut StdRng, mean: f32, std_dev: f32) -> f32 {
+    let u: f32 = rng.random::<f32>().max(f32::MIN_POSITIVE);
+    let v: f32 = rng.random();
+    mean + std_dev * (-2.0 * u.ln()).sqrt() * (std::f32::consts::TAU * v).cos()
+}
+
 fn eval_op(op: &ExprOperatorEditor, env: &mut Env) -> Result<Val, String> {
     use ExprOperatorEditor as O;
+    let name = op.name();
+    // The operands, evaluated in written order.
+    let mut args = Vec::new();
+    for arg in op.args() {
+        args.push(eval(arg, env)?);
+    }
+    let a = args.first().copied().unwrap_or(Val::F(0.0));
+    let b = args.get(1).copied().unwrap_or(Val::F(0.0));
+    let float_vector = |v: Val| v.floats().filter(|(n, _)| *n > 1);
     Ok(match op {
-        O::Add(a, b) => arith(Arith::Add, eval(a, env)?, eval(b, env)?)?,
-        O::Subtract(a, b) => arith(Arith::Sub, eval(a, env)?, eval(b, env)?)?,
-        O::Multiply(a, b) => arith(Arith::Mul, eval(a, env)?, eval(b, env)?)?,
-        O::Uniform(a, b) => {
-            let (a, b) = (eval(a, env)?, eval(b, env)?);
+        O::Add(..) => zip_num(name, a, b, true, |x, y| x + y, i32::wrapping_add, u32::wrapping_add)?,
+        O::Subtract(..) => zip_num(name, a, b, true, |x, y| x - y, i32::wrapping_sub, u32::wrapping_sub)?,
+        O::Multiply(..) => zip_num(name, a, b, true, |x, y| x * y, i32::wrapping_mul, u32::wrapping_mul)?,
+        // WGSL: integer division by 0 (and i32::MIN / -1) gives the dividend.
+        O::Divide(..) => zip_num(
+            name,
+            a,
+            b,
+            true,
+            |x, y| x / y,
+            |x, y| if y == 0 || (x == i32::MIN && y == -1) { x } else { x / y },
+            |x, y| if y == 0 { x } else { x / y },
+        )?,
+        O::Remainder(..) => zip_num(
+            name,
+            a,
+            b,
+            true,
+            |x, y| x % y,
+            |x, y| if y == 0 || (x == i32::MIN && y == -1) { 0 } else { x % y },
+            |x, y| if y == 0 { 0 } else { x % y },
+        )?,
+        O::Min(..) => zip_num(name, a, b, false, f32::min, i32::min, u32::min)?,
+        O::Max(..) => zip_num(name, a, b, false, f32::max, i32::max, u32::max)?,
+        O::Abs(_) => map_num(name, a, f32::abs, i32::wrapping_abs, |x| x)?,
+        O::Sign(_) => {
+            if matches!(a.lanes().elem, Elem::U) {
+                return Err(format!("Sign needs a float or i32 value, got {}", a.type_name()));
+            }
+            let sign = |x: f32| if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
+            map_num(name, a, sign, i32::signum, |x| x)?
+        }
+        O::Floor(_) => map_float(name, a, f32::floor)?,
+        O::Ceil(_) => map_float(name, a, f32::ceil)?,
+        O::Round(_) => map_float(name, a, f32::round_ties_even)?,
+        O::Fract(_) => map_float(name, a, |x| x - x.floor())?,
+        O::Saturate(_) => map_float(name, a, |x| x.clamp(0.0, 1.0))?,
+        O::Sqrt(_) => map_float(name, a, f32::sqrt)?,
+        O::InvSqrt(_) => map_float(name, a, |x| 1.0 / x.sqrt())?,
+        O::Exp(_) => map_float(name, a, f32::exp)?,
+        O::Exp2(_) => map_float(name, a, f32::exp2)?,
+        O::Log(_) => map_float(name, a, f32::ln)?,
+        O::Log2(_) => map_float(name, a, f32::log2)?,
+        O::Sin(_) => map_float(name, a, f32::sin)?,
+        O::Cos(_) => map_float(name, a, f32::cos)?,
+        O::Tan(_) => map_float(name, a, f32::tan)?,
+        O::Asin(arg) | O::Acos(arg) => {
+            // The GPU shader compiler evaluates constant arguments and
+            // rejects ones outside [-1, 1].
+            if is_constant(arg) && a.floats().is_some_and(|(n, c)| c[..n].iter().any(|x| x.abs() > 1.0)) {
+                return Err(format!(
+                    "{} of the constant {:?} is outside -1..1: the GPU shader compiler rejects it",
+                    name,
+                    a.floats().map(|(n, c)| c[..n].to_vec()).unwrap_or_default()
+                ));
+            }
+            map_float(name, a, if matches!(op, O::Asin(_)) { f32::asin } else { f32::acos })?
+        }
+        O::Atan(_) => map_float(name, a, f32::atan)?,
+        O::Atan2(..) => componentwise(name, &args, &[false, false], |x| x[0].atan2(x[1]))?,
+        O::Step(..) => componentwise(name, &args, &[false, false], |x| if x[1] >= x[0] { 1.0 } else { 0.0 })?,
+        O::Uniform(ea, eb) | O::Normal(ea, eb) => {
+            let uniform = matches!(op, O::Uniform(..));
             match (a.floats(), b.floats()) {
                 (Some((na, ca)), Some((nb, cb))) if na == nb => {
+                    if !has_known_type(ea) || !has_known_type(eb) {
+                        return Err(format!(
+                            "{} needs operands whose type bevy_hanabi knows while writing the shader (numbers, random values, attributes); wrap a Param, Property or calculation in Operator(Cast(..., {}))",
+                            name,
+                            ["F32", "Vec2", "Vec3", "Vec4"][na - 1]
+                        ));
+                    }
                     let mut out = [0.0; 4];
                     for i in 0..na {
-                        let t: f32 = env.rng.random();
-                        out[i] = ca[i] + t * (cb[i] - ca[i]);
+                        out[i] = if uniform {
+                            let t: f32 = env.rng.random();
+                            ca[i] + t * (cb[i] - ca[i])
+                        } else {
+                            normal_sample(env.rng, ca[i], cb[i])
+                        };
                     }
                     Val::from_floats(na, out)
                 }
                 _ => {
                     return Err(format!(
-                        "Uniform needs two values of the same float type (f32, vec2, vec3 or vec4), got {} and {}",
+                        "{} needs two values of the same float type (f32, vec2, vec3 or vec4), got {} and {}",
+                        name,
                         a.type_name(),
                         b.type_name()
                     ))
                 }
             }
         }
-        O::Sin(a) => {
-            let a = eval(a, env)?;
-            a.map_floats(f32::sin)
-                .ok_or_else(|| format!("Sin needs a float value, got {}", a.type_name()))?
-        }
-        O::Cos(a) => {
-            let a = eval(a, env)?;
-            a.map_floats(f32::cos)
-                .ok_or_else(|| format!("Cos needs a float value, got {}", a.type_name()))?
-        }
-        O::Distance(a, b) => {
-            let (a, b) = (eval(a, env)?, eval(b, env)?);
-            match (a.floats(), b.floats()) {
-                (Some((na, ca)), Some((nb, cb))) if na == nb => {
-                    let d2: f32 = (0..na).map(|i| (ca[i] - cb[i]).powi(2)).sum();
-                    Val::F(d2.sqrt())
-                }
-                _ => {
-                    return Err(format!(
-                        "Distance needs two values of the same float type, got {} and {}",
-                        a.type_name(),
-                        b.type_name()
-                    ))
-                }
+        O::Distance(..) => match (a.floats(), b.floats()) {
+            (Some((na, ca)), Some((nb, cb))) if na == nb => {
+                let d2: f32 = (0..na).map(|i| (ca[i] - cb[i]).powi(2)).sum();
+                Val::F(d2.sqrt())
             }
-        }
-        O::Vec3(x, y, z) => {
-            let c = [eval(x, env)?, eval(y, env)?, eval(z, env)?];
-            match c {
-                [Val::F(x), Val::F(y), Val::F(z)] => Val::V3(Vec3::new(x, y, z)),
-                _ => {
-                    return Err(format!(
-                        "Vec3 operator needs three f32 values, got ({}, {}, {})",
-                        c[0].type_name(),
-                        c[1].type_name(),
-                        c[2].type_name()
-                    ))
-                }
-            }
-        }
-        O::Vec4(x, y, z, w) => {
-            let c = [eval(x, env)?, eval(y, env)?, eval(z, env)?, eval(w, env)?];
-            match c {
-                [Val::F(x), Val::F(y), Val::F(z), Val::F(w)] => Val::V4(Vec4::new(x, y, z, w)),
-                _ => {
-                    return Err(format!(
-                        "Vec4 operator needs four f32 values, got ({}, {}, {}, {})",
-                        c[0].type_name(),
-                        c[1].type_name(),
-                        c[2].type_name(),
-                        c[3].type_name()
-                    ))
-                }
-            }
-        }
-        O::Pack4x8UNorm(a) => match eval(a, env)? {
-            Val::V4(v) => Val::U(pack4x8unorm(v)),
-            other => {
+            _ => {
                 return Err(format!(
-                    "Pack4x8UNorm needs a vec4, got {}",
-                    other.type_name()
+                    "Distance needs two values of the same float type, got {} and {}",
+                    a.type_name(),
+                    b.type_name()
                 ))
             }
         },
-        O::Normalized(a) => {
-            let a = eval(a, env)?;
-            match a.floats() {
-                Some((n, c)) if n > 1 => {
-                    let len = (0..n).map(|i| c[i] * c[i]).sum::<f32>().sqrt();
-                    let inv = if len > 0.0 { 1.0 / len } else { f32::NAN };
-                    a.map_floats(|x| x * inv).unwrap()
-                }
-                _ => return Err(format!("Normalized needs a vector, got {}", a.type_name())),
+        O::Length(_) => match a.floats() {
+            Some((n, c)) => Val::F((0..n).map(|i| c[i] * c[i]).sum::<f32>().sqrt()),
+            None => return Err(format!("Length needs a float value, got {}", a.type_name())),
+        },
+        O::Normalized(_) => match float_vector(a) {
+            Some((n, c)) => {
+                let len = (0..n).map(|i| c[i] * c[i]).sum::<f32>().sqrt();
+                let inv = if len > 0.0 { 1.0 / len } else { f32::NAN };
+                a.map_floats(|x| x * inv).unwrap()
+            }
+            None => return Err(format!("Normalized needs a vector, got {}", a.type_name())),
+        },
+        O::Dot(..) => {
+            let (la, lb) = (a.lanes(), b.lanes());
+            if la.n == 0 || la.n != lb.n || la.elem != lb.elem || la.elem == Elem::B {
+                return Err(format!("Dot needs two number vectors of the same type, got ({})", types_text(&args)));
+            }
+            let n = la.count();
+            match la.elem {
+                Elem::F => Val::F((0..n).map(|k| la.f[k] * lb.f[k]).sum()),
+                Elem::I => Val::I((0..n).fold(0i32, |s, k| s.wrapping_add(la.i[k].wrapping_mul(lb.i[k])))),
+                _ => Val::U((0..n).fold(0u32, |s, k| s.wrapping_add(la.u[k].wrapping_mul(lb.u[k])))),
             }
         }
-        O::Mix(a, b, t) => {
-            let args = [eval(a, env)?, eval(b, env)?, eval(t, env)?];
-            componentwise("Mix", &args, &[false, false, true], |x| x[0] + (x[1] - x[0]) * x[2])?
-        }
-        O::Clamp(x, low, high) => {
-            let args = [eval(x, env)?, eval(low, env)?, eval(high, env)?];
-            componentwise("Clamp", &args, &[false, false, false], |x| x[0].max(x[1]).min(x[2]))?
-        }
-        O::SmoothStep(low, high, x) => {
-            let args = [eval(low, env)?, eval(high, env)?, eval(x, env)?];
-            componentwise("SmoothStep", &args, &[false, false, false], |x| smoothstep(x[0], x[1], x[2]))?
-        }
-        O::Min(a, b) | O::Max(a, b) => {
-            let max = matches!(op, O::Max(..));
-            match (eval(a, env)?, eval(b, env)?) {
-                (Val::U(x), Val::U(y)) => Val::U(if max { x.max(y) } else { x.min(y) }),
-                (Val::I(x), Val::I(y)) => Val::I(if max { x.max(y) } else { x.min(y) }),
-                (a, b) => componentwise(op.name(), &[a, b], &[false, false], |x| {
-                    if max { x[0].max(x[1]) } else { x[0].min(x[1]) }
-                })?,
+        O::Cross(..) => match (a, b) {
+            (Val::V3(x), Val::V3(y)) => Val::V3(x.cross(y)),
+            _ => return Err(format!("Cross needs two vec3, got ({})", types_text(&args))),
+        },
+        O::Vec2(..) | O::Vec3(..) | O::Vec4(..) => build_vector(name, &args)?,
+        O::Vec4XyzW(..) => {
+            let (la, lb) = (a.lanes(), b.lanes());
+            if la.n != 3 || lb.n != 0 || la.elem != lb.elem {
+                return Err(format!(
+                    "Vec4XyzW needs a 3-component vector and a number of its element type, got ({})",
+                    types_text(&args)
+                ));
             }
+            let mut out = la;
+            out.n = 4;
+            out.f[3] = lb.f[0];
+            out.i[3] = lb.i[0];
+            out.u[3] = lb.u[0];
+            out.b[3] = lb.b[0];
+            out.to_val()
         }
+        O::X(_) | O::Y(_) | O::Z(_) | O::W(_) => {
+            let index = match op {
+                O::X(_) => 0,
+                O::Y(_) => 1,
+                O::Z(_) => 2,
+                _ => 3,
+            };
+            let l = a.lanes();
+            if l.n <= index {
+                return Err(format!("{} needs a vector with at least {} components, got {}", name, index + 1, a.type_name()));
+            }
+            let mut out = Lanes::new(l.elem, 0);
+            out.f[0] = l.f[index];
+            out.i[0] = l.i[index];
+            out.u[0] = l.u[index];
+            out.b[0] = l.b[index];
+            out.to_val()
+        }
+        O::GreaterThan(..) => compare(name, a, b, |o| o.is_gt())?,
+        O::GreaterThanOrEqual(..) => compare(name, a, b, |o| o.is_ge())?,
+        O::LessThan(..) => compare(name, a, b, |o| o.is_lt())?,
+        O::LessThanOrEqual(..) => compare(name, a, b, |o| o.is_le())?,
+        O::All(_) | O::Any(_) => {
+            let l = a.lanes();
+            if l.elem != Elem::B {
+                return Err(format!("{} needs a bool or a bool vector, got {}", name, a.type_name()));
+            }
+            let lanes = &l.b[..l.count()];
+            Val::B(if matches!(op, O::All(_)) { lanes.iter().all(|b| *b) } else { lanes.iter().any(|b| *b) })
+        }
+        O::Mix(..) => componentwise(name, &args, &[false, false, true], |x| x[0] + (x[1] - x[0]) * x[2])?,
+        O::Clamp(..) => match args.as_slice() {
+            [Val::I(x), Val::I(lo), Val::I(hi)] => Val::I((*x).max(*lo).min(*hi)),
+            [Val::U(x), Val::U(lo), Val::U(hi)] => Val::U((*x).max(*lo).min(*hi)),
+            _ => componentwise(name, &args, &[false, false, false], |x| x[0].max(x[1]).min(x[2]))?,
+        },
+        O::SmoothStep(..) => componentwise(name, &args, &[false, false, false], |x| smoothstep(x[0], x[1], x[2]))?,
+        O::Pack4x8UNorm(_) | O::Pack4x8SNorm(_) => match a {
+            Val::V4(v) => Val::U(if matches!(op, O::Pack4x8UNorm(_)) { pack4x8unorm(v) } else { pack4x8snorm(v) }),
+            other => return Err(format!("{} needs a vec4, got {}", name, other.type_name())),
+        },
+        O::Unpack4x8UNorm(_) | O::Unpack4x8SNorm(_) => match a {
+            Val::U(u) => Val::V4(if matches!(op, O::Unpack4x8UNorm(_)) { unpack4x8unorm(u) } else { unpack4x8snorm(u) }),
+            other => return Err(format!("{} needs a u32, got {}", name, other.type_name())),
+        },
+        O::Cast(_, target) => cast(a, *target)?,
         O::Attr(attr) => env.attrs.get(*attr),
-        O::ParentAttr(attr) => match env.parent {
-            Some(parent) => parent.get(*attr),
-            None => {
+        O::ParentAttr(attr) => match (env.parent, env.ctx) {
+            (Some(parent), Ctx::Init) => parent.get(*attr),
+            (Some(_), _) => {
+                return Err(format!(
+                    "ParentAttr(\"{}\") works only in init modifiers (the parent particle is read when a child is born)",
+                    attr.name()
+                ))
+            }
+            (None, _) => {
                 return Err(format!(
                     "ParentAttr(\"{}\") is used, but this effect has no parent",
                     attr.name()
@@ -469,6 +862,8 @@ fn attr_type_hint(attr: Attribute, got: Val) -> &'static str {
         " (hdr_color is a vec4; set color for a packed u32)"
     } else if attr == Attribute::SIZE && matches!(got, Val::V3(_)) {
         " (size is a single f32; use size3 for a per-axis vec3)"
+    } else if attr == Attribute::SPRITE_INDEX && matches!(got, Val::F(_) | Val::U(_)) {
+        " (sprite_index is an i32: wrap the value in Operator(Cast(..., I32)))"
     } else {
         ""
     }
@@ -498,41 +893,29 @@ fn safe_normalize(v: Vec3) -> Vec3 {
 // ---------------------------------------------------------------------------
 
 fn modifier_name(m: &ModifierEditor) -> &'static str {
-    match m {
-        ModifierEditor::SetAttribute(_) => "SetAttribute",
-        ModifierEditor::InheritAttribute(_) => "InheritAttribute",
-        ModifierEditor::SetPositionCircle(_) => "SetPositionCircle",
-        ModifierEditor::SetPositionSphere(_) => "SetPositionSphere",
-        ModifierEditor::SetVelocityCircle(_) => "SetVelocityCircle",
-        ModifierEditor::SetVelocitySphere(_) => "SetVelocitySphere",
-        ModifierEditor::SetVelocityTangent(_) => "SetVelocityTangent",
-        ModifierEditor::AccelModifier(_) => "AccelModifier",
-        ModifierEditor::LinearDragModifier(_) => "LinearDragModifier",
-        ModifierEditor::EmitSpawnEventModifier(_) => "EmitSpawnEventModifier",
-        ModifierEditor::ConformToSphereModifier(_) => "ConformToSphereModifier",
-    }
+    m.kind_name()
 }
 
-fn is_init_modifier(m: &ModifierEditor) -> bool {
-    matches!(
-        m,
-        ModifierEditor::SetAttribute(_)
-            | ModifierEditor::InheritAttribute(_)
-            | ModifierEditor::SetPositionCircle(_)
-            | ModifierEditor::SetPositionSphere(_)
-            | ModifierEditor::SetVelocityCircle(_)
-            | ModifierEditor::SetVelocitySphere(_)
-            | ModifierEditor::SetVelocityTangent(_)
-    )
-}
-
-/// Applies an init modifier to a newborn particle.
+/// Sets attributes the way an init (or init-and-update) modifier does.
+/// `ctx` is the shader it runs in.
 fn apply_init(
     m: &ModifierEditor,
     p: &mut Attrs,
     parent: Option<&Attrs>,
     rng: &mut StdRng,
     time: f32,
+) -> Result<(), String> {
+    apply_setter(m, p, parent, rng, time, Ctx::Init, true)
+}
+
+fn apply_setter(
+    m: &ModifierEditor,
+    p: &mut Attrs,
+    parent: Option<&Attrs>,
+    rng: &mut StdRng,
+    time: f32,
+    ctx: Ctx,
+    is_alive: bool,
 ) -> Result<(), String> {
     macro_rules! ev {
         ($e:expr) => {
@@ -543,6 +926,8 @@ fn apply_init(
                     attrs: &*p,
                     parent,
                     time,
+                    ctx,
+                    is_alive,
                 },
             )?
         };
@@ -598,6 +983,19 @@ fn apply_init(
                 Val::V3(center + random_unit(rng) * dist),
             );
         }
+        ModifierEditor::SetPositionCone3d(m) => {
+            let height = want_f32(ev!(&m.height_expr), "SetPositionCone3d height")?;
+            let base = want_f32(ev!(&m.base_radius_expr), "SetPositionCone3d base_radius")?;
+            let top = want_f32(ev!(&m.top_radius_expr), "SetPositionCone3d top_radius")?;
+            // bevy_hanabi's distribution (the emitter is not rotated here).
+            let alpha_h = rng.random::<f32>().powf(1.0 / 3.0);
+            let r = (base + (top - base) * alpha_h) * rng.random::<f32>().sqrt();
+            let theta = rng.random::<f32>() * std::f32::consts::TAU;
+            p.set(
+                Attribute::POSITION,
+                Val::V3(Vec3::new(r * theta.cos(), height * alpha_h, r * theta.sin())),
+            );
+        }
         ModifierEditor::SetVelocityCircle(m) => {
             let center = want_vec3(ev!(&m.center_expr), "SetVelocityCircle center")?;
             let axis = want_vec3(ev!(&m.axis_expr), "SetVelocityCircle axis")?;
@@ -620,7 +1018,7 @@ fn apply_init(
             let dir = safe_normalize(axis.cross(p.vec3(Attribute::POSITION) - origin));
             p.set(Attribute::VELOCITY, Val::V3(dir * speed));
         }
-        // Update modifiers are dropped by the editor when listed in `init_modifiers`.
+        // Update-only modifiers are reported (and ignored) in the init list.
         _ => {}
     }
     Ok(())
@@ -632,7 +1030,9 @@ struct Emission {
     count: u32,
 }
 
-/// Applies an update modifier for one simulation step.
+/// Applies an update modifier for one simulation step. `alive` is the
+/// particle's alive flag at this point of the update (kill modifiers clear
+/// it; `EmitSpawnEvent(OnDie)` and `IsAlive` read it).
 fn apply_update(
     m: &ModifierEditor,
     p: &mut Attrs,
@@ -640,9 +1040,10 @@ fn apply_update(
     rng: &mut StdRng,
     time: f32,
     was_alive: bool,
-    is_alive: bool,
+    alive: &mut bool,
     emissions: &mut Vec<Emission>,
 ) -> Result<(), String> {
+    let is_alive = *alive;
     macro_rules! ev {
         ($e:expr) => {
             eval(
@@ -652,6 +1053,8 @@ fn apply_update(
                     attrs: &*p,
                     parent,
                     time,
+                    ctx: Ctx::Update,
+                    is_alive,
                 },
             )?
         };
@@ -662,10 +1065,44 @@ fn apply_update(
             let v = p.vec3(Attribute::VELOCITY) + accel * DT;
             p.set(Attribute::VELOCITY, Val::V3(v));
         }
+        ModifierEditor::RadialAccel(m) => {
+            let origin = want_vec3(ev!(&m.origin_expr), "RadialAccel origin")?;
+            let accel = want_f32(ev!(&m.accel_expr), "RadialAccel accel")?;
+            let radial = safe_normalize(p.vec3(Attribute::POSITION) - origin);
+            let v = p.vec3(Attribute::VELOCITY) + radial * accel * DT;
+            p.set(Attribute::VELOCITY, Val::V3(v));
+        }
+        ModifierEditor::TangentAccel(m) => {
+            let origin = want_vec3(ev!(&m.origin_expr), "TangentAccel origin")?;
+            let axis = want_vec3(ev!(&m.axis_expr), "TangentAccel axis")?;
+            let accel = want_f32(ev!(&m.accel_expr), "TangentAccel accel")?;
+            let radial = safe_normalize(p.vec3(Attribute::POSITION) - origin);
+            let tangent = safe_normalize(axis.cross(radial));
+            let v = p.vec3(Attribute::VELOCITY) + tangent * accel * DT;
+            p.set(Attribute::VELOCITY, Val::V3(v));
+        }
         ModifierEditor::LinearDragModifier(m) => {
             let drag = want_f32(ev!(&m.drag_expr), "LinearDragModifier drag")?;
             let v = p.vec3(Attribute::VELOCITY) * (1.0 - drag * DT).max(0.0);
             p.set(Attribute::VELOCITY, Val::V3(v));
+        }
+        ModifierEditor::KillSphere(m) => {
+            let center = want_vec3(ev!(&m.center_expr), "KillSphere center")?;
+            let radius = want_f32(ev!(&m.radius_expr), "KillSphere radius")?;
+            let d2 = (p.vec3(Attribute::POSITION) - center).length_squared();
+            let r2 = radius * radius;
+            if (m.kill_inside && d2 < r2) || (!m.kill_inside && d2 > r2) {
+                *alive = false;
+            }
+        }
+        ModifierEditor::KillAabb(m) => {
+            let center = want_vec3(ev!(&m.center_expr), "KillAabb center")?;
+            let half = want_vec3(ev!(&m.half_size_expr), "KillAabb half_size")?;
+            let d = (p.vec3(Attribute::POSITION) - center).abs();
+            let kill = if m.kill_inside { d.cmplt(half).all() } else { d.cmpgt(half).any() };
+            if kill {
+                *alive = false;
+            }
         }
         ModifierEditor::EmitSpawnEventModifier(m) => {
             let count = want_u32(ev!(&m.count_expr), "EmitSpawnEvent count")?;
@@ -701,10 +1138,22 @@ fn apply_update(
                 p.set(Attribute::VELOCITY, Val::V3(v));
             }
         }
-        // Init modifiers are dropped by the editor when listed in `update_modifiers`.
+        // Setters allowed in both lists run every frame here.
+        m if m.contexts().contains(ModifierContext::Update) => {
+            apply_setter(m, p, parent, rng, time, Ctx::Update, is_alive)?
+        }
+        // Init-only modifiers are reported (and ignored) in the update list.
         _ => {}
     }
     Ok(())
+}
+
+/// Type checks a render-time expression (Round roundness, Orient rotation):
+/// it must give an f32.
+fn check_render_expr(e: &ExprWriterEditor, what: &str, attrs: &Attrs) -> Result<(), String> {
+    let mut rng = StdRng::seed_from_u64(0);
+    let mut env = Env { rng: &mut rng, attrs, parent: None, time: 0.0, ctx: Ctx::Render, is_alive: true };
+    want_f32(eval(e, &mut env)?, what).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,6 +1756,129 @@ fn check_texture_settings(d: &mut Diagnostics, label: &str, t: &TextureAssetDef,
     }
 }
 
+/// Whether an expression reads a random value.
+fn expr_is_random(e: &ExprWriterEditor) -> bool {
+    let mut random = false;
+    e.visit(&mut |e| {
+        random |= match e {
+            ExprWriterEditor::RandFloat | ExprWriterEditor::RandVec3 | ExprWriterEditor::RandU32 | ExprWriterEditor::Rand(_) => true,
+            ExprWriterEditor::Operator(op) => matches!(**op, ExprOperatorEditor::Uniform(..) | ExprOperatorEditor::Normal(..)),
+            _ => false,
+        }
+    });
+    random
+}
+
+/// The largest particle size (metres, or pixels with ScreenSpaceSize) the
+/// render modifiers before `before` (an index into the render list) leave,
+/// when it is known without simulating.
+fn size_before(effect: &ParticleEffectDef, before: usize) -> Option<f32> {
+    let mut size = None;
+    for m in effect.init_modifiers.iter() {
+        if let ModifierEditor::SetAttribute(s) = m {
+            if s.attr == Attribute::SIZE {
+                size = s.attr_expr.scalar_range().map(|(_, hi)| hi);
+            }
+        }
+    }
+    for m in effect.render_modifiers.iter().take(before) {
+        match m {
+            RenderModifierEditor::SizeOverLifetime(s) => {
+                size = s.gradient.g.iter().map(|(_, v)| v.max_element()).reduce(f32::max);
+            }
+            RenderModifierEditor::SetSize(s) => {
+                size = Some(match s.size {
+                    CpuVecDef::Single(v) => v.max_element(),
+                    CpuVecDef::Uniform((a, b)) => a.max(b).max_element(),
+                });
+            }
+            _ => {}
+        }
+    }
+    Some(size.unwrap_or(1.0))
+}
+
+/// Render modifiers: the flipbook's grid and frames, settings bevy_hanabi
+/// ignores, random values at render time, pixel sizes.
+fn check_render_modifiers(d: &mut Diagnostics, project: &ProjectV2, layer: &ParticlesLayerDef) {
+    let name = layer.name.as_str();
+    let effect = &layer.effect;
+    let writes = |attr: Attribute| {
+        effect.init_modifiers.iter().chain(effect.update_modifiers.iter()).any(|m| match m {
+            ModifierEditor::SetAttribute(s) => s.attr == attr,
+            ModifierEditor::InheritAttribute(s) => s.attr == attr,
+            _ => false,
+        })
+    };
+    for m in effect.init_modifiers.iter() {
+        if let ModifierEditor::SetPositionCone3d(c) = m {
+            if c.dimension == ShapeDimension::Surface {
+                d.warn(name, "SetPositionCone3d always fills the cone's volume (bevy_hanabi ignores dimension Surface); use Volume");
+            }
+        }
+    }
+    for (index, m) in effect.render_modifiers.iter().enumerate() {
+        match m {
+            RenderModifierEditor::Flipbook(f) => {
+                match f.grid_for(project.texture_grid(layer)) {
+                    None => d.warn(
+                        name,
+                        "Flipbook has no grid: set the texture asset's grid (rows × columns, ASSETS tab) or the modifier's own; until then the whole texture is one frame",
+                    ),
+                    Some((rows, cols)) if rows == 0 || cols == 0 => {
+                        d.error(name, format!("Flipbook grid ({}, {}) needs at least 1 row and 1 column", rows, cols))
+                    }
+                    Some(_) => {}
+                }
+                if !has_texture_sampling(effect) {
+                    d.warn(name, "Flipbook picks frames of the layer's texture, but no ParticleTexture render modifier draws it");
+                }
+                if !writes(Attribute::SPRITE_INDEX) {
+                    d.warn(
+                        name,
+                        "Flipbook draws frame sprite_index, but nothing sets it, so every particle shows frame 0; add an update SetAttribute(\"sprite_index\") that steps through the frames (editor: Update + \"Flipbook frames over lifetime\"; guide section \"render\")",
+                    );
+                }
+            }
+            RenderModifierEditor::Orient(o) if o.rotation_expr.is_some() && o.mode == OrientModeDef::AlongVelocity => d.warn(
+                name,
+                "Orient rotation is ignored with AlongVelocity (bevy_hanabi rotates ParallelCameraDepthPlane and FaceCameraPosition only)",
+            ),
+            RenderModifierEditor::SetColor(c) if matches!(c.color, CpuVecDef::Uniform(_)) => d.warn(
+                name,
+                "SetColor with a random range: bevy_hanabi's render shader has no per-particle random seed, so every particle gets the same colour; set hdr_color in an init modifier for per-particle colours",
+            ),
+            RenderModifierEditor::SetSize(s) if matches!(s.size, CpuVecDef::Uniform(_)) => d.warn(
+                name,
+                "SetSize with a random range: bevy_hanabi's render shader has no per-particle random seed, so every particle gets the same size; set size in an init modifier for per-particle sizes",
+            ),
+            RenderModifierEditor::ScreenSpaceSize(_) => {
+                if let Some(size) = size_before(effect, index) {
+                    if size < 2.0 {
+                        d.warn(
+                            name,
+                            format!(
+                                "ScreenSpaceSize reads the particle size as screen pixels, but the size before it is about {}: the particles are smaller than 2 pixels (sizes like 8.0 to 32.0 work)",
+                                fmt_num(size)
+                            ),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        if m.exprs().into_iter().any(expr_is_random) {
+            d.warn(
+                name,
+                format!(
+                    "{} reads a random value, but at render time bevy_hanabi gives every particle the same one; set a random attribute at birth (e.g. f32_0) and read it with Attr",
+                    m.kind_name()
+                ),
+            );
+        }
+    }
+}
+
 /// Runs every static check on a project: structure, assets, expression types,
 /// the bevy_hanabi shader generation and a package round trip. Relative
 /// texture paths are looked up in `assets_root` (the game assets folder).
@@ -1507,18 +2079,23 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         }
 
         for m in effect.init_modifiers.iter() {
-            if !is_init_modifier(m) {
+            if !m.contexts().contains(ModifierContext::Init) {
                 d.error(name, format!("{} is an update modifier but is listed in init_modifiers; it is ignored", modifier_name(m)));
             }
         }
         for m in effect.update_modifiers.iter() {
-            if is_init_modifier(m) {
+            if !m.contexts().contains(ModifierContext::Update) {
                 d.error(name, format!("{} is an init modifier but is listed in update_modifiers; it is ignored", modifier_name(m)));
             }
         }
         for m in effect.init_modifiers.iter().chain(effect.update_modifiers.iter()) {
             if modifier_exprs(m).into_iter().any(expr_has_placeholder) {
                 d.warn(name, format!("{} has an empty Placeholder expression (evaluates to f32 0.0)", modifier_name(m)));
+            }
+        }
+        for m in effect.render_modifiers.iter() {
+            if m.exprs().into_iter().any(expr_has_placeholder) {
+                d.warn(name, format!("{} has an empty Placeholder expression (evaluates to f32 0.0)", m.kind_name()));
             }
         }
 
@@ -1530,15 +2107,29 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         let parent_attrs = layer.parent.as_ref().map(|_| Attrs::default());
         let mut p = Attrs::default();
         let dry = &resolved_layers[i].effect;
-        for m in dry.init_modifiers.iter() {
+        for m in dry.init_modifiers.iter().filter(|m| m.contexts().contains(ModifierContext::Init)) {
             if let Err(e) = apply_init(m, &mut p, parent_attrs.as_ref(), &mut rng, 0.0) {
                 d.error(name, format!("init {}: {}", modifier_name(m), e));
             }
         }
         let mut emissions = Vec::new();
-        for m in dry.update_modifiers.iter() {
-            if let Err(e) = apply_update(m, &mut p, parent_attrs.as_ref(), &mut rng, 0.0, true, true, &mut emissions) {
+        let mut alive = true;
+        for m in dry.update_modifiers.iter().filter(|m| m.contexts().contains(ModifierContext::Update)) {
+            if let Err(e) = apply_update(m, &mut p, parent_attrs.as_ref(), &mut rng, 0.0, true, &mut alive, &mut emissions) {
                 d.error(name, format!("update {}: {}", modifier_name(m), e));
+            }
+        }
+        for m in dry.render_modifiers.iter() {
+            let result = match m {
+                RenderModifierEditor::Round(r) => check_render_expr(&r.roundness_expr, "Round roundness", &p),
+                RenderModifierEditor::Orient(o) => match &o.rotation_expr {
+                    Some(rotation) => check_render_expr(rotation, "Orient rotation", &p),
+                    None => Ok(()),
+                },
+                _ => Ok(()),
+            };
+            if let Err(e) = result {
+                d.error(name, format!("render {}: {}", m.kind_name(), e));
             }
         }
 
@@ -1547,16 +2138,16 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         // Skipped when the checks above already failed, to avoid duplicates.
         // Wrong-list modifiers were reported above, so produce()'s own
         // warnings are not repeated.
-        let params = &project.parameters;
-        let asset = layer.produce(params, &mut Vec::new());
+        let asset = layer.produce_in(project, &mut Vec::new());
         if d.errors.len() == errors_before {
             let parent_layout =
-                parent_index(&layers, i).map(|pi| layers[pi].produce(params, &mut Vec::new()).particle_layout());
+                parent_index(&layers, i).map(|pi| layers[pi].produce_in(project, &mut Vec::new()).particle_layout());
             if let Err(e) = EffectShaderSources::generate(&asset, parent_layout.as_ref(), n_children) {
                 d.error(name, format!("bevy_hanabi shader generation failed: {}", e));
             }
         }
-        let sets_velocity = effect.init_modifiers.iter().any(|m| match m {
+        check_render_modifiers(&mut d, project, layer);
+        let sets_velocity = effect.init_modifiers.iter().chain(effect.update_modifiers.iter()).any(|m| match m {
             ModifierEditor::SetAttribute(m) => m.attr == Attribute::VELOCITY,
             ModifierEditor::InheritAttribute(m) => m.attr == Attribute::VELOCITY,
             ModifierEditor::SetVelocityCircle(_)
@@ -1564,10 +2155,15 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
             | ModifierEditor::SetVelocityTangent(_) => true,
             _ => false,
         });
-        let accelerates = effect
-            .update_modifiers
-            .iter()
-            .any(|m| matches!(m, ModifierEditor::AccelModifier(_) | ModifierEditor::ConformToSphereModifier(_)));
+        let accelerates = effect.update_modifiers.iter().any(|m| {
+            matches!(
+                m,
+                ModifierEditor::AccelModifier(_)
+                    | ModifierEditor::ConformToSphereModifier(_)
+                    | ModifierEditor::RadialAccel(_)
+                    | ModifierEditor::TangentAccel(_)
+            )
+        });
         if !effect
             .render_modifiers
             .iter()
@@ -1577,6 +2173,18 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         }
         if !sets_velocity && !accelerates && orients_along_velocity(effect) {
             d.warn(name, "nothing sets a velocity, but Orient(AlongVelocity) orients particles along it, so motionless particles may render invisible (use another orient mode)");
+        }
+        if effect.motion_integration == MotionIntegrationDef::None && (sets_velocity || accelerates) {
+            let moves_by_position = effect.update_modifiers.iter().any(|m| {
+                matches!(m, ModifierEditor::SetAttribute(s) if s.attr == Attribute::POSITION)
+                    || matches!(m, ModifierEditor::SetPositionCircle(_) | ModifierEditor::SetPositionSphere(_))
+            });
+            if !moves_by_position {
+                d.warn(
+                    name,
+                    "motion_integration is None, so velocities do not move particles (they stay where they are born); use PostUpdate, or set the position in an update modifier",
+                );
+            }
         }
         let layout = asset.particle_layout();
         if !layout.contains(Attribute::AGE) {
@@ -1736,7 +2344,7 @@ fn simulate_particle(
     rng: &mut StdRng,
 ) -> Result<Sample, String> {
     let mut p = Attrs::default();
-    for m in effect.init_modifiers.iter() {
+    for m in effect.init_modifiers.iter().filter(|m| m.contexts().contains(ModifierContext::Init)) {
         apply_init(m, &mut p, parent, rng, birth)?;
     }
     let init = p.clone();
@@ -1763,20 +2371,34 @@ fn simulate_particle(
     let mut pending_always: Vec<(u32, u32)> = Vec::new();
     let mut step: u32 = 0;
     let steps = (max_time / DT).ceil() as u32;
+    let integrate = |p: &mut Attrs| {
+        let pos = p.vec3(Attribute::POSITION) + p.vec3(Attribute::VELOCITY) * DT;
+        p.set(Attribute::POSITION, Val::V3(pos));
+    };
     while step < steps {
-        let was_alive = !mortal || age < lifetime_attr;
+        // As bevy_hanabi: alive while age < lifetime (re-read, an update
+        // modifier may change it), and kill modifiers clear the flag.
+        let was_alive = !mortal || age < p.f32(Attribute::LIFETIME);
         age += DT;
         p.set(Attribute::AGE, Val::F(age));
-        let is_alive = !mortal || age < lifetime_attr;
+        let mut is_alive = !mortal || age < p.f32(Attribute::LIFETIME);
         let time = birth + age;
 
         emissions.clear();
-        for m in effect.update_modifiers.iter() {
-            apply_update(m, &mut p, parent, rng, time, was_alive, is_alive, &mut emissions)?;
+        if effect.motion_integration == MotionIntegrationDef::PreUpdate {
+            integrate(&mut p);
+        }
+        for m in effect.update_modifiers.iter().filter(|m| m.contexts().contains(ModifierContext::Update)) {
+            apply_update(m, &mut p, parent, rng, time, was_alive, &mut is_alive, &mut emissions)?;
+        }
+        if mortal {
+            is_alive &= age < p.f32(Attribute::LIFETIME);
+        }
+        if effect.motion_integration == MotionIntegrationDef::PostUpdate {
+            integrate(&mut p);
         }
         let vel = p.vec3(Attribute::VELOCITY);
-        let pos = p.vec3(Attribute::POSITION) + vel * DT;
-        p.set(Attribute::POSITION, Val::V3(pos));
+        let pos = p.vec3(Attribute::POSITION);
         if vel.length_squared() < 1e-12 {
             sample.zero_velocity = true;
         }
@@ -1887,7 +2509,7 @@ fn simulate_project(project: &ProjectV2, n_samples: usize, seed: u64) -> (Vec<Ef
     let mortal: Vec<bool> = effects
         .iter()
         .map(|e| {
-            let layout = e.produce(&project.parameters, &mut Vec::new()).particle_layout();
+            let layout = e.produce_in(project, &mut Vec::new()).particle_layout();
             layout.contains(Attribute::AGE) && layout.contains(Attribute::LIFETIME)
         })
         .collect();
@@ -2171,6 +2793,45 @@ fn base_color(init: &Attrs) -> Vec4 {
     }
 }
 
+/// `value` combined with `base` like bevy_hanabi's colour render modifiers:
+/// `blend` on the `mask` channels, the others unchanged.
+fn blend_color(base: Vec4, value: Vec4, blend: ColorBlendMode, mask: ColorBlendMask) -> Vec4 {
+    let mut out = base;
+    for (i, bit) in [ColorBlendMask::R, ColorBlendMask::G, ColorBlendMask::B, ColorBlendMask::A].into_iter().enumerate() {
+        if mask.contains(bit) {
+            out[i] = match blend {
+                ColorBlendMode::Overwrite => value[i],
+                ColorBlendMode::Modulate => base[i] * value[i],
+                ColorBlendMode::Add => base[i] + value[i],
+            };
+        }
+    }
+    out
+}
+
+/// The colour a particle born with `base` is drawn with at life fraction
+/// `t`: the colour render modifiers in list order (SetColor ranges at their
+/// middle).
+fn render_color(effect: &ParticleEffectDef, base: Vec4, t: f32) -> Vec4 {
+    let mut color = base;
+    for m in effect.render_modifiers.iter() {
+        match m {
+            RenderModifierEditor::ColorOverLifetime(c) => {
+                color = blend_color(color, gradient_eval4(&c.gradient.g, t), c.blend.unwrap_or_default(), c.mask.unwrap_or_default());
+            }
+            RenderModifierEditor::SetColor(c) => {
+                let value = match c.color {
+                    CpuVecDef::Single(v) => v,
+                    CpuVecDef::Uniform((a, b)) => (a + b) * 0.5,
+                };
+                color = blend_color(color, value, c.blend, c.mask);
+            }
+            _ => {}
+        }
+    }
+    color
+}
+
 fn describe_color(effect: &ParticleEffectDef, samples: &[Sample], out: &mut String) {
     let color_mod = effect.render_modifiers.iter().find_map(|m| match m {
         RenderModifierEditor::ColorOverLifetime(c) => Some(c),
@@ -2187,31 +2848,37 @@ fn describe_color(effect: &ParticleEffectDef, samples: &[Sample], out: &mut Stri
         samples.iter().any(|s| (base_color(&s.init) - first).length() > 0.05)
     };
 
-    let final_at = |t: f32| -> Vec4 {
-        match color_mod {
-            None => base,
-            Some(c) => {
-                let g = gradient_eval4(&c.gradient.g, t);
-                let blend = c.blend.unwrap_or_default();
-                let mask = c.mask.unwrap_or_default();
-                let mixed = match blend {
-                    ColorBlendMode::Overwrite => g,
-                    ColorBlendMode::Modulate => base * g,
-                    ColorBlendMode::Add => base + g,
-                };
-                if mask.contains(ColorBlendMask::A) { mixed } else { mixed.truncate().extend(base.w) }
-            }
-        }
-    };
+    let final_at = |t: f32| -> Vec4 { render_color(effect, base, t) };
+    let set_color = effect.render_modifiers.iter().find_map(|m| match m {
+        RenderModifierEditor::SetColor(c) => Some(c),
+        _ => None,
+    });
+    if let Some(c) = set_color {
+        let value = match c.color {
+            CpuVecDef::Single(v) => v,
+            CpuVecDef::Uniform((a, b)) => (a + b) * 0.5,
+        };
+        let _ = writeln!(
+            out,
+            "  SetColor (render): {:?} by ({}, {}, {}, {}) on {}",
+            c.blend,
+            fmt_num(value.x),
+            fmt_num(value.y),
+            fmt_num(value.z),
+            fmt_num(value.w),
+            mask_text(c.mask)
+        );
+    }
 
     match color_mod {
         None => {
+            let drawn = final_at(0.5);
             let _ = writeln!(
                 out,
                 "  color: {}{} alpha {} for the whole life (no ColorOverLifetime)",
-                color_name(base.truncate()),
+                color_name(drawn.truncate()),
                 if varied { " (varies per particle)" } else { "" },
-                fmt_num(base.w)
+                fmt_num(drawn.w)
             );
         }
         Some(c) => {
@@ -2271,10 +2938,27 @@ fn describe_color(effect: &ParticleEffectDef, samples: &[Sample], out: &mut Stri
 }
 
 fn describe_size(effect: &ParticleEffectDef, samples: &[Sample], out: &mut String) {
-    let size_mod = effect.render_modifiers.iter().find_map(|m| match m {
-        RenderModifierEditor::SizeOverLifetime(s) => Some(s),
-        _ => None,
+    let unit = if effect.render_modifiers.iter().any(|m| matches!(m, RenderModifierEditor::ScreenSpaceSize(_))) {
+        "screen pixels (ScreenSpaceSize: the same size on screen at any distance)"
+    } else {
+        "world units"
+    };
+    // The last size render modifier wins.
+    let last_size = effect.render_modifiers.iter().rev().find(|m| {
+        matches!(m, RenderModifierEditor::SizeOverLifetime(_) | RenderModifierEditor::SetSize(_))
     });
+    if let Some(RenderModifierEditor::SetSize(s)) = last_size {
+        let text = match s.size {
+            CpuVecDef::Single(v) => fmt_vec3(v),
+            CpuVecDef::Uniform((a, b)) => format!("{}–{} (one value for every particle)", fmt_vec3(a), fmt_vec3(b)),
+        };
+        let _ = writeln!(out, "  size: SetSize (render) {} {}", text, unit);
+        return;
+    }
+    let size_mod = match last_size {
+        Some(RenderModifierEditor::SizeOverLifetime(s)) => Some(s),
+        _ => None,
+    };
     match size_mod {
         Some(s) => {
             let mut keys = s.gradient.g.clone();
@@ -2290,7 +2974,7 @@ fn describe_size(effect: &ParticleEffectDef, samples: &[Sample], out: &mut Strin
                     format!("{}% {}", (t * 100.0).round(), size)
                 })
                 .collect();
-            let _ = writeln!(out, "  size: SizeOverLifetime (world units) {}", stops.join(" → "));
+            let _ = writeln!(out, "  size: SizeOverLifetime ({}) {}", unit, stops.join(" → "));
         }
         None => {
             let set = effect.init_modifiers.iter().any(|m| {
@@ -2307,7 +2991,7 @@ fn describe_size(effect: &ParticleEffectDef, samples: &[Sample], out: &mut Strin
                         },
                     })
                     .collect();
-                let _ = writeln!(out, "  size: {} world units", range_text(&sizes, ""));
+                let _ = writeln!(out, "  size: {} {}", range_text(&sizes, ""), unit);
             } else {
                 let _ = writeln!(out, "  size: default 1.0 world unit (nothing sets size; that is large)");
             }
@@ -2333,8 +3017,10 @@ fn timeline_text(alive: &[f32], horizon: f32) -> String {
         .join(" ")
 }
 
-/// Blending, texture sampling and orientation of a layer.
-fn render_text(effect: &ParticleEffectDef) -> String {
+/// Blending, texture sampling, orientation and the other render modifiers
+/// and asset settings of a layer, in words.
+fn render_text(project: &ProjectV2, layer: &ParticlesLayerDef) -> String {
+    let effect = &layer.effect;
     let blend = match effect.alpha_mode {
         AlphaModeDef::Blend => "Blend".to_string(),
         AlphaModeDef::Premultiply => "Premultiply".to_string(),
@@ -2348,15 +3034,48 @@ fn render_text(effect: &ParticleEffectDef) -> String {
         _ => None,
     });
     let orient = effect.render_modifiers.iter().find_map(|m| match m {
-        RenderModifierEditor::Orient(o) => Some(format!("{:?}", o.mode)),
+        RenderModifierEditor::Orient(o) => Some(match &o.rotation_expr {
+            Some(_) => format!("{:?} with a rotation expression (spinning sprites)", o.mode),
+            None => format!("{:?}", o.mode),
+        }),
         _ => None,
     });
-    format!(
+    let mut text = format!(
         "render: blend {}; texture sampling {}; orient {}",
         blend,
         sampling.unwrap_or_else(|| "none (untextured quads)".into()),
         orient.unwrap_or_else(|| "default (no Orient modifier)".into())
-    )
+    );
+    for m in effect.render_modifiers.iter() {
+        match m {
+            RenderModifierEditor::Flipbook(f) => match f.grid_for(project.texture_grid(layer)) {
+                Some((rows, cols)) => {
+                    let _ = write!(text, "; flipbook {} × {} = {} frames, frame = sprite_index", rows, cols, rows * cols);
+                }
+                None => text.push_str("; flipbook without a grid (one frame)"),
+            },
+            RenderModifierEditor::Round(r) => match r.roundness_expr.scalar_range() {
+                Some((lo, hi)) if lo == hi => {
+                    let _ = write!(text, "; rounded corners {} (1 = circles)", fmt_num(lo));
+                }
+                _ => text.push_str("; rounded corners from an expression"),
+            },
+            RenderModifierEditor::ScreenSpaceSize(_) => text.push_str("; size in screen pixels"),
+            _ => {}
+        }
+    }
+    match effect.motion_integration {
+        MotionIntegrationDef::PostUpdate => {}
+        MotionIntegrationDef::PreUpdate => text.push_str("; motion integrated before the update modifiers"),
+        MotionIntegrationDef::None => text.push_str("; no motion integration (velocity does not move particles)"),
+    }
+    if effect.simulation_condition == SimulationConditionDef::Always {
+        text.push_str("; simulated even when not visible");
+    }
+    if let Some(seed) = effect.prng_seed {
+        let _ = write!(text, "; random seed {}", seed);
+    }
+    text
 }
 
 /// Simulation space, with the trail a moving target leaves in `Global`.
@@ -2503,21 +3222,14 @@ fn mid_life_color(effect: &ParticleEffectDef, samples: &[Sample]) -> Vec4 {
     } else {
         samples.iter().map(|s| base_color(&s.init)).sum::<Vec4>() / samples.len() as f32
     };
-    match effect.render_modifiers.iter().find_map(|m| match m {
-        RenderModifierEditor::ColorOverLifetime(c) => Some(c),
-        _ => None,
-    }) {
-        None => base,
-        Some(c) => {
-            let g = gradient_eval4(&c.gradient.g, 0.5);
-            let mixed = match c.blend.unwrap_or_default() {
-                ColorBlendMode::Overwrite => g,
-                ColorBlendMode::Modulate => base * g,
-                ColorBlendMode::Add => base + g,
-            };
-            if c.mask.unwrap_or_default().contains(ColorBlendMask::A) { mixed } else { mixed.truncate().extend(base.w) }
-        }
-    }
+    render_color(effect, base, 0.5)
+}
+
+/// Channels of a colour mask in words: `RGBA`, `RGB`, `A`, ...
+fn mask_text(mask: ColorBlendMask) -> String {
+    let names = ["R", "G", "B", "A"];
+    let bits = [ColorBlendMask::R, ColorBlendMask::G, ColorBlendMask::B, ColorBlendMask::A];
+    bits.iter().zip(names).filter(|(b, _)| mask.contains(**b)).map(|(_, n)| n).collect()
 }
 
 /// One line about a simulated layer: count, size, colour, reach.
@@ -2544,6 +3256,8 @@ fn layer_summary(effect: &ParticleEffectDef, sim: &EffectSim) -> String {
         format!("size {}", range_text(&sizes, ""))
     } else if effect.render_modifiers.iter().any(|m| matches!(m, RenderModifierEditor::SizeOverLifetime(_))) {
         "size from SizeOverLifetime".into()
+    } else if effect.render_modifiers.iter().any(|m| matches!(m, RenderModifierEditor::SetSize(_))) {
+        "size from SetSize".into()
     } else {
         "size 1 (default)".into()
     };
@@ -2684,7 +3398,7 @@ pub fn analyze_project_with_sets(
             effect.effect.capacity
         );
         let _ = writeln!(out, "  spawn: {}", sim.spawn_text);
-        let _ = writeln!(out, "  {}", render_text(&effect.effect));
+        let _ = writeln!(out, "  {}", render_text(project, effect));
         let _ = writeln!(out, "  space: {}", space_text(project, effect, &effects, i));
         let _ = writeln!(out, "  attach: {}", attach_text(project, &effect.attach));
         for line in bindings_text(project, effect) {
@@ -2920,18 +3634,38 @@ mod tests {
         ))
     }
 
+    /// A game assets folder for the recipes: the flipbook recipe's sprite
+    /// sheet (a generated 4 × 4 grid of growing dots) as a test fixture;
+    /// built-in textures need no files.
+    fn recipe_assets_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("omagari_recipe_assets_{}", std::process::id()));
+        let sheet = dir.join("vfx/textures/flipbook_4x4.png");
+        if !sheet.is_file() {
+            std::fs::create_dir_all(sheet.parent().unwrap()).unwrap();
+            let image = image::RgbaImage::from_fn(256, 256, |x, y| {
+                let frame = (y / 64) * 4 + x / 64;
+                let (u, v) = ((x % 64) as f32 - 32.0, (y % 64) as f32 - 32.0);
+                let inside = (u * u + v * v).sqrt() < 4.0 + frame as f32 * 1.6;
+                image::Rgba([255, (frame * 16) as u8, 40, if inside { 255 } else { 0 }])
+            });
+            image.save(&sheet).unwrap();
+        }
+        dir
+    }
+
     /// Every recipe in the agent guide is a v2 project and passes the checks
     /// it tells agents to run, with no warning at all.
     #[test]
     fn guide_recipes_pass_checks() {
         let mut checked = 0;
+        let assets_root = recipe_assets_root();
         for recipe in crate::mcp::guide_recipes() {
             let text = recipe.ron.as_str();
             let (project, migration) = ProjectV2::from_ron_str_with_warnings(text)
                 .unwrap_or_else(|e| panic!("{}\n{}", e, text));
             assert!(text.contains("version: 2"), "recipes must be v2:\n{}", text);
             assert!(migration.is_empty(), "{:?}\n{}", migration, text);
-            let d = check_project(&project, &assets_root());
+            let d = check_project(&project, &assets_root);
             assert!(
                 d.errors.is_empty() && d.warnings.is_empty() && d.notes.is_empty(),
                 "{}\n{}",
@@ -2940,14 +3674,14 @@ mod tests {
             );
             let mut produce_warnings = Vec::new();
             for (_, layer) in project.particle_layers() {
-                layer.produce(&project.parameters, &mut produce_warnings);
+                layer.produce_in(&project, &mut produce_warnings);
             }
             assert!(produce_warnings.is_empty(), "{:?}", produce_warnings);
-            let report = analyze_project(&project, &assets_root(), 50, None);
+            let report = analyze_project(&project, &assets_root, 50, None);
             assert!(report.contains("## Whole project"), "{}", report);
             checked += 1;
         }
-        assert!(checked >= 6, "only {} recipes found", checked);
+        assert!(checked >= 14, "only {} recipes found", checked);
     }
 
     fn has(list: &[String], needle: &str) -> bool {
@@ -3101,7 +3835,7 @@ mod tests {
                 Particles((name: "a", effect: (capacity: 10,
                     spawner: (count: Single(1.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1),
                     init_modifiers: [SetAttribute((attr: "size", attr_expr: Vec3((1.0, 1.0, 1.0))))],
-                    update_modifiers: [SetAttribute((attr: "age", attr_expr: Float(0.0)))],
+                    update_modifiers: [InheritAttribute((attr: "age"))],
                     render_modifiers: []))),
                 Particles((name: "b", parent: Some("a"), effect: (capacity: 10,
                     init_modifiers: [SetAttribute((attr: "position", attr_expr: Float(1.0)))],
@@ -3111,7 +3845,7 @@ mod tests {
         );
         let errors = check_project(&project, &assets_root()).errors.join("\n");
         assert!(errors.contains("[a] init SetAttribute: SetAttribute(\"size\") needs f32, got vec3"), "{}", errors);
-        assert!(errors.contains("[a] SetAttribute is an init modifier but is listed in update_modifiers"), "{}", errors);
+        assert!(errors.contains("[a] InheritAttribute is an init modifier but is listed in update_modifiers"), "{}", errors);
         assert!(!errors.contains("[a] bevy_hanabi"), "{}", errors);
         assert!(errors.contains("[b] parent \"a\" has no EmitSpawnEventModifier with child_index 0"), "{}", errors);
         assert!(errors.contains("[b] init SetAttribute: SetAttribute(\"position\") needs vec3, got f32"), "{}", errors);
@@ -3389,11 +4123,275 @@ mod tests {
         assert!(has(&d.notes, "[parameter \"power\"] not used"), "{}", d.render());
     }
 
+    fn env_eval(text: &str, ctx: Ctx) -> Result<Val, String> {
+        let mut rng = StdRng::seed_from_u64(1);
+        let mut attrs = Attrs::default();
+        attrs.set(Attribute::AGE, Val::F(0.5));
+        attrs.set(Attribute::LIFETIME, Val::F(2.0));
+        let mut env = Env { rng: &mut rng, attrs: &attrs, parent: None, time: 3.0, ctx, is_alive: true };
+        let expr = ron::from_str::<ExprWriterEditor>(text).unwrap_or_else(|e| panic!("{}: {}", text, e));
+        eval(&expr, &mut env)
+    }
+
+    /// Every operator of the table is simulated: some argument types make
+    /// it evaluate (none is left "not simulated").
+    #[test]
+    fn every_operator_is_simulated() {
+        let samples = [
+            ExprWriterEditor::Float(0.5),
+            ExprWriterEditor::Vec3(Vec3::new(0.5, 0.25, 1.0)),
+            ExprWriterEditor::Vec4(Vec4::new(0.5, 0.25, 1.0, 0.75)),
+            ExprWriterEditor::U32(7),
+            ExprWriterEditor::I32(-3),
+            ExprWriterEditor::BVec3(BVec3::new(true, false, true)),
+            ExprWriterEditor::Bool(true),
+        ];
+        let mut rng = StdRng::seed_from_u64(1);
+        let attrs = Attrs::default();
+        for row in OPERATORS.iter() {
+            let mut ok = false;
+            for a in samples.iter() {
+                for b in samples.iter() {
+                    let mut op = (row.make)();
+                    for (i, arg) in op.args_mut().into_iter().enumerate() {
+                        *arg = if i == 0 { a.clone() } else { b.clone() };
+                    }
+                    let mut env = Env { rng: &mut rng, attrs: &attrs, parent: Some(&attrs), time: 0.0, ctx: Ctx::Init, is_alive: true };
+                    ok |= eval_op(&op, &mut env).is_ok();
+                }
+            }
+            assert!(ok, "{} is not simulated for any argument types", row.name);
+        }
+        for value in EXPR_VALUES.iter() {
+            let expected_err = matches!(value.name, "IsAlive" | "AlphaCutoff");
+            let mut env = Env { rng: &mut rng, attrs: &attrs, parent: None, time: 0.0, ctx: Ctx::Init, is_alive: true };
+            assert_eq!(eval(&(value.make)(), &mut env).is_err(), expected_err, "{}", value.name);
+        }
+    }
+
+    #[test]
+    fn p2b_operators_follow_wgsl() {
+        let v = |text: &str| env_eval(text, Ctx::Init);
+        assert_eq!(v("Operator(Divide(Float(3.0), Float(2.0)))"), Ok(Val::F(1.5)));
+        assert_eq!(v("Operator(Divide(I32(7), I32(0)))"), Ok(Val::I(7)), "WGSL: x / 0 = x");
+        assert_eq!(v("Operator(Remainder(U32(7), U32(3)))"), Ok(Val::U(1)));
+        assert_eq!(v("Operator(Remainder(Float(-5.5), Float(2.0)))"), Ok(Val::F(-1.5)));
+        assert_eq!(v("Operator(Multiply(Vec3((1.0, 2.0, 3.0)), Float(2.0)))"), Ok(Val::V3(Vec3::new(2.0, 4.0, 6.0))));
+        assert_eq!(v("Operator(Add(IVec3((1, 2, 3)), I32(1)))"), Ok(Val::IV(3, [2, 3, 4, 0])));
+        assert!(v("Operator(Add(Float(1.0), U32(1)))").unwrap_err().contains("same type"));
+        assert_eq!(v("Operator(Abs(I32(-4)))"), Ok(Val::I(4)));
+        assert_eq!(v("Operator(Sign(Float(0.0)))"), Ok(Val::F(0.0)));
+        assert_eq!(v("Operator(Round(Float(2.5)))"), Ok(Val::F(2.0)), "ties to even");
+        assert_eq!(v("Operator(Fract(Float(-0.25)))"), Ok(Val::F(0.75)));
+        assert_eq!(v("Operator(Saturate(Float(1.5)))"), Ok(Val::F(1.0)));
+        assert_eq!(v("Operator(Step(Float(0.5), Float(0.7)))"), Ok(Val::F(1.0)), "Step(edge, x)");
+        assert_eq!(v("Operator(Step(Float(0.5), Float(0.2)))"), Ok(Val::F(0.0)));
+        assert_eq!(v("Operator(Length(Vec3((3.0, 4.0, 0.0))))"), Ok(Val::F(5.0)));
+        assert_eq!(v("Operator(Dot(Vec3((1.0, 2.0, 3.0)), Vec3((1.0, 1.0, 1.0))))"), Ok(Val::F(6.0)));
+        assert_eq!(v("Operator(Cross(Vec3((1.0, 0.0, 0.0)), Vec3((0.0, 1.0, 0.0))))"), Ok(Val::V3(Vec3::Z)));
+        assert_eq!(v("Operator(Vec2(Float(1.0), Float(2.0)))"), Ok(Val::V2(Vec2::new(1.0, 2.0))));
+        assert_eq!(v("Operator(Vec3(U32(1), U32(2), U32(3)))"), Ok(Val::UV(3, [1, 2, 3, 0])));
+        assert_eq!(v("Operator(Vec4XyzW(Vec3((1.0, 2.0, 3.0)), Float(4.0)))"), Ok(Val::V4(Vec4::new(1.0, 2.0, 3.0, 4.0))));
+        assert_eq!(v("Operator(Z(Vec4((1.0, 2.0, 3.0, 4.0))))"), Ok(Val::F(3.0)));
+        assert!(v("Operator(X(Float(1.0)))").unwrap_err().contains("vector"));
+        assert_eq!(v("Operator(LessThan(Vec3((1.0, 5.0, 0.0)), Vec3((2.0, 2.0, 2.0))))"), Ok(Val::BV(3, [true, false, true, false])));
+        assert_eq!(v("Operator(Any(Operator(GreaterThan(Vec2((1.0, 5.0)), Vec2((2.0, 2.0))))))"), Ok(Val::B(true)));
+        assert_eq!(v("Operator(All(BVec2((true, false))))"), Ok(Val::B(false)));
+        assert_eq!(v("Operator(Cast(Float(2.9), I32))"), Ok(Val::I(2)));
+        assert_eq!(v("Operator(Cast(Bool(true), F32))"), Ok(Val::F(1.0)));
+        assert_eq!(v("Operator(Cast(Float(2.0), Vec3))"), Ok(Val::V3(Vec3::splat(2.0))));
+        assert!(v("Operator(Cast(Vec3((1.0, 1.0, 1.0)), F32))").is_err());
+        assert_eq!(v("Operator(Unpack4x8UNorm(Operator(Pack4x8UNorm(Vec4((1.0, 0.0, 1.0, 0.0))))))"), Ok(Val::V4(Vec4::new(1.0, 0.0, 1.0, 0.0))));
+        assert_eq!(v("Operator(Unpack4x8SNorm(Operator(Pack4x8SNorm(Vec4((-1.0, 0.0, 1.0, 0.0))))))"), Ok(Val::V4(Vec4::new(-1.0, 0.0, 1.0, 0.0))));
+        assert_eq!(v("Operator(Atan2(Float(1.0), Float(0.0)))"), Ok(Val::F(std::f32::consts::FRAC_PI_2)));
+        assert_eq!(v("Operator(Clamp(I32(9), I32(0), I32(5)))"), Ok(Val::I(5)));
+        // The flipbook prebuilt: frame = i32(age / lifetime × frames).
+        let frame = ExprWriterEditor::Operator(Box::new(ExprOperatorEditor::Cast(ExprWriterEditor::Float(0.0), ValueTypeDef::I32)));
+        let _ = frame;
+        let prebuilt = ron::to_string(&sprite_index_over_lifetime(8).attr_expr).unwrap();
+        assert_eq!(v(&prebuilt), Ok(Val::I(2)), "age 0.5 of 2 s, 8 frames");
+        // Built-in values.
+        assert_eq!(v("DeltaTime"), Ok(Val::F(DT)));
+        assert_eq!(v("RealTime"), Ok(Val::F(3.0)));
+        let Ok(Val::V2(r)) = v("Rand(Vec2)") else { panic!() };
+        assert!(r.cmpge(Vec2::ZERO).all() && r.cmplt(Vec2::ONE).all());
+        let Ok(Val::F(n)) = v("Operator(Normal(Float(10.0), Float(0.0)))") else { panic!() };
+        assert_eq!(n, 10.0);
+        // Not available in shaders, or not here.
+        assert!(v("RandU32").unwrap_err().contains("only have float random functions"));
+        assert!(v("Rand(U32)").unwrap_err().contains("only have float random functions"));
+        assert!(v("IsAlive").unwrap_err().contains("update modifiers"));
+        assert_eq!(env_eval("IsAlive", Ctx::Update), Ok(Val::B(true)));
+        assert!(v("AlphaCutoff").unwrap_err().contains("does not work in bevy_hanabi 0.19"));
+        assert!(v("Operator(Asin(Float(1.5)))").unwrap_err().contains("outside -1..1"));
+        assert!(v("Operator(Asin(Operator(Multiply(RandFloat, Float(1.5)))))").is_ok(), "not a constant");
+        assert!(v("Operator(Uniform(Float(0.0), Param(\"x\")))").is_err());
+        assert!(v("Operator(Uniform(Float(0.0), Operator(Add(Float(1.0), Float(1.0)))))").unwrap_err().contains("Cast"));
+        assert!(v("Operator(Uniform(Float(0.0), Operator(Cast(Operator(Add(Float(1.0), Float(1.0))), F32))))").is_ok());
+    }
+
+    /// The P2b modifiers are checked and simulated: cone positions, kill
+    /// volumes, radial / tangent forces, flipbooks, render settings.
+    #[test]
+    fn p2b_modifiers_are_checked_and_simulated() {
+        let init = r#"SetAttribute((attr: "age", attr_expr: Float(0.0))), SetAttribute((attr: "lifetime", attr_expr: Float(1.0))), SetAttribute((attr: "size", attr_expr: Float(0.05)))"#;
+        let effect = |init_extra: &str, update: &str, render: &str| {
+            format!(
+                "init_modifiers: [{}, {}], update_modifiers: [{}], render_modifiers: [ParticleTexture(()), Orient((mode: ParallelCameraDepthPlane)), {}],",
+                init, init_extra, update, render
+            )
+        };
+        // A cone fountain: every birth inside the cone (height 1, radius 0.1 → 0.5).
+        let cone = layer_project(
+            "play: OnStart,",
+            &effect(r#"SetPositionCone3d((height_expr: Float(1.0), base_radius_expr: Float(0.1), top_radius_expr: Float(0.5), dimension: Volume))"#, "", ""),
+        );
+        let d = check_project(&cone, &assets_root());
+        assert!(d.errors.is_empty() && d.warnings.is_empty(), "{}", d.render());
+        let (sims, _) = simulate_project(&resolve_properties(&cone), 200, 3);
+        for s in sims[0].samples.iter() {
+            let p = s.birth_pos;
+            let r = Vec2::new(p.x, p.z).length();
+            assert!((0.0..=1.0).contains(&p.y) && r <= 0.1 + 0.4 * p.y + 1e-4, "{:?}", p);
+        }
+        // Kill sphere: particles flying outwards at 2 m/s die at 0.5 m (0.25 s).
+        let kill = layer_project(
+            "play: OnStart,",
+            &effect(
+                r#"SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(0.01), dimension: Surface)), SetVelocitySphere((center_expr: Vec3((0.0, 0.0, 0.0)), speed_expr: Float(2.0)))"#,
+                r#"KillSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(0.5), kill_inside: false))"#,
+                "",
+            ),
+        );
+        let (sims, _) = simulate_project(&resolve_properties(&kill), 50, 3);
+        for s in sims[0].samples.iter() {
+            let death = s.death.expect("dies");
+            assert!((0.2..0.3).contains(&death), "died at {}", death);
+        }
+        // A box kills too.
+        let aabb = layer_project(
+            "play: OnStart,",
+            &effect(
+                r#"SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 1.0, 0.0))))"#,
+                r#"KillAabb((center_expr: Vec3((0.0, 0.0, 0.0)), half_size_expr: Vec3((1.0, 0.5, 1.0)), kill_inside: false))"#,
+                "",
+            ),
+        );
+        let (sims, _) = simulate_project(&resolve_properties(&aabb), 20, 3);
+        assert!(sims[0].samples.iter().all(|s| s.death.is_some_and(|d| d < 0.6)));
+        // Swirl: tangent + inward pull keeps particles near the ring.
+        let swirl = layer_project(
+            "play: OnStart,",
+            &effect(
+                r#"SetPositionCircle((center_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(1.0), dimension: Surface)), SetVelocityTangent((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), speed_expr: Float(1.0)))"#,
+                r#"TangentAccel((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), accel_expr: Float(0.5))), RadialAccel((origin_expr: Vec3((0.0, 0.0, 0.0)), accel_expr: Float(-1.0)))"#,
+                "",
+            ),
+        );
+        let d = check_project(&swirl, &assets_root());
+        assert!(d.errors.is_empty() && d.warnings.is_empty(), "{}", d.render());
+        let (sims, _) = simulate_project(&resolve_properties(&swirl), 50, 3);
+        for s in sims[0].samples.iter() {
+            assert!(s.path.iter().all(|p| (0.5..1.6).contains(&p.length())), "left the ring: {:?}", s.path);
+        }
+        // Type errors in the new modifiers.
+        let bad = layer_project(
+            "play: OnStart,",
+            &effect(
+                "",
+                r#"KillSphere((center_expr: Float(0.0), radius_expr: Float(1.0))), RadialAccel((origin_expr: Vec3((0.0, 0.0, 0.0)), accel_expr: Vec3((1.0, 0.0, 0.0))))"#,
+                r#"Round((roundness_expr: Vec3((1.0, 1.0, 1.0))))"#,
+            ),
+        );
+        let d = check_project(&bad, &assets_root());
+        assert!(has(&d.errors, "KillSphere center must be vec3"), "{}", d.render());
+        assert!(has(&d.errors, "RadialAccel accel must be f32"), "{}", d.render());
+        assert!(has(&d.errors, "render Round: Round roundness must be f32"), "{}", d.render());
+        // Wrong lists, a cone in update, integer random values, IsAlive in init.
+        let wrong = layer_project(
+            "play: OnStart,",
+            &effect(
+                r#"KillAabb(()), SetAttribute((attr: "u32_0", attr_expr: RandU32)), SetAttribute((attr: "f32_0", attr_expr: Operator(Cast(IsAlive, F32))))"#,
+                r#"SetPositionCone3d(())"#,
+                "",
+            ),
+        );
+        let d = check_project(&wrong, &assets_root());
+        assert!(has(&d.errors, "KillAabb is an update modifier but is listed in init_modifiers"), "{}", d.render());
+        assert!(has(&d.errors, "SetPositionCone3d is an init modifier but is listed in update_modifiers"), "{}", d.render());
+        assert!(has(&d.errors, "RandU32 is not available"), "{}", d.render());
+        assert!(has(&d.errors, "IsAlive exists only in update modifiers"), "{}", d.render());
+        // SetAttribute may run every frame (update list) in v2.
+        let every_frame = layer_project(
+            "play: OnStart,",
+            &effect(r#"SetAttribute((attr: "position", attr_expr: Vec3((0.0, 0.0, 0.0))))"#, r#"SetAttribute((attr: "f32_0", attr_expr: Age))"#, ""),
+        );
+        let d = check_project(&every_frame, &assets_root());
+        assert!(d.errors.is_empty(), "{}", d.render());
+
+        // Flipbook: grid, frames, texture, analysis text.
+        let mut flip = layer_project(
+            "play: OnStart,",
+            &effect("", "", "Flipbook(())"),
+        );
+        let d = check_project(&flip, &assets_root());
+        assert!(has(&d.warnings, "Flipbook has no grid"), "{}", d.render());
+        assert!(has(&d.warnings, "nothing sets it"), "{}", d.render());
+        let AssetKind::Texture(t) = &mut flip.assets[0].kind;
+        t.grid = Some((2, 4));
+        flip.layers[0].as_particles_mut().unwrap().effect.update_modifiers.push(ModifierEditor::SetAttribute(sprite_index_over_lifetime(8)));
+        let d = check_project(&flip, &assets_root());
+        assert!(!has(&d.warnings, "Flipbook"), "{}", d.render());
+        let report = analyze_project(&flip, &assets_root(), 20, None);
+        assert!(report.contains("flipbook 2 × 4 = 8 frames"), "{}", report);
+
+        // Render-time settings and their warnings.
+        let render = layer_project(
+            "play: OnStart,",
+            &effect(
+                r#"SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 1.0, 0.0))))"#,
+                "",
+                r#"SetColor((color: Uniform(((1.0, 0.0, 0.0, 1.0), (0.0, 0.0, 1.0, 1.0))), blend: Overwrite, mask: (15))), SetSize((size: Single((0.2, 0.2, 0.2)))), ScreenSpaceSize(()), Round((roundness_expr: RandFloat)), Orient((mode: AlongVelocity, rotation_expr: Some(Age)))"#,
+            ),
+        );
+        let mut render = render;
+        {
+            let effect = &mut render.layers[0].as_particles_mut().unwrap().effect;
+            effect.motion_integration = MotionIntegrationDef::None;
+            effect.prng_seed = Some(5);
+            effect.simulation_condition = SimulationConditionDef::Always;
+        }
+        let d = check_project(&render, &assets_root());
+        for needle in [
+            "SetColor with a random range",
+            "ScreenSpaceSize reads the particle size as screen pixels",
+            "Round reads a random value",
+            "Orient rotation is ignored with AlongVelocity",
+            "motion_integration is None",
+        ] {
+            assert!(has(&d.warnings, needle), "{}\n{}", needle, d.render());
+        }
+        let report = analyze_project(&render, &assets_root(), 20, None);
+        for needle in [
+            "SetColor (render): Overwrite",
+            "size: SetSize (render) (0.20, 0.20, 0.20) screen pixels",
+            "no motion integration",
+            "random seed 5",
+            "simulated even when not visible",
+            "size in screen pixels",
+        ] {
+            assert!(report.contains(needle), "{}\n{}", needle, report);
+        }
+        // With no motion integration the particles stay where they are born.
+        let (sims, _) = simulate_project(&resolve_properties(&render), 20, 3);
+        assert!(sims[0].samples.iter().all(|s| (s.end_pos - s.birth_pos).length() < 1e-5));
+    }
+
     #[test]
     fn new_operators_evaluate_and_type_check() {
         let mut rng = StdRng::seed_from_u64(1);
         let attrs = Attrs::default();
-        let mut env = Env { rng: &mut rng, attrs: &attrs, parent: None, time: 0.0 };
+        let mut env = Env { rng: &mut rng, attrs: &attrs, parent: None, time: 0.0, ctx: Ctx::Init, is_alive: true };
         let mut value = |text: &str| eval(&ron::from_str::<ExprWriterEditor>(text).unwrap(), &mut env);
         assert_eq!(value("Operator(Mix(Float(2.0), Float(4.0), Float(0.25)))"), Ok(Val::F(2.5)));
         assert_eq!(
