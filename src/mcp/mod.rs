@@ -12,8 +12,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use omagari::format::{AssetKind, PreviewMotion, ProjectV2, BUILTIN_TEXTURES_PREFIX, DEFAULT_MOTION_SPEED};
+use omagari::format::{
+    AssetKind, ChannelDef, PreviewMotion, ProjectV2, TexturePurpose, BUILTIN_TEXTURES_PREFIX, DEFAULT_MOTION_SPEED,
+};
 
+use crate::asset_library as library;
 use crate::controller::Folder;
 use crate::settings::GameAssets;
 
@@ -72,6 +75,9 @@ pub const PREVIEW_REQUEST_FILE: &str = ".preview_request";
 /// Stages `preview_in_editor` accepts.
 pub const PREVIEW_STAGES: [&str; 3] = ["air", "floor", "object"];
 
+/// Cameras `preview_in_editor` accepts.
+pub const PREVIEW_CAMERAS: [&str; 2] = ["orbit", "game"];
+
 /// What `preview_in_editor` asks the editor for, written to
 /// [`PREVIEW_REQUEST_FILE`] as a JSON object
 /// `{ "name": "fire.omagari.ron", "stage": "floor", "motion": { "type": "circle", "radius": 3.0, "speed": 3.6 } }`.
@@ -84,6 +90,8 @@ pub struct PreviewRequest {
     pub stage: Option<String>,
     /// `None` keeps the project's preview motion; `Some(None)` = no motion.
     pub motion: Option<Option<PreviewMotion>>,
+    /// `orbit` or `game`; `None` keeps the project's camera.
+    pub camera: Option<String>,
 }
 
 impl PreviewRequest {
@@ -95,6 +103,9 @@ impl PreviewRequest {
         if let Some(motion) = self.motion {
             object["motion"] = motion_to_json(motion);
         }
+        if let Some(camera) = &self.camera {
+            object["camera"] = json!(camera);
+        }
         object.to_string()
     }
 
@@ -105,7 +116,7 @@ impl PreviewRequest {
             let mut lines = text.lines();
             let name = lines.next().unwrap_or_default().trim().to_string();
             let stage = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            return Ok(PreviewRequest { name, stage, motion: None });
+            return Ok(PreviewRequest { name, stage, motion: None, camera: None });
         }
         let value: Value = serde_json::from_str(trimmed).map_err(|e| format!("invalid preview request: {}", e))?;
         let name = value
@@ -118,7 +129,8 @@ impl PreviewRequest {
             None | Some(Value::Null) => None,
             Some(m) => Some(motion_from_json(m)?),
         };
-        Ok(PreviewRequest { name, stage, motion })
+        let camera = value.get("camera").and_then(Value::as_str).map(str::to_string);
+        Ok(PreviewRequest { name, stage, motion, camera })
     }
 }
 
@@ -304,7 +316,7 @@ fn tool_list() -> Value {
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "One section to keep the reply short: workflow, format, layers, attach, spawner, modifiers, expressions, attributes, render, textures, hierarchy, recipes, design, game. Omit for the whole guide."
+                        "description": "One section to keep the reply short: workflow, format, layers, attach, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game. Omit for the whole guide."
                     }
                 }
             }
@@ -370,6 +382,38 @@ fn tool_list() -> Value {
             }
         },
         {
+            "name": "import_asset",
+            "description": "Import a texture file (PNG or JPG; KTX2 is copied but not inspected) into the game assets folder like the editor does: files outside it are copied to vfx/textures/ (name taken by another file -> numeric suffix, identical file -> reused), files inside it are used in place. Returns the asset entry to put in a project's `assets`; with `project`, adds it to that saved project. Guide section \"assets\".",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The file to import (absolute, or relative to the Omagari folder)." },
+                    "purpose": { "type": "string", "enum": ["Sprite", "Noise", "Mask", "Gradient"], "description": "What the texture is for; picks wrap and colour-space defaults. Default: guessed from the file name (noise/perlin/voronoi/cellular -> Noise, mask -> Mask, gradient/ramp -> Gradient, else Sprite)." },
+                    "id": { "type": "string", "description": "Asset id for the new entry. Default: the file name without extension." },
+                    "project": { "type": "string", "description": "A saved project (in saved_effects/) to add the asset to. The file is re-written in canonical form (comments are lost)." }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "list_assets",
+            "description": "List the textures you can use: the 7 built-ins and the texture files in the game assets folder, with size, layout (RGBA / grayscale, bits) and which saved projects use them.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "extract_channel",
+            "description": "Write one channel (R, G, B, A or Luminance) of a project's texture asset as an 8-bit grayscale PNG next to it (<name>_<channel>.png; built-ins go to vfx/textures/) and add it to the saved project as a new asset with the same settings. Particle layers cannot pick a channel themselves, so use this for G/B/A of channel-packed textures.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "A saved project (in saved_effects/)." },
+                    "asset": { "type": "string", "description": "Id of the texture asset." },
+                    "channel": { "type": "string", "enum": ["R", "G", "B", "A", "Luminance"] }
+                },
+                "required": ["project", "asset", "channel"]
+            }
+        },
+        {
             "name": "preview_in_editor",
             "description": "Ask the running Omagari editor to load a saved project and play it, so the USER can watch it. You get no image back, only whether the editor picked up the request.",
             "inputSchema": {
@@ -380,6 +424,11 @@ fn tool_list() -> Value {
                         "type": "string",
                         "enum": PREVIEW_STAGES,
                         "description": "Scene to play it in: \"air\" (middle of an empty room), \"floor\" (floor at y = 0), \"object\" (a ~2-unit rock centered on the spawn point, floor under it). Omit to keep the user's current choice."
+                    },
+                    "camera": {
+                        "type": "string",
+                        "enum": PREVIEW_CAMERAS,
+                        "description": "\"orbit\" (free perspective camera) or \"game\" (the game's isometric orthographic camera, 16 m visible height). Omit to keep the project's camera."
                     },
                     "motion": {
                         "type": "object",
@@ -512,10 +561,16 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
                 None | Some(Value::Null) => None,
                 Some(m) => Some(motion_from_json(m)?),
             };
+            let camera = match str_arg("camera") {
+                None => None,
+                Some(c) if PREVIEW_CAMERAS.contains(&c) => Some(c.to_string()),
+                Some(other) => return Err(format!("unknown camera \"{}\": use orbit or game", other)),
+            };
             let preview = PreviewRequest {
                 name: file_name.clone(),
                 stage: stage.clone(),
                 motion,
+                camera: camera.clone(),
             };
             let request = Folder::SavedEffects.full_file_path(PREVIEW_REQUEST_FILE.to_string());
             fs::write(&request, preview.to_json()).map_err(|e| format!("{}: {}", request.display(), e))?;
@@ -525,9 +580,10 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
                 if !request.exists() {
                     let in_stage = stage.map(|s| format!(" in the {} stage", s)).unwrap_or_default();
                     let moving = motion.map(|m| format!(", the target {}", motion_text(m))).unwrap_or_default();
+                    let seen = camera.map(|c| format!(", seen through the {} camera", c)).unwrap_or_default();
                     return Ok(format!(
-                        "The editor loaded {} and is playing it for the user{}{}.",
-                        file_name, in_stage, moving
+                        "The editor loaded {} and is playing it for the user{}{}{}.",
+                        file_name, in_stage, moving, seen
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -538,8 +594,157 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
                 file_name
             ))
         }
+        "import_asset" => import_asset(args, ctx),
+        "list_assets" => Ok(list_assets(ctx)),
+        "extract_channel" => {
+            let project_name = str_arg("project").ok_or("missing `project`")?;
+            let id = str_arg("asset").ok_or("missing `asset`")?;
+            let channel_name = str_arg("channel").ok_or("missing `channel`")?;
+            let channel = ChannelDef::parse(channel_name)
+                .ok_or_else(|| format!("unknown channel \"{}\": use R, G, B, A or Luminance", channel_name))?;
+            let path = resolve_saved_project(project_name)?;
+            let (mut project, _) = parse_project(&read(&path)?)?;
+            let (new_id, new_path) = library::extract_channel_asset(&mut project, id, channel, &assets_root)?;
+            save_project_file(&path, &project)?;
+            let info = library::texture_info_at(&new_path, &assets_root).map(|i| i.describe()).unwrap_or_default();
+            Ok(format!(
+                "Wrote {} ({}) from the {} channel of \"{}\" and added it to {} as asset \"{}\" (same purpose and settings). \
+                 Use it on a particle layer with `texture: Some(\"{}\")` and `ParticleTexture((sample_mapping: ModulateOpacityFromR))`.",
+                new_path,
+                info,
+                channel.name(),
+                id,
+                path.display(),
+                new_id,
+                new_id
+            ))
+        }
         _ => Err(format!("unknown tool: {}", name)),
     }
+}
+
+/// A project in `saved_effects/` (tools that change projects refuse the
+/// bundled examples).
+fn resolve_saved_project(name: &str) -> Result<PathBuf, String> {
+    if name.trim().replace('\\', "/").starts_with("examples/") {
+        return Err("bundled examples are read-only; save a copy with write_project first".into());
+    }
+    resolve_project(name)
+}
+
+/// Writes a project changed by a tool (canonical v2 text).
+fn save_project_file(path: &Path, project: &ProjectV2) -> Result<(), String> {
+    let text = project.to_ron_string().map_err(|e| e.to_string())?;
+    fs::write(path, text).map_err(|e| format!("{}: {}", path.display(), e))
+}
+
+fn parse_purpose(text: &str) -> Result<TexturePurpose, String> {
+    TexturePurpose::ALL
+        .into_iter()
+        .find(|p| p.name().eq_ignore_ascii_case(text.trim()))
+        .ok_or_else(|| format!("unknown purpose \"{}\": use Sprite, Noise, Mask or Gradient", text))
+}
+
+/// The asset entry as RON, ready to paste into a project.
+fn asset_entry_ron(project: &ProjectV2, id: &str) -> String {
+    project
+        .asset(id)
+        .and_then(|a| ron::to_string(a).ok())
+        .unwrap_or_default()
+}
+
+fn import_asset(args: &Value, ctx: &Context) -> Result<String, String> {
+    let str_arg = |key: &str| args.get(key).and_then(Value::as_str);
+    let source = PathBuf::from(str_arg("path").ok_or("missing `path`")?);
+    let root = ctx.assets_root();
+    let file_name = source.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let purpose = match str_arg("purpose") {
+        Some(p) => parse_purpose(p)?,
+        None => library::guess_purpose(&file_name),
+    };
+    let project_path = str_arg("project").map(resolve_saved_project).transpose()?;
+    let imported = library::import_file(&source, &root)?;
+
+    let mut out = format!("{}: {} -> {}.\n", source.display(), imported.kind.describe(), imported.path);
+    match library::texture_info_at(&imported.path, &root) {
+        Ok(info) => {
+            out += &format!("Texture: {}.\n", info.describe());
+            if info.loads_as_integer_texture() {
+                out += "WARNING: 16-bit grayscale PNGs load in Bevy as integer textures that cannot be sampled; \
+                        extract_channel(..., \"Luminance\") writes an 8-bit copy.\n";
+            }
+        }
+        Err(_) => out += "Texture: not inspected (only PNG and JPG are read).\n",
+    }
+    if matches!(library::extension(&imported.path).as_str(), "jpg" | "jpeg") {
+        out += "Note: the game needs Bevy's `jpeg` feature to load JPG files (PNG works by default).\n";
+    }
+
+    let mut project = match &project_path {
+        Some(path) => parse_project(&read(path)?)?.0,
+        None => ProjectV2::default(),
+    };
+    let (id, added) = library::add_texture_asset(&mut project, &imported.path, purpose, str_arg("id"))?;
+    let entry = asset_entry_ron(&project, &id);
+    match &project_path {
+        Some(path) => {
+            if added {
+                save_project_file(path, &project)?;
+                out += &format!("Added to {} as asset \"{}\": {}\n", path.display(), id, entry);
+            } else {
+                out += &format!("{} already has this file as asset \"{}\": {}\n", path.display(), id, entry);
+            }
+            out += &format!("Use it on a layer with `texture: Some(\"{}\")`.", id);
+        }
+        None => {
+            out += &format!(
+                "Asset entry for a project's `assets` list:\n{}\nUse it on a layer with `texture: Some(\"{}\")`.",
+                entry, id
+            );
+        }
+    }
+    Ok(out)
+}
+
+fn list_assets(ctx: &Context) -> String {
+    let root = ctx.assets_root();
+    // Which saved projects use which texture path.
+    let mut users: Vec<(String, String)> = Vec::new();
+    for file in list_files(Path::new(Folder::SavedEffects.to_path()), ".omagari.ron") {
+        let path = Path::new(Folder::SavedEffects.to_path()).join(&file);
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let Ok((project, _)) = ProjectV2::from_ron_str_with_warnings(&text) else { continue };
+        for asset in project.assets.iter() {
+            let AssetKind::Texture(t) = &asset.kind;
+            users.push((t.path.clone(), file.trim_end_matches(".omagari.ron").to_string()));
+        }
+    }
+    let used_by = |path: &str| {
+        let mut names: Vec<&str> = users.iter().filter(|(p, _)| p == path).map(|(_, n)| n.as_str()).collect();
+        names.dedup();
+        if names.is_empty() { "not used by a saved project".to_string() } else { format!("used by {}", names.join(", ")) }
+    };
+    let describe = |path: &str| {
+        library::texture_info_at(path, &root).map(|i| i.describe()).unwrap_or_else(|_| "not inspected".into())
+    };
+
+    let mut out = String::from("Built-in textures (embedded in the library; id = file name without .png):\n");
+    for (file, _) in omagari::runtime::BUILTIN_TEXTURES.iter() {
+        let path = format!("{}{}", BUILTIN_TEXTURES_PREFIX, file);
+        out += &format!("- {} - {}; {}\n", path, describe(&path), used_by(&path));
+    }
+    let found = library::scan_textures(&root, 500);
+    out += &format!("\nTextures in the game assets folder {} ({}):\n", root.display(), found.len());
+    if found.is_empty() {
+        out += "- none. Import files with import_asset.\n";
+    }
+    for (path, bytes) in found.iter() {
+        out += &format!("- {} - {}, {} KB; {}\n", path, describe(path), bytes.div_ceil(1024), used_by(path));
+    }
+    if found.len() >= 500 {
+        out += "(list cut at 500 files)\n";
+    }
+    out
 }
 
 fn guide_section(section: Option<&str>) -> String {
@@ -775,12 +980,13 @@ mod tests {
             name: "fire.omagari.ron".into(),
             stage: Some("floor".into()),
             motion: Some(Some(PreviewMotion::Circle { radius: 2.0, speed: 3.6 })),
+            camera: Some("game".into()),
         };
         let text = request.to_json();
         assert!(text.starts_with('{'), "{}", text);
         assert_eq!(PreviewRequest::parse(&text).unwrap(), request);
 
-        let still = PreviewRequest { motion: Some(None), stage: None, ..request.clone() };
+        let still = PreviewRequest { motion: Some(None), stage: None, camera: None, ..request.clone() };
         assert_eq!(PreviewRequest::parse(&still.to_json()).unwrap(), still);
 
         let old = PreviewRequest::parse("fire.omagari.ron\nobject").unwrap();
@@ -797,9 +1003,64 @@ mod tests {
         assert!(motion_from_json(&json!({ "type": "circle", "radius": 0.0 })).is_err());
     }
 
+    /// Removes a test project from `saved_effects/` even when the test fails.
+    struct TempProject(PathBuf);
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    /// import_asset (with and without a project), extract_channel and
+    /// list_assets against a temporary game assets folder.
+    #[test]
+    fn asset_tools_import_extract_and_list() {
+        let dir = crate::asset_library::tests::temp_dir("mcp_assets");
+        let game = dir.join("game");
+        fs::create_dir_all(&game).unwrap();
+        crate::asset_library::tests::write_test_png(&dir.join("pack_mask.png"));
+        let ctx = Context::new(GameAssets::resolve(Some(game.to_string_lossy().to_string()), None, &Default::default()));
+
+        let source = dir.join("pack_mask.png").to_string_lossy().to_string();
+        let out = call_tool("import_asset", &json!({ "path": source }), &ctx).unwrap();
+        assert!(out.contains("copied into the game assets folder -> vfx/textures/pack_mask.png"), "{}", out);
+        assert!(out.contains("4×2 PNG, RGBA 8-bit"), "{}", out);
+        assert!(out.contains(r#"(id:"pack_mask",kind:Texture((path:"vfx/textures/pack_mask.png",purpose:Mask"#), "{}", out);
+        assert!(game.join("vfx/textures/pack_mask.png").is_file());
+        assert!(call_tool("import_asset", &json!({ "path": source, "purpose": "Shiny" }), &ctx).is_err());
+
+        // Into a saved project.
+        let name = format!("mcp_asset_test_{}", std::process::id());
+        let file = Folder::SavedEffects.full_file_path(format!("{}.omagari.ron", name));
+        let _guard = TempProject(file.clone());
+        fs::write(&file, recipe()).unwrap();
+        let out = call_tool("import_asset", &json!({ "path": source, "project": name, "id": "pack" }), &ctx).unwrap();
+        assert!(out.contains("identical file was already in the game assets folder"), "{}", out);
+        assert!(out.contains("as asset \"pack\""), "{}", out);
+        let project = ProjectV2::from_ron_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(project.texture("pack").unwrap().purpose, TexturePurpose::Mask);
+
+        let out = call_tool("extract_channel", &json!({ "project": name, "asset": "pack", "channel": "G" }), &ctx).unwrap();
+        assert!(out.contains("vfx/textures/pack_mask_g.png (4×2 PNG, grayscale 8-bit)"), "{}", out);
+        assert!(out.contains("asset \"pack_g\""), "{}", out);
+        let project = ProjectV2::from_ron_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(project.texture("pack_g").unwrap().path, "vfx/textures/pack_mask_g.png");
+        assert!(call_tool("extract_channel", &json!({ "project": name, "asset": "pack", "channel": "X" }), &ctx).is_err());
+        assert!(call_tool("extract_channel", &json!({ "project": "examples/fireworks", "asset": "a", "channel": "R" }), &ctx)
+            .unwrap_err()
+            .contains("read-only"));
+
+        let list = call_tool("list_assets", &json!({}), &ctx).unwrap();
+        assert!(list.contains("omagari://textures/cloud.png - 333×333 PNG, RGBA 8-bit"), "{}", list);
+        assert!(list.contains(&format!("- vfx/textures/pack_mask.png - 4×2 PNG, RGBA 8-bit, 1 KB; used by {}", name)), "{}", list);
+        assert!(list.contains("vfx/textures/pack_mask_g.png"), "{}", list);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn guide_sections_are_listed() {
-        for section in ["workflow", "format", "layers", "attach", "textures", "recipes", "game"] {
+        for section in ["workflow", "format", "layers", "attach", "textures", "assets", "recipes", "game"] {
             assert!(!guide_section(Some(section)).starts_with("No section"), "{}", section);
         }
     }

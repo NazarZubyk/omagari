@@ -7,9 +7,10 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use omagari::format::ProjectV2;
+use omagari::format::{ChannelDef, ProjectV2};
 
 use super::actions::Action;
+use super::assets::ImportDialog;
 use super::history::{Activity, History, UNDO_LIMIT};
 use super::layer_view::LayerView;
 use crate::controller::{EffectResource, PreviewCommand};
@@ -80,6 +81,16 @@ pub struct EditorSession {
     pub problems_open: bool,
     /// F was pressed: the camera turns to the target.
     pub focus_camera: bool,
+    /// Asset shown in the ASSETS tab's details.
+    pub selected_asset: Option<String>,
+    /// Channel the large asset preview shows; `None` = RGB.
+    pub asset_view: Option<ChannelDef>,
+    /// The id being typed in the asset rename field: (asset, text).
+    pub rename_draft: Option<(String, String)>,
+    /// Files are dragged over the window.
+    pub drop_hover: bool,
+    /// The native file dialog of IMPORT, while it is open.
+    pub import_dialog: ImportDialog,
 }
 
 impl Default for EditorSession {
@@ -108,6 +119,11 @@ impl Default for EditorSession {
             settings_open: false,
             problems_open: false,
             focus_camera: false,
+            selected_asset: None,
+            asset_view: None,
+            rename_draft: None,
+            drop_hover: false,
+            import_dialog: ImportDialog::default(),
         }
     }
 }
@@ -148,6 +164,8 @@ impl EditorSession {
         self.revalidate();
         self.selected = (!project.layers.is_empty()).then_some(0);
         self.view = LayerView::default();
+        self.selected_asset = None;
+        self.rename_draft = None;
     }
 
     /// The project was written to disk as it is now.

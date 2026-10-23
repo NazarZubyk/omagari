@@ -10,6 +10,7 @@ use bevy_panorbit_camera::PanOrbitCameraPlugin;
 
 use omagari::format::ProjectV2;
 
+mod asset_library;
 mod controller;
 mod editor;
 mod mcp;

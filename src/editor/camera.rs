@@ -42,6 +42,15 @@ impl PreviewCamera {
         }
     }
 
+    /// `orbit` / `game` (any case).
+    pub fn parse(name: &str) -> Option<PreviewCamera> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "orbit" => Some(PreviewCamera::Orbit),
+            "game" => Some(PreviewCamera::Game),
+            _ => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             PreviewCamera::Orbit => "ORBIT",

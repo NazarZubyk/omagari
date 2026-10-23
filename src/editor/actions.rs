@@ -3,17 +3,22 @@
 //! runs them after the UI, asking first when unsaved changes would be lost or
 //! a layer deleted.
 
+use std::path::PathBuf;
+
 use bevy::prelude::*;
 use bevy::window::WindowCloseRequested;
 
-use omagari::format::{LayerDef, PreviewDef, ProjectV2};
+use omagari::format::{builtin_texture_path, ChannelDef, LayerDef, PreviewDef, ProjectV2, TexturePurpose};
+use omagari::runtime::resolve_asset_path_in;
 
+use super::assets::{select_asset, TexturePreviews};
 use super::effect::new_particles_layer;
 use super::helpers::ui_text;
 use super::session::{Dialog, EditorSession};
+use crate::asset_library::{self as library, ImportKind};
 use crate::controller::*;
 use crate::mcp::{self, PreviewRequest};
-use crate::settings::GameAssets;
+use crate::settings::{GameAssets, GAME_ASSET_SOURCE};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -44,6 +49,21 @@ pub enum Action {
     DuplicateLayer(usize),
     DeleteLayer(usize),
     MoveLayer { from: usize, to: usize },
+    /// Opens the native file dialog of IMPORT.
+    OpenImportDialog,
+    /// Imports texture files (file dialog, drag & drop, `--import`) into
+    /// the game assets folder and adds them as assets.
+    ImportFiles(Vec<PathBuf>),
+    /// Adds a built-in texture (file name, e.g. `cloud.png`) as an asset.
+    AddBuiltinTexture(String),
+    /// Shows an asset in the ASSETS tab.
+    SelectAsset(String),
+    /// Renames an asset and every reference to it.
+    RenameAsset { from: String, to: String },
+    /// Removes an asset (refused while layers use it).
+    DeleteAsset(String),
+    /// Writes one channel of an asset as a grayscale PNG and adds it.
+    ExtractChannel { asset: String, channel: ChannelDef },
     /// Runs the action without asking (the user already confirmed).
     Confirmed(Box<Action>),
 }
@@ -96,6 +116,7 @@ pub fn move_item<T>(list: &mut Vec<T>, from: usize, to: usize) -> bool {
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn perform_actions(
     mut project: ResMut<ProjectV2>,
     mut res: ResMut<EffectResource>,
@@ -103,6 +124,8 @@ pub fn perform_actions(
     mut preview: MessageWriter<PreviewCommand>,
     mut exit: MessageWriter<AppExit>,
     game_assets: Res<GameAssets>,
+    asset_server: Option<Res<AssetServer>>,
+    previews: Option<ResMut<TexturePreviews>>,
 ) {
     let actions = std::mem::take(&mut session.actions);
     if actions.is_empty() {
@@ -115,12 +138,24 @@ pub fn perform_actions(
         preview: Vec::new(),
         exit: false,
         game_assets: &game_assets,
+        rewritten: Vec::new(),
     };
     for action in actions {
         ctx.perform(action, false);
     }
-    let (commands, quit) = (ctx.preview, ctx.exit);
+    let (commands, quit, rewritten) = (ctx.preview, ctx.exit, ctx.rewritten);
     preview.write_batch(commands);
+    // Files written over: loaded textures and previews show the new pixels.
+    if let Some(server) = asset_server {
+        for path in rewritten.iter() {
+            server.reload(resolve_asset_path_in(path, Some(GAME_ASSET_SOURCE)));
+        }
+    }
+    if let Some(mut previews) = previews {
+        for path in rewritten.iter() {
+            previews.invalidate(path);
+        }
+    }
     if quit {
         exit.write(AppExit::Success);
     }
@@ -134,6 +169,8 @@ struct ActionContext<'a> {
     preview: Vec<PreviewCommand>,
     exit: bool,
     game_assets: &'a GameAssets,
+    /// Game texture paths whose files were written over.
+    rewritten: Vec<String>,
 }
 
 impl ActionContext<'_> {
@@ -283,6 +320,113 @@ impl ActionContext<'_> {
                     }
                 }
             }
+            Action::OpenImportDialog => {
+                let root = std::path::absolute(self.game_assets.assets_root()).ok();
+                self.session.import_dialog.open(root);
+            }
+            Action::ImportFiles(files) => self.import_files(files),
+            Action::AddBuiltinTexture(file) => {
+                let path = builtin_texture_path(&file);
+                let id = file.strip_suffix(".png").unwrap_or(&file).to_string();
+                match library::add_texture_asset(self.project, &path, TexturePurpose::Sprite, Some(&id))
+                    .or_else(|_| library::add_texture_asset(self.project, &path, TexturePurpose::Sprite, None))
+                {
+                    Ok((asset, added)) => {
+                        if added {
+                            self.status(format!("Added the built-in texture {} as \"{}\"", file, asset));
+                        }
+                        select_asset(self.session, &asset);
+                    }
+                    Err(e) => self.status(e),
+                }
+            }
+            Action::SelectAsset(id) => select_asset(self.session, &id),
+            Action::RenameAsset { from, to } => match self.project.rename_asset(&from, &to) {
+                Ok(()) => {
+                    let to = to.trim().to_string();
+                    let users = self.project.asset_users(&to).len();
+                    self.status(format!("Renamed asset \"{}\" to \"{}\" ({} layer(s) updated)", from, to, users));
+                    select_asset(self.session, &to);
+                }
+                Err(e) => {
+                    self.status(format!("Cannot rename \"{}\": {}", from, e));
+                    self.session.rename_draft = None;
+                }
+            },
+            Action::DeleteAsset(id) => match self.project.delete_asset(&id) {
+                Ok(_) => {
+                    self.session.selected_asset = None;
+                    self.status(format!("Removed asset \"{}\" (the file stays on disk; Ctrl+Z brings it back)", id));
+                }
+                Err(e) => self.status(format!("Cannot delete: {}; pick another texture on those layers first", e)),
+            },
+            Action::ExtractChannel { asset, channel } => {
+                let root = self.game_assets.assets_root();
+                match library::extract_channel_asset(self.project, &asset, channel, &root) {
+                    Ok((id, path)) => {
+                        self.status(format!(
+                            "Extracted {} of \"{}\" to {} (asset \"{}\")",
+                            channel.name(),
+                            asset,
+                            path,
+                            id
+                        ));
+                        self.rewritten.push(path);
+                        self.session.revalidate();
+                        select_asset(self.session, &id);
+                    }
+                    Err(e) => self.status(format!("Cannot extract {} of \"{}\": {}", channel.name(), asset, e)),
+                }
+            }
+        }
+    }
+
+    /// Imports files into the game assets folder and adds them as assets
+    /// (purpose guessed from the file name); the last one is shown in the
+    /// ASSETS tab.
+    fn import_files(&mut self, files: Vec<PathBuf>) {
+        let root = self.game_assets.assets_root();
+        let mut done = Vec::new();
+        let mut skipped = Vec::new();
+        let mut last = None;
+        for file in files {
+            let name = file.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let imported = match library::import_file(&file, &root) {
+                Ok(imported) => imported,
+                Err(e) => {
+                    skipped.push(e);
+                    continue;
+                }
+            };
+            match library::add_texture_asset(self.project, &imported.path, library::guess_purpose(&name), None) {
+                Ok((id, _)) => {
+                    let how = match imported.kind {
+                        ImportKind::Copied => format!("copied to {}", imported.path),
+                        ImportKind::Reused => format!("same file as {}", imported.path),
+                        ImportKind::InPlace => format!("used in place: {}", imported.path),
+                    };
+                    done.push(format!("\"{}\" ({})", id, how));
+                    last = Some(id);
+                }
+                Err(e) => skipped.push(e),
+            }
+        }
+        if let Some(id) = last {
+            select_asset(self.session, &id);
+        }
+        self.session.revalidate();
+        let mut status = String::new();
+        if !done.is_empty() {
+            status = format!("Imported {}", done.join(", "));
+        }
+        if !skipped.is_empty() {
+            if !status.is_empty() {
+                status.push_str("; ");
+            }
+            status.push_str(&format!("not imported: {}", skipped.join("; ")));
+        }
+        if !status.is_empty() {
+            self.status(status);
         }
     }
 
@@ -354,6 +498,9 @@ impl ActionContext<'_> {
                 }
                 if let Some(stage) = request.stage.as_deref().and_then(super::scene::Stage::parse) {
                     stage.store(&mut loaded);
+                }
+                if let Some(camera) = request.camera.as_deref().and_then(super::camera::PreviewCamera::parse) {
+                    camera.store(&mut loaded);
                 }
                 // The request's stage and motion are viewing choices: the
                 // project still counts as saved.
@@ -506,6 +653,63 @@ mod tests {
         act(&mut app, Action::MoveLayer { from: 1, to: 0 });
         assert_eq!(app.world().resource::<ProjectV2>().layers[0].name(), "particles2");
         assert_eq!(session(&app).selected, Some(0));
+    }
+
+    fn project(app: &App) -> &ProjectV2 {
+        app.world().resource::<ProjectV2>()
+    }
+
+    /// Import (as a drop would), rename, delete (refused while used),
+    /// extract a channel and add a built-in, all undoable project edits.
+    #[test]
+    fn asset_actions_edit_the_project() {
+        let dir = crate::asset_library::tests::temp_dir("asset_actions");
+        let game = dir.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        crate::asset_library::tests::write_test_png(&dir.join("Voronoi.png"));
+        let mut app = app();
+        app.insert_resource(GameAssets::resolve(Some(game.to_string_lossy().to_string()), None, &Default::default()));
+        act(&mut app, Action::AddParticlesLayer);
+
+        act(&mut app, Action::ImportFiles(vec![dir.join("Voronoi.png"), dir.join("readme.txt")]));
+        let texture = project(&app).texture("Voronoi").expect("imported").clone();
+        assert_eq!(texture.path, "vfx/textures/Voronoi.png");
+        assert_eq!(texture.purpose, TexturePurpose::Noise, "guessed from the name");
+        assert!(game.join("vfx/textures/Voronoi.png").is_file());
+        assert_eq!(session(&app).selected_asset.as_deref(), Some("Voronoi"));
+        assert_eq!(session(&app).tab, super::super::session::RightTab::Assets);
+        let status = app.world().resource::<EffectResource>().context.status.clone().unwrap();
+        assert!(status.contains("copied to vfx/textures/Voronoi.png") && status.contains("not imported"), "{}", status);
+
+        // Use it on the layer, then rename: the layer follows.
+        app.world_mut().resource_mut::<ProjectV2>().layers[0].as_particles_mut().unwrap().texture = Some("Voronoi".into());
+        app.update();
+        act(&mut app, Action::RenameAsset { from: "Voronoi".into(), to: "cells".into() });
+        assert_eq!(project(&app).layers[0].as_particles().unwrap().texture.as_deref(), Some("cells"));
+        assert_eq!(session(&app).selected_asset.as_deref(), Some("cells"));
+        act(&mut app, Action::Undo);
+        assert_eq!(project(&app).layers[0].as_particles().unwrap().texture.as_deref(), Some("Voronoi"));
+        act(&mut app, Action::Redo);
+
+        act(&mut app, Action::DeleteAsset("cells".into()));
+        assert!(project(&app).asset("cells").is_some(), "used by a layer");
+        let status = app.world().resource::<EffectResource>().context.status.clone().unwrap();
+        assert!(status.contains("used by \"particles\""), "{}", status);
+
+        act(&mut app, Action::ExtractChannel { asset: "cells".into(), channel: ChannelDef::B });
+        let extracted = project(&app).texture("cells_b").expect("extracted").clone();
+        assert_eq!(extracted.path, "vfx/textures/Voronoi_b.png");
+        assert_eq!(extracted.purpose, TexturePurpose::Noise);
+        assert!(game.join("vfx/textures/Voronoi_b.png").is_file());
+        act(&mut app, Action::DeleteAsset("cells_b".into()));
+        assert!(project(&app).asset("cells_b").is_none(), "unused assets can be deleted");
+
+        let before = project(&app).assets.len();
+        act(&mut app, Action::AddBuiltinTexture("glow1.png".into()));
+        assert_eq!(project(&app).texture("glow1").unwrap().path, "omagari://textures/glow1.png");
+        act(&mut app, Action::AddBuiltinTexture("glow1.png".into()));
+        assert_eq!(project(&app).assets.len(), before + 1, "added once");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

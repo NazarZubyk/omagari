@@ -4,7 +4,7 @@
 pub const NAME: &str = "The layer's name. Must be unique: child layers find their parent by it.";
 pub const CAPACITY: &str =
     "Most particles of this layer alive at the same time. Spawns above it are skipped. Higher costs more GPU memory.";
-pub const TEXTURE: &str = "The image drawn on each particle. Needs a ParticleTexture render modifier to show.";
+pub const TEXTURE: &str = "The image drawn on each particle. Needs a ParticleTexture render modifier to show. Import and edit textures in the ASSETS tab.";
 pub const PARENT: &str = "A layer whose particles spawn this layer's particles (EmitSpawnEvent on the parent). NONE = spawned by its own spawner.";
 pub const SPACE: &str = "Whether particles move along with the target after they are born.";
 pub const SPACE_LOCAL: &str = "Local: particles move with the target (auras, shields). Size fit applies.";
@@ -57,5 +57,28 @@ pub fn attribute(name: &str) -> &'static str {
         "Prev" | "Next" | "Ribbon ID" => "Ribbon / trail links between particles.",
         "ID" | "Particle Counter" => "A number that tells particles apart.",
         _ => "A free per-particle value for your own expressions.",
+    }
+}
+
+// --- assets ------------------------------------------------------------------
+
+pub const ASSET_IMPORT: &str = "Pick PNG or JPG files. Files outside the game assets folder are copied into its vfx/textures/; files already inside it are used where they are.";
+pub const ASSET_ID: &str = "The name layers use to pick this texture. Renaming updates every layer that uses it.";
+pub const ASSET_PATH: &str = "Where the file is, relative to the game's assets/ folder (omagari://textures/… = built into Omagari, nothing to copy).";
+pub const ASSET_PURPOSE: &str = "What the texture is for. It picks the defaults of the settings below.";
+pub const ASSET_WRAP: &str = "What is drawn past the texture's edge: Repeat tiles it (scrolling noise), Clamp stretches the edge pixels (sprites).";
+pub const ASSET_COLOR_SPACE: &str = "Colour = the pixels are colours (sprites, gradients). Data = the pixels are numbers (noise, masks) and are used unchanged.";
+pub const ASSET_FILTER: &str = "Smooth blends neighbouring pixels; Pixelated shows hard pixel edges (pixel art).";
+pub const ASSET_GRID: &str = "A sprite sheet: the image holds rows × columns frames of an animation (flipbooks).";
+pub const ASSET_EXTRACT: &str = "Writes one channel as a grayscale PNG next to the texture and adds it as a new asset. Particle layers can only read a texture's colour or its red channel, so a channel-packed texture needs this for G, B or A.";
+pub const ASSET_VIEW: &str = "Show the colour, or one channel as gray (white = 255).";
+
+pub fn purpose_hint(purpose: omagari::format::TexturePurpose) -> &'static str {
+    use omagari::format::TexturePurpose as P;
+    match purpose {
+        P::Sprite => "A picture drawn on particles: smoke, sparks, glows. Clamp, colour.",
+        P::Noise => "A tiling pattern that scrolls or distorts (perlin, voronoi). Repeat, data.",
+        P::Mask => "Black-and-white shape that hides or shows parts. Clamp, data.",
+        P::Gradient => "A colour ramp looked up from left to right. Clamp, colour.",
     }
 }

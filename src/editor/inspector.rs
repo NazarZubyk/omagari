@@ -2,8 +2,9 @@
 //! the preview settings, parameters, triggers and assets.
 
 use bevy_egui::egui::{self, RichText};
-use omagari::format::{AssetKind, LayerDef, ParamValue, ProjectV2};
+use omagari::format::{LayerDef, ParamValue, ProjectV2};
 
+use super::assets::{assets_tab, TexturePreviews};
 use super::camera::PreviewCamera;
 use super::effect::draw_particles_layer;
 use super::package::{motion_panel, sockets_and_fit_panel};
@@ -11,6 +12,7 @@ use super::problems::{message_list, subject_box, ACCENT};
 use super::scene::{Backdrop, Stage};
 use super::session::{EditorSession, RightTab};
 use super::AppContext;
+use crate::settings::GameAssets;
 
 const TABS: [(RightTab, &str, &str); 6] = [
     (RightTab::Layer, "🔧 LAYER", "Settings of the selected layer"),
@@ -27,6 +29,8 @@ pub fn right_panel(
     session: &mut EditorSession,
     app: &mut AppContext,
     backdrop: &mut Backdrop,
+    previews: &mut TexturePreviews,
+    game_assets: &GameAssets,
 ) {
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
@@ -55,7 +59,7 @@ pub fn right_panel(
             RightTab::Preview => preview_tab(ui, project, session, backdrop),
             RightTab::Parameters => parameters_tab(ui, project),
             RightTab::Triggers => triggers_tab(ui, project),
-            RightTab::Assets => assets_tab(ui, project, session),
+            RightTab::Assets => assets_tab(ui, project, session, previews, game_assets),
         });
 }
 
@@ -157,25 +161,5 @@ fn triggers_tab(ui: &mut egui::Ui, project: &ProjectV2) {
     }
     for t in project.triggers.iter() {
         ui.label(&t.name);
-    }
-}
-
-fn assets_tab(ui: &mut egui::Ui, project: &ProjectV2, session: &EditorSession) {
-    ui.label("The textures this project uses. Layers pick one by its id.");
-    ui.label(RichText::new("Importing textures and the asset library come in the next update.").weak());
-    ui.separator();
-    if project.assets.is_empty() {
-        ui.label(RichText::new("No assets yet; picking a texture on a layer adds it.").weak());
-    }
-    egui::Grid::new("assets").striped(true).num_columns(2).show(ui, |ui| {
-        for asset in project.assets.iter() {
-            let AssetKind::Texture(texture) = &asset.kind;
-            ui.label(RichText::new(&asset.id).strong());
-            ui.label(&texture.path);
-            ui.end_row();
-        }
-    });
-    for asset in project.assets.iter() {
-        subject_box(ui, session, &format!("asset \"{}\"", asset.id));
     }
 }

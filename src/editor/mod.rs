@@ -2,6 +2,7 @@
 //! presets) and the egui widgets for the data model in `omagari::format`.
 
 pub mod actions;
+pub mod assets;
 pub mod camera;
 pub mod dialogs;
 pub mod effect;
@@ -59,6 +60,7 @@ impl Plugin for EditorPlugin {
         app.init_resource::<scene::Backdrop>()
             .init_resource::<scene::Stage>()
             .init_resource::<session::EditorSession>()
+            .init_resource::<assets::TexturePreviews>()
             .add_systems(
                 Startup,
                 (scene::spawn_scene, spawn_preview_target, camera::spawn_preview_cameras),
@@ -68,6 +70,9 @@ impl Plugin for EditorPlugin {
                 (
                     actions::poll_preview_requests,
                     actions::handle_close_requests,
+                    assets::handle_file_drops,
+                    assets::poll_import_dialog,
+                    assets::update_texture_previews,
                     scene::sync_stage,
                     move_preview_target,
                     camera::follow_preview_target.after(move_preview_target),
@@ -78,7 +83,9 @@ impl Plugin for EditorPlugin {
             )
             .add_systems(
                 Update,
-                apply_preview_commands.before(omagari::runtime::VfxSystems),
+                (apply_preview_commands, crate::controller::sync_preview_texture_settings)
+                    .chain()
+                    .before(omagari::runtime::VfxSystems),
             )
             .add_systems(
                 Update,

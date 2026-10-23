@@ -13,9 +13,15 @@ bevy_egui = { version = "0.42", optional = true }
 bevy_panorbit_camera = { version = "0.35", optional = true }
 regex = { version = "1.11.1", optional = true }
 serde_json = { version = "1", optional = true }
+# Editor only: decoding textures for previews and channel extraction (the
+# same crate Bevy decodes with), and the native file dialog of IMPORT.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
+rfd = { version = "0.17", optional = true }
 
 [features]
-editor = ["bevy_egui", "bevy_panorbit_camera", "regex", "serde_json"]
+# `bevy/jpeg`: the editor imports and previews JPG textures. Games that use
+# JPG textures enable Bevy's `jpeg` feature themselves (PNG is a default).
+editor = ["bevy_egui", "bevy_panorbit_camera", "regex", "serde_json", "image", "rfd", "bevy/jpeg"]
 
 [[bin]]
 name = "omagari"
