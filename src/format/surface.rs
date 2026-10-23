@@ -312,11 +312,19 @@ pub enum AxisDef {
     NegX,
     NegY,
     NegZ,
+    /// The mesh's U texture coordinate (0..1): along a shape (around a ring,
+    /// along a slash arc from its left end).
+    U,
+    /// The mesh's V texture coordinate (0..1): across a ring or arc (inner →
+    /// outer edge), up a sphere or cylinder.
+    V,
 }
 
 impl AxisDef {
-    pub const ALL: [AxisDef; 6] = [AxisDef::Y, AxisDef::NegY, AxisDef::X, AxisDef::NegX, AxisDef::Z, AxisDef::NegZ];
+    pub const ALL: [AxisDef; 8] =
+        [AxisDef::Y, AxisDef::NegY, AxisDef::X, AxisDef::NegX, AxisDef::Z, AxisDef::NegZ, AxisDef::U, AxisDef::V];
 
+    /// The rest-pose direction; zero for U / V.
     pub fn vector(self) -> Vec3 {
         match self {
             AxisDef::X => Vec3::X,
@@ -325,7 +333,14 @@ impl AxisDef {
             AxisDef::NegX => Vec3::NEG_X,
             AxisDef::NegY => Vec3::NEG_Y,
             AxisDef::NegZ => Vec3::NEG_Z,
+            AxisDef::U | AxisDef::V => Vec3::ZERO,
         }
+    }
+
+    /// Whether the axis is a texture coordinate (U / V) instead of a
+    /// direction.
+    pub fn is_uv(self) -> bool {
+        matches!(self, AxisDef::U | AxisDef::V)
     }
 
     pub fn name(self) -> &'static str {
@@ -336,14 +351,18 @@ impl AxisDef {
             AxisDef::NegX => "-X",
             AxisDef::NegY => "-Y (down)",
             AxisDef::NegZ => "-Z",
+            AxisDef::U => "U (along the mesh)",
+            AxisDef::V => "V (across the mesh)",
         }
     }
 }
 
 /// Shows the effect only on a band of the model along an axis of its rest
 /// pose: 0 = the model's low end (feet for Y), 1 = its high end (head),
-/// measured over the covered meshes. `from` 0, `to` bound to a parameter =
-/// frost rising from the feet.
+/// measured over the covered meshes (a shape: over the shape). `from` 0,
+/// `to` bound to a parameter = frost rising from the feet. Axis `U` / `V`
+/// uses the mesh's texture coordinates instead (0..1): a slash arc swept
+/// along `U` by `to: Age(..)`.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct FillDef {
@@ -387,8 +406,16 @@ impl Default for MaskDef {
     }
 }
 
-/// The look of Omagari's effect shader (surface layers now; shape, trail
-/// and afterimage layers later). Optional parts are off when `None`.
+/// What a binding reads (see [`EffectMaterialDef::age_bindings`]).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum BindingInput<'a> {
+    Param(&'a str),
+    /// The largest key age.
+    Age(f32),
+}
+
+/// The look of Omagari's effect shader (surface and shape layers; trail and
+/// afterimage layers later). Optional parts are off when `None`.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct EffectMaterialDef {
@@ -431,40 +458,58 @@ impl Default for EffectMaterialDef {
     }
 }
 
-/// A Float binding's value; the binding's first key (or `fallback`) when its
-/// parameter is unknown or not a Float.
-fn float_value(b: &Binding<f32>, lookup: &dyn Fn(&str) -> Option<ParamValue>, fallback: f32) -> f32 {
-    b.evaluate(|n| lookup(n).and_then(|v| v.as_float())).unwrap_or_else(|| match b {
-        Binding::Param(_, keys) => keys.first().map(|k| k.1).unwrap_or(fallback),
-        Binding::Const(v) => *v,
-    })
+/// A Float binding's value at `age`; the binding's first key (or
+/// `fallback`) when its parameter is unknown or not a Float.
+fn float_value(b: &Binding<f32>, lookup: &dyn Fn(&str) -> Option<ParamValue>, age: f32, fallback: f32) -> f32 {
+    b.evaluate_at(|n| lookup(n).and_then(|v| v.as_float()), age)
+        .unwrap_or_else(|| first_key(b).unwrap_or(fallback))
 }
 
-fn vec2_value(b: &Binding<Vec2>, lookup: &dyn Fn(&str) -> Option<ParamValue>) -> Vec2 {
-    b.evaluate(|n| lookup(n).and_then(|v| v.as_float())).unwrap_or_else(|| match b {
-        Binding::Param(_, keys) => keys.first().map(|k| k.1).unwrap_or(Vec2::ZERO),
-        Binding::Const(v) => *v,
-    })
+/// A curve's first key value, or the constant.
+fn first_key<T: Copy>(b: &Binding<T>) -> Option<T> {
+    match b {
+        Binding::Const(v) => Some(*v),
+        Binding::Param(_, keys) | Binding::Age(keys) => keys.first().map(|k| k.1),
+    }
+}
+
+/// A binding of a vector (`Vec2`, `Vec3`) at `age`: unknown parameters give
+/// the curve's first key, no keys `fallback`.
+pub fn vector_value<T>(b: &Binding<T>, lookup: &dyn Fn(&str) -> Option<ParamValue>, age: f32, fallback: T) -> T
+where
+    T: Copy + std::ops::Add<Output = T> + std::ops::Mul<f32, Output = T>,
+{
+    b.evaluate_at(|n| lookup(n).and_then(|v| v.as_float()), age)
+        .unwrap_or_else(|| first_key(b).unwrap_or(fallback))
+}
+
+/// A number binding at `age` (public twin of the material's own lookup):
+/// unknown parameters give the curve's first key, no keys `fallback`.
+pub fn number_value(b: &Binding<f32>, lookup: &dyn Fn(&str) -> Option<ParamValue>, age: f32, fallback: f32) -> f32 {
+    float_value(b, lookup, age, fallback)
 }
 
 /// A colour binding's value: a constant, a Color parameter itself
 /// (`Param("tint", [])`), or a curve of colours over a Float parameter.
 /// `None` when the parameter is unknown (or the curve has no keys).
 pub fn evaluate_color(b: &Binding<Vec4>, lookup: &dyn Fn(&str) -> Option<ParamValue>) -> Option<Vec4> {
+    evaluate_color_at(b, lookup, 0.0)
+}
+
+/// [`evaluate_color`] for a layer of `age` seconds (`Age` curves).
+pub fn evaluate_color_at(b: &Binding<Vec4>, lookup: &dyn Fn(&str) -> Option<ParamValue>, age: f32) -> Option<Vec4> {
     match b {
         Binding::Const(c) => Some(*c),
         Binding::Param(name, _) => match lookup(name)? {
             ParamValue::Color(c) => Some(c),
             ParamValue::Float(x) => b.evaluate(|_| Some(x)),
         },
+        Binding::Age(_) => b.evaluate_at(|_| None, age),
     }
 }
 
-fn color_value(b: &Binding<Vec4>, lookup: &dyn Fn(&str) -> Option<ParamValue>, fallback: Vec4) -> Vec4 {
-    evaluate_color(b, lookup).unwrap_or_else(|| match b {
-        Binding::Param(_, keys) => keys.first().map(|k| k.1).unwrap_or(fallback),
-        Binding::Const(v) => *v,
-    })
+fn color_value(b: &Binding<Vec4>, lookup: &dyn Fn(&str) -> Option<ParamValue>, age: f32, fallback: Vec4) -> Vec4 {
+    evaluate_color_at(b, lookup, age).unwrap_or_else(|| first_key(b).unwrap_or(fallback))
 }
 
 /// [`EffectMaterialDef`] with every binding evaluated (CPU side; packed
@@ -502,59 +547,51 @@ pub struct NoiseValues {
 }
 
 impl NoiseDef {
-    fn values(&self, lookup: &dyn Fn(&str) -> Option<ParamValue>) -> NoiseValues {
+    fn values(&self, lookup: &dyn Fn(&str) -> Option<ParamValue>, age: f32) -> NoiseValues {
         NoiseValues {
             mapping: self.mapping,
             channel: self.texture.channel,
-            scale: float_value(&self.scale, lookup, 1.0),
-            scroll: vec2_value(&self.scroll, lookup),
-            strength: float_value(&self.strength, lookup, 0.0),
-            contrast: float_value(&self.contrast, lookup, 1.0),
+            scale: float_value(&self.scale, lookup, age, 1.0),
+            scroll: vector_value(&self.scroll, lookup, age, Vec2::ZERO),
+            strength: float_value(&self.strength, lookup, age, 0.0),
+            contrast: float_value(&self.contrast, lookup, age, 1.0),
         }
     }
 }
 
 impl EffectMaterialDef {
-    /// Evaluates every binding; `lookup` gives a parameter's current value.
-    /// Unknown parameters use the curve's first key.
+    /// Evaluates every binding at age 0; `lookup` gives a parameter's
+    /// current value. Unknown parameters use the curve's first key.
     pub fn evaluate(&self, lookup: &dyn Fn(&str) -> Option<ParamValue>) -> EffectValues {
+        self.evaluate_at(lookup, 0.0)
+    }
+
+    /// Evaluates every binding for a layer of `age` seconds (`Age` curves).
+    pub fn evaluate_at(&self, lookup: &dyn Fn(&str) -> Option<ParamValue>, age: f32) -> EffectValues {
+        let f = |b: &Binding<f32>, fallback: f32| float_value(b, lookup, age, fallback);
+        let c = |b: &Binding<Vec4>, fallback: Vec4| color_value(b, lookup, age, fallback);
         EffectValues {
             blend: self.blend,
-            color: color_value(&self.color, lookup, Vec4::ONE),
-            opacity: float_value(&self.opacity, lookup, 1.0),
-            emissive: float_value(&self.emissive, lookup, 1.0),
-            noise_a: self.noise_a.as_ref().map(|n| n.values(lookup)),
-            noise_b: self.noise_b.as_ref().map(|n| n.values(lookup)),
-            rim: self.rim.as_ref().map(|r| {
-                (
-                    color_value(&r.color, lookup, Vec4::ONE),
-                    float_value(&r.power, lookup, 2.0),
-                    float_value(&r.intensity, lookup, 1.0),
-                )
-            }),
-            pulse: self
-                .pulse
+            color: c(&self.color, Vec4::ONE),
+            opacity: f(&self.opacity, 1.0),
+            emissive: f(&self.emissive, 1.0),
+            noise_a: self.noise_a.as_ref().map(|n| n.values(lookup, age)),
+            noise_b: self.noise_b.as_ref().map(|n| n.values(lookup, age)),
+            rim: self.rim.as_ref().map(|r| (c(&r.color, Vec4::ONE), f(&r.power, 2.0), f(&r.intensity, 1.0))),
+            pulse: self.pulse.as_ref().map(|p| (f(&p.frequency, 1.0), f(&p.amount, 0.0))),
+            flash: self.flash.as_ref().map(|x| f(x, 0.0)).unwrap_or(0.0),
+            dissolve: self
+                .dissolve
                 .as_ref()
-                .map(|p| (float_value(&p.frequency, lookup, 1.0), float_value(&p.amount, lookup, 0.0))),
-            flash: self.flash.as_ref().map(|f| float_value(f, lookup, 0.0)).unwrap_or(0.0),
-            dissolve: self.dissolve.as_ref().map(|d| {
-                (
-                    float_value(&d.threshold, lookup, 0.0),
-                    float_value(&d.edge_width, lookup, 0.0),
-                    color_value(&d.edge_color, lookup, Vec4::ONE),
-                )
-            }),
-            fill: self.fill.as_ref().map(|f| {
-                (
-                    f.axis,
-                    float_value(&f.from, lookup, 0.0),
-                    float_value(&f.to, lookup, 1.0),
-                    float_value(&f.softness, lookup, 0.0),
-                )
-            }),
-            mask: self.mask.as_ref().map(|m| {
-                (m.mapping, m.texture.channel, float_value(&m.scale, lookup, 1.0), float_value(&m.strength, lookup, 1.0))
-            }),
+                .map(|d| (f(&d.threshold, 0.0), f(&d.edge_width, 0.0), c(&d.edge_color, Vec4::ONE))),
+            fill: self
+                .fill
+                .as_ref()
+                .map(|x| (x.axis, f(&x.from, 0.0), f(&x.to, 1.0), f(&x.softness, 0.0))),
+            mask: self
+                .mask
+                .as_ref()
+                .map(|m| (m.mapping, m.texture.channel, f(&m.scale, 1.0), f(&m.strength, 1.0))),
         }
     }
 
@@ -591,14 +628,36 @@ impl EffectMaterialDef {
     /// `("noise_a.strength", "intensity")`.
     pub fn binding_params(&self) -> Vec<(&'static str, &str)> {
         let mut out = Vec::new();
-        self.visit_bindings(&mut |what, param| out.push((what, param)));
+        self.visit_bindings(&mut |what, input| {
+            if let BindingInput::Param(param) = input {
+                out.push((what, param));
+            }
+        });
         out
     }
 
-    fn visit_bindings<'a>(&'a self, f: &mut dyn FnMut(&'static str, &'a str)) {
-        fn p<'a, T>(what: &'static str, b: &'a Binding<T>, f: &mut dyn FnMut(&'static str, &'a str)) {
-            if let Some(name) = b.param() {
-                f(what, name);
+    /// Every `Age` curve: `(value name, its last key's age)`.
+    pub fn age_bindings(&self) -> Vec<(&'static str, f32)> {
+        let mut out = Vec::new();
+        self.visit_bindings(&mut |what, input| {
+            if let BindingInput::Age(last) = input {
+                out.push((what, last));
+            }
+        });
+        out
+    }
+
+    /// Whether any value is a curve over the layer's age.
+    pub fn reads_age(&self) -> bool {
+        !self.age_bindings().is_empty()
+    }
+
+    fn visit_bindings<'a>(&'a self, f: &mut dyn FnMut(&'static str, BindingInput<'a>)) {
+        fn p<'a, T>(what: &'static str, b: &'a Binding<T>, f: &mut dyn FnMut(&'static str, BindingInput<'a>)) {
+            match b {
+                Binding::Const(_) => {}
+                Binding::Param(name, _) => f(what, BindingInput::Param(name)),
+                Binding::Age(keys) => f(what, BindingInput::Age(keys.iter().map(|k| k.0).fold(f32::NEG_INFINITY, f32::max))),
             }
         }
         p("color", &self.color, f);
