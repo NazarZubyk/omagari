@@ -15,6 +15,7 @@ mod asset_library;
 mod controller;
 mod editor;
 mod mcp;
+mod model_info;
 mod settings;
 
 use crate::controller::*;

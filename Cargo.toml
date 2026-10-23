@@ -17,11 +17,15 @@ serde_json = { version = "1", optional = true }
 # same crate Bevy decodes with), and the native file dialog of IMPORT.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
 rfd = { version = "0.17", optional = true }
+# Editor only: reads glTF models on the CPU (hierarchy browser, MCP
+# `describe_model`, checks against the preview model). The same crate and
+# features Bevy's glTF loader already compiles, so nothing new is built.
+gltf = { version = "1.4", default-features = false, features = ["names", "utils", "extras", "extensions"], optional = true }
 
 [features]
 # `bevy/jpeg`: the editor imports and previews JPG textures. Games that use
 # JPG textures enable Bevy's `jpeg` feature themselves (PNG is a default).
-editor = ["bevy_egui", "bevy_panorbit_camera", "regex", "serde_json", "image", "rfd", "bevy/jpeg"]
+editor = ["bevy_egui", "bevy_panorbit_camera", "regex", "serde_json", "image", "rfd", "gltf", "bevy/jpeg"]
 
 [[bin]]
 name = "omagari"
