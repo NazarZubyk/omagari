@@ -1,82 +1,132 @@
-use bevy::{platform::collections::HashMap, prelude::*, reflect::TypeRegistry};
+use bevy::prelude::*;
 use bevy_hanabi::prelude::*;
-use std::{
-    cell::RefCell,
-    fs::File,
-    io::{self, Read, Write},
-    rc::Rc,
-};
 use std::fs::create_dir;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
-use omagari::format::OmagariProject;
+use omagari::format::ProjectV2;
+use omagari::runtime::InMemoryPackageAssets;
+use omagari::{VfxCommandsExt, VfxControl, VfxPackage};
 
 use crate::editor::AppContext;
+use crate::settings::{GameAssets, GAME_ASSET_SOURCE};
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct EffectResource {
-    pub effect_handles: Vec<Handle<EffectAsset>>,
-    pub textures: Vec<Handle<Image>>,
     pub context: AppContext,
 }
 
-pub fn spawn_particle_effects(
-    commands: &mut Commands,
-    res: &mut EffectResource,
-    clone: Rc<RefCell<&mut OmagariProject>>,
-    mut effects: ResMut<Assets<EffectAsset>>,
-    curr: Query<Entity, With<ParticleEffect>>,
-) {
-    for h in res.effect_handles.iter() {
-        effects.remove(h);
-    }
-    for e in curr.iter() {
-        commands.entity(e).despawn();
-    }
-    let mut refs: HashMap<String, Entity> = HashMap::new();
-    for effect in clone.borrow().effects.iter() {
-        let h = effects.add(effect.produce());
-        res.effect_handles.push(h.clone());
-        let mut e = commands.spawn((
-            ParticleEffect::new(h.clone()),
-            EffectMaterial {
-                images: vec![res.textures[effect.texture_index().unwrap_or(0)].clone()],
-            },
-            Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
-        ));
-        refs.insert(effect.name().to_string(), e.id());
+/// The entity preview instances are attached to: the spawn point at the
+/// origin (the stage moves the room around it, not the effect).
+#[derive(Component)]
+pub struct PreviewTarget;
 
-        if let Some(parent) = &effect.parent() {
-            if let Some(entity) = refs.get(parent) {
-                e.insert(EffectParent::new(*entity));
-            } else {
-                // Error
+/// What the RENDER / STOP buttons and MCP preview requests ask for.
+#[derive(Message, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PreviewCommand {
+    /// Rebuild the package from the open project and restart the instance.
+    Render,
+    /// Stop the instance gracefully (no new particles, live ones finish).
+    Stop,
+}
+
+/// The preview package and its instances. Only these instances are touched
+/// by the preview, so other `ParticleEffect`s in the world are left alone.
+#[derive(Resource, Default)]
+pub struct PreviewState {
+    /// The last package built from the open project.
+    pub package: Option<Handle<VfxPackage>>,
+    /// Preview instances that may still be alive (a stopped one lingers
+    /// until its particles died).
+    pub instances: Vec<Entity>,
+    /// Warnings from the last build.
+    pub warnings: Vec<String>,
+}
+
+pub fn spawn_preview_target(mut commands: Commands) {
+    commands.spawn((
+        Name::new("preview target"),
+        PreviewTarget,
+        Transform::default(),
+        Visibility::default(),
+    ));
+}
+
+/// Applies RENDER / STOP: RENDER builds a [`VfxPackage`] from the in-memory
+/// project and spawns it through the runtime on the preview target, exactly
+/// like a game would; STOP stops the running instances gracefully.
+pub fn apply_preview_commands(
+    mut commands: Commands,
+    mut requests: MessageReader<PreviewCommand>,
+    project: Res<ProjectV2>,
+    mut effects: ResMut<Assets<EffectAsset>>,
+    asset_server: Res<AssetServer>,
+    target: Single<Entity, With<PreviewTarget>>,
+    mut state: ResMut<PreviewState>,
+    // Both read the packages; only one is used at a time.
+    mut packages_or_control: ParamSet<(ResMut<Assets<VfxPackage>>, VfxControl)>,
+) {
+    for request in requests.read() {
+        match request {
+            PreviewCommand::Render => {
+                for instance in state.instances.drain(..) {
+                    commands.entity(instance).try_despawn();
+                }
+                let mut warnings = Vec::new();
+                let package = VfxPackage::build(
+                    project.clone(),
+                    &mut InMemoryPackageAssets::new(&mut effects, &asset_server)
+                        .with_source(Some(GAME_ASSET_SOURCE)),
+                    &mut warnings,
+                );
+                for warning in warnings.iter() {
+                    warn!("preview: {}", warning);
+                }
+                state.warnings = warnings;
+                // The previous package is dropped with its handle once its
+                // instances are gone.
+                let handle = packages_or_control.p0().add(package);
+                let instance = commands.spawn_vfx(&handle, *target);
+                state.instances.push(instance);
+                state.package = Some(handle);
+            }
+            PreviewCommand::Stop => {
+                let mut vfx = packages_or_control.p1();
+                let instances = std::mem::take(&mut state.instances);
+                state.instances = instances
+                    .into_iter()
+                    .filter(|&instance| vfx.stop(instance))
+                    .collect();
             }
         }
     }
 }
 
-pub fn despawn_all_particle_effects(
-    ongoing_effects: &Query<Entity, With<ParticleEffect>>,
-    commands: &mut Commands
-){
-    for effect_entity in ongoing_effects{
-        commands.entity(effect_entity).try_despawn();
+/// Writes the package export of a project: `<dest_dir>/<base>.vfx.ron`, where
+/// `base` is the project file name without its extensions. Returns the path.
+pub fn export_package(project: &ProjectV2, project_filename: &str, dest_dir: &Path) -> io::Result<PathBuf> {
+    let base = project_filename.split('.').next().unwrap_or_default();
+    if base.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "the project has no file name"));
     }
+    let text = project
+        .to_package()
+        .to_ron_string()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    std::fs::create_dir_all(dest_dir)?;
+    let path = dest_dir.join(format!("{}.vfx.ron", base));
+    std::fs::write(&path, text)?;
+    Ok(path)
 }
 
+/// EXPORT: the package goes to the game assets folder's `vfx/` when one is
+/// configured, else to `exported_effects/`.
 pub fn export_effects_to_files(
     filename: &str,
-    clone: Rc<RefCell<&mut OmagariProject>>,
-    type_registry: &TypeRegistry,
-) {
-    let base = filename.split('.').next().unwrap();
-    let other_filename = format!("{}.hanabi.ron", base);
-    let to_export = clone.borrow().to_exported();
-    let ron_string = to_export.to_ron_string(type_registry).unwrap();
-    let file_path = Folder::ExportedEffects.full_file_path(other_filename);
-    let mut file = File::create(file_path).unwrap();
-    file.write_all(ron_string.as_bytes()).unwrap();
+    project: &ProjectV2,
+    game_assets: &GameAssets,
+) -> io::Result<PathBuf> {
+    export_package(project, filename, &game_assets.export_dir())
 }
 
 pub fn projects_list() -> Vec<String> {
@@ -91,17 +141,25 @@ pub fn projects_list() -> Vec<String> {
             files.push(filename.to_string_lossy().into_owned());
         }
     }
+    files.sort();
     files
 }
 
-pub fn load_project(filename: &str) -> Result<OmagariProject, io::Error> {
+/// Loads a project from `saved_effects/`; v1 files are migrated to v2.
+pub fn load_project(filename: &str) -> Result<ProjectV2, io::Error> {
     let file_path = Folder::SavedEffects.full_file_path(String::from(filename));
-    let mut file = File::open(file_path)?;
-    let mut ron_string = String::new();
-    file.read_to_string(&mut ron_string)?;
-    let graph = OmagariProject::from_ron_str(&ron_string)
+    let ron_string = std::fs::read_to_string(file_path)?;
+    ProjectV2::from_ron_str(&ron_string).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Saves a project (always v2) to `saved_effects/`.
+pub fn save_project(filename: &str, project: &ProjectV2) -> Result<PathBuf, io::Error> {
+    let text = project
+        .to_ron_string()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(graph)
+    let file_path = Folder::SavedEffects.full_file_path(String::from(filename));
+    std::fs::write(&file_path, text)?;
+    Ok(file_path)
 }
 
 pub fn validate_project_filename(filename: &str) -> bool {
@@ -135,5 +193,85 @@ impl Folder{
             Folder::SavedEffects => "saved_effects/",
             Folder::ExportedEffects => "exported_effects/",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::asset::AssetPlugin;
+    use bevy::image::{CompressedImageFormats, ImageLoader};
+    use omagari::format::{
+        builtin_texture_path, AssetDef, AssetKind, LayerDef, ParticlesLayerDef, PreviewDef,
+        TextureAssetDef, TexturePurpose,
+    };
+    use std::time::Duration;
+
+    fn sample_project() -> ProjectV2 {
+        let mut project = ProjectV2::default();
+        project.assets.push(AssetDef {
+            id: "glow1".into(),
+            kind: AssetKind::Texture(TextureAssetDef::new(builtin_texture_path("glow1.png"), TexturePurpose::Sprite)),
+        });
+        project.layers.push(LayerDef::Particles(ParticlesLayerDef {
+            name: "dots".into(),
+            texture: Some("glow1".into()),
+            ..default()
+        }));
+        project.preview = Some(PreviewDef::default());
+        project
+    }
+
+    /// EXPORT writes `<name>.vfx.ron` without the preview block, and the
+    /// runtime's package loader reads it back.
+    #[test]
+    fn export_writes_a_package_the_runtime_loads() {
+        let dir = std::env::temp_dir().join(format!("omagari_export_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = export_package(&sample_project(), "sparkle.omagari.ron", &dir.join("vfx")).unwrap();
+        assert_eq!(path, dir.join("vfx").join("sparkle.vfx.ron"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("version: 2"), "{}", text);
+        assert!(!text.contains("preview"), "{}", text);
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin {
+                file_path: dir.to_string_lossy().to_string(),
+                ..default()
+            },
+            bevy::image::ImagePlugin::default(),
+        ))
+        .register_asset_loader(ImageLoader::new(CompressedImageFormats::empty()))
+        .init_asset::<EffectAsset>()
+        .add_plugins(omagari::OmagariPlugin);
+        let package: Handle<VfxPackage> = app.world().resource::<AssetServer>().load("vfx/sparkle.vfx.ron");
+        for _ in 0..500 {
+            app.update();
+            let server = app.world().resource::<AssetServer>();
+            if server.is_loaded_with_dependencies(&package) || server.load_state(&package).is_failed() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let server = app.world().resource::<AssetServer>();
+        assert!(
+            server.is_loaded_with_dependencies(&package),
+            "{:?}",
+            server.recursive_dependency_load_state(&package)
+        );
+        let packages = app.world().resource::<Assets<VfxPackage>>();
+        let package = packages.get(&package).unwrap();
+        assert_eq!(package.particle_layers.len(), 1);
+        assert_eq!(package.particle_layers[0].name, "dots");
+        assert!(package.project.preview.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_needs_a_file_name() {
+        let dir = std::env::temp_dir();
+        assert!(export_package(&sample_project(), "", &dir).is_err());
     }
 }

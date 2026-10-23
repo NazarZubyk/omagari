@@ -364,3 +364,15 @@ impl UiProvider for GradientVec4Editor {
         }
     }
 }
+
+impl ModifierLabel for ParticleTextureModifierEditor {
+    fn label() -> &'static str {
+        "🖼 ParticleTexture"
+    }
+}
+
+impl ModifierLabel for OrientModifierEditor {
+    fn label() -> &'static str {
+        "🧭 Orient"
+    }
+}
