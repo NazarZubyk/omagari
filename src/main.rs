@@ -16,16 +16,16 @@ use bevy_hanabi::prelude::*;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 use omagari::format::*;
-use std::fs::File;
-use std::io::Write;
 
 mod controller;
 mod editor;
 mod mcp;
+mod settings;
 
 use crate::controller::*;
+use crate::editor::effect::{draw_particles_layer, new_particles_layer};
 use crate::editor::helpers::*;
-use crate::editor::AppContext;
+use crate::settings::{GameAssets, OmagariSettings, SettingOrigin, SETTINGS_FILE};
 
 fn main() {
     // `omagari --mcp` runs the headless MCP server for AI agents instead of the editor.
@@ -34,7 +34,11 @@ fn main() {
         return;
     }
 
-    App::new()
+    let game_assets = GameAssets::from_environment();
+    let mut app = App::new();
+    // Asset sources must exist before `AssetPlugin` (in `DefaultPlugins`).
+    game_assets.register_source(&mut app);
+    app.insert_resource(game_assets)
         .insert_resource(ClearColor(Backdrop::default().clear_color()))
         .init_resource::<Backdrop>()
         .init_resource::<Stage>()
@@ -43,21 +47,28 @@ fn main() {
         .add_plugins(omagari::OmagariPlugin)
         .add_plugins(PanOrbitCameraPlugin)
         .add_plugins(EguiPlugin::default())
-        .add_systems(Startup, setup)
+        .add_message::<PreviewCommand>()
+        .init_resource::<PreviewState>()
+        .add_systems(Startup, (setup, spawn_preview_target))
         .add_systems(Update, poll_preview_requests)
+        .add_systems(
+            Update,
+            apply_preview_commands
+                .after(poll_preview_requests)
+                .before(omagari::runtime::VfxSystems),
+        )
         .add_systems(
             Update,
             apply_scene.run_if(resource_changed::<Backdrop>.or_else(resource_changed::<Stage>)),
         )
         .add_systems(Update, draw_room_grid)
         .add_systems(EguiPrimaryContextPass, app_ui)
-        .insert_resource(OmagariProject::default())
+        .insert_resource(ProjectV2::default())
         .run();
 }
 
 fn setup(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     mut egui_global_settings: ResMut<EguiGlobalSettings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -84,14 +95,7 @@ fn setup(
 
     spawn_scene(&mut commands, &mut meshes, &mut materials);
 
-    commands.insert_resource(EffectResource {
-        effect_handles: Vec::new(),
-        textures: PARTICLE_TEXTURES
-            .iter()
-            .map(|v| asset_server.load(v.filename))
-            .collect(),
-        context: AppContext::default(),
-    });
+    commands.insert_resource(EffectResource::default());
 }
 
 /// Half the size of the cube room the effects are shown in.
@@ -384,14 +388,12 @@ fn draw_room_grid(
 /// optionally followed by a stage name on the next line, and waits for the
 /// editor to delete it.
 fn poll_preview_requests(
-    mut commands: Commands,
     mut since_last_poll: Local<f32>,
     time: Res<Time>,
-    mut project: ResMut<OmagariProject>,
+    mut project: ResMut<ProjectV2>,
     mut res: ResMut<EffectResource>,
     mut stage: ResMut<Stage>,
-    effects: ResMut<Assets<EffectAsset>>,
-    curr: Query<Entity, With<ParticleEffect>>,
+    mut preview: MessageWriter<PreviewCommand>,
 ) {
     *since_last_poll += time.delta_secs();
     if *since_last_poll < 0.25 {
@@ -413,13 +415,7 @@ fn poll_preview_requests(
         Ok(loaded) => {
             *project = loaded;
             res.context.filename = Some(filename);
-            spawn_particle_effects(
-                &mut commands,
-                &mut res,
-                std::rc::Rc::new(std::cell::RefCell::new(&mut *project)),
-                effects,
-                curr,
-            );
+            preview.write(PreviewCommand::Render);
         }
         Err(e) => warn!("preview request for {}: {}", filename, e),
     }
@@ -430,11 +426,11 @@ fn app_ui(
     mut contexts: EguiContexts,
     mut camera: Single<&mut Camera, Without<EguiContext>>,
     window: Single<&mut Window, With<PrimaryWindow>>,
-    project: ResMut<OmagariProject>,
+    mut project: ResMut<ProjectV2>,
     mut res: ResMut<EffectResource>,
-    effects: ResMut<Assets<EffectAsset>>,
-    curr: Query<Entity, With<ParticleEffect>>,
-    type_registry: Res<AppTypeRegistry>,
+    mut preview: MessageWriter<PreviewCommand>,
+    preview_state: Res<PreviewState>,
+    game_assets: Res<GameAssets>,
     mut backdrop: ResMut<Backdrop>,
     mut stage: ResMut<Stage>,
 ) -> Result {
@@ -448,13 +444,7 @@ fn app_ui(
             .max_rect(ctx.viewport_rect()),
     );
 
-    res.context.visible_effects = project
-        .effects
-        .iter()
-        .map(|e| e.name().to_string())
-        .collect();
-
-    let project = std::rc::Rc::new(std::cell::RefCell::new(project.into_inner()));
+    res.context.layer_names = project.layers.iter().map(|l| l.name().to_string()).collect();
 
     let mut filename = res
         .context
@@ -469,28 +459,36 @@ fn app_ui(
             ui.vertical(|ui| {
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
-                    if ui.button("⏵ RENDER").clicked() {
-                        spawn_particle_effects(
-                            &mut commands,
-                            &mut res,
-                            project.clone(),
-                            effects,
-                            curr,
-                        );
+                    if ui
+                        .button("⏵ RENDER")
+                        .on_hover_text("Rebuild the effect and play it from the start")
+                        .clicked()
+                    {
+                        preview.write(PreviewCommand::Render);
                     }
 
-                    if ui.button("⏹ STOP").clicked() {
-                        despawn_all_particle_effects(
-                            &curr,
-                            &mut commands,
-                        );
+                    if ui
+                        .button("⏹ STOP")
+                        .on_hover_text("Stop emitting; live particles finish their life")
+                        .clicked()
+                    {
+                        preview.write(PreviewCommand::Stop);
                     }
 
-                    if ui.button("🖭 EXPORT").clicked() {
-                        export_effects_to_files(
-                            &filename,
-                            project.clone(),
-                            &type_registry.read(),
+                    let filename_okay = validate_project_filename(&filename);
+                    if ui
+                        .add_enabled(filename_okay, egui::Button::new("🖭 EXPORT"))
+                        .on_hover_text(format!(
+                            "Write <name>.vfx.ron to {}",
+                            game_assets.export_dir().display()
+                        ))
+                        .clicked()
+                    {
+                        res.context.status = Some(
+                            match export_effects_to_files(&filename, &project, &game_assets) {
+                                Ok(path) => format!("Exported {}", path.display()),
+                                Err(e) => format!("Export failed: {}", e),
+                            },
                         );
                     }
 
@@ -507,8 +505,6 @@ fn app_ui(
 
                     ui.label("filename:");
 
-                    let filename_okay = validate_project_filename(&filename);
-
                     let mut filename_textedit =
                         egui::TextEdit::singleline(&mut filename).hint_text("filename.omagari.ron");
                     if !filename_okay {
@@ -521,34 +517,51 @@ fn app_ui(
 
                     if ui.button("🌌 NEW").clicked() {
                         res.context.filename = None;
-                        commands.insert_resource(OmagariProject::default());
+                        commands.insert_resource(ProjectV2::default());
                     }
 
                     ui.menu_button("⮉ LOAD", |ui| {
                         for f in projects_list() {
                             if ui.button(f.clone()).clicked() {
-                                if let Ok(project) = load_project(&f) {
-                                    commands.insert_resource(project);
-                                    res.context.filename = Some(f.clone());
-                                    ui.close();
+                                match load_project(&f) {
+                                    Ok(project) => {
+                                        commands.insert_resource(project);
+                                        res.context.filename = Some(f.clone());
+                                        res.context.status = None;
+                                    }
+                                    Err(e) => res.context.status = Some(format!("Cannot load {}: {}", f, e)),
                                 }
+                                ui.close();
                             }
                         }
                     });
                     if ui
                         .add_enabled(filename_okay, egui::Button::new("⮋ SAVE"))
+                        .on_hover_text("Save to saved_effects/ (format v2)")
                         .clicked()
                     {
-                        let ron_string = project.borrow().to_ron_string().unwrap();
-
-                        let file_path = Folder::SavedEffects.full_file_path(filename);
-                        if let Ok(mut file) = File::create(file_path) {
-                            file.write_all(ron_string.as_bytes()).unwrap();
-                        }
+                        res.context.status = Some(match save_project(&filename, &project) {
+                            Ok(path) => format!("Saved {}", path.display()),
+                            Err(e) => format!("Save failed: {}", e),
+                        });
                     }
+
+                    ui.menu_button("⚙ GAME ASSETS", |ui| {
+                        game_assets_menu(ui, &game_assets, &mut res.context);
+                    });
 
                     ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.colored_label(egui::Color32::from_hex("#88AAFF").unwrap(), "OMAGARI🔥");
+                        if !preview_state.warnings.is_empty() {
+                            ui.colored_label(
+                                egui::Color32::from_hex("#FFCC66").unwrap(),
+                                format!("⚠ {}", preview_state.warnings.len()),
+                            )
+                            .on_hover_text(preview_state.warnings.join("\n"));
+                        }
+                        if let Some(status) = &res.context.status {
+                            ui.label(status);
+                        }
                     });
                 });
             });
@@ -558,7 +571,7 @@ fn app_ui(
         .rect
         .height();
 
-    let left = egui::Panel::left("EffectsPanel")
+    let left = egui::Panel::left("LayersPanel")
         .resizable(true)
         .show(&mut viewport_ui, |ui| {
             egui::ScrollArea::vertical()
@@ -566,36 +579,41 @@ fn app_ui(
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
-                            let effects = &mut project.borrow_mut().effects;
-                            let n_effects = effects.len();
-                            for (index, effect) in effects.iter_mut().enumerate() {
+                            ui.label("Layers");
+                            let ProjectV2 { layers, assets, .. } = &mut *project;
+                            let n_layers = layers.len();
+                            for (index, layer) in layers.iter_mut().enumerate() {
                                 let swap = ui
                                     .horizontal(|ui| {
                                         if let Some(list_command) =
-                                            ui_for_list_item(ui, index, n_effects)
+                                            ui_for_list_item(ui, index, n_layers)
                                         {
                                             return Some(list_command);
-                                        } else {
-                                            effect.draw_ui(&mut res.context, ui, index as u64);
+                                        }
+                                        match layer {
+                                            LayerDef::Particles(particles) => draw_particles_layer(
+                                                particles,
+                                                assets,
+                                                &mut res.context,
+                                                ui,
+                                                index as u64,
+                                            ),
                                         }
                                         None
                                     })
                                     .inner;
                                 if let Some(swap) = swap {
-                                    match swap {
-                                        ListCommand::Remove(i) => {
-                                            effects.remove(i);
-                                        }
-                                        ListCommand::Swap((a, b)) => {
-                                            effects.swap(a, b);
-                                        }
-                                    }
+                                    swap.apply(layers);
                                     break;
                                 }
                             }
-                            if ui.button("+").clicked() {
-                                effects.push(EffectEditor::default());
-                            }
+                            ui.menu_button("+", |ui| {
+                                if ui.button("✨ Particles layer").clicked() {
+                                    let layer = new_particles_layer(assets, &res.context.layer_names);
+                                    layers.push(LayerDef::Particles(layer));
+                                    ui.close();
+                                }
+                            });
                         });
                         ui.allocate_rect(ui.available_rect_before_wrap(), egui::Sense::hover());
                     })
@@ -617,4 +635,63 @@ fn app_ui(
     });
 
     Ok(())
+}
+
+/// The game assets folder in effect, and a field to change the one stored in
+/// `omagari_settings.ron` (used after a restart).
+fn game_assets_menu(ui: &mut Ui, game_assets: &GameAssets, app: &mut editor::AppContext) {
+    ui.set_min_width(420.0);
+    match &game_assets.configured {
+        Some((folder, origin)) => {
+            ui.label(format!("Game assets folder: {}", folder.display()));
+            ui.label(format!("(set by {})", origin.describe()));
+            if !folder.is_dir() {
+                ui.colored_label(egui::Color32::from_hex("#FF8866").unwrap(), "⚠ this folder does not exist");
+            }
+        }
+        None => {
+            ui.label("Game assets folder: not set");
+            ui.label("Project textures load from this repository's assets/ folder.");
+        }
+    }
+    ui.label(format!("EXPORT writes to: {}", game_assets.export_dir().display()));
+    ui.separator();
+
+    let input = app.game_assets_input.get_or_insert_with(|| {
+        OmagariSettings::load(std::path::Path::new(SETTINGS_FILE))
+            .game_assets
+            .unwrap_or_default()
+    });
+    ui.label(format!("Folder stored in {} (the game's assets/ folder):", SETTINGS_FILE));
+    ui.horizontal(|ui| {
+        egui::TextEdit::singleline(input)
+            .hint_text("C:/path/to/game/assets")
+            .desired_width(320.0)
+            .show(ui);
+        if ui.button("Apply").clicked() {
+            let path = std::path::Path::new(SETTINGS_FILE);
+            let mut settings = OmagariSettings::load(path);
+            let value = input.trim().to_string();
+            settings.game_assets = (!value.is_empty()).then_some(value);
+            app.status = Some(match settings.save(path) {
+                Ok(()) => format!("Saved {}. Restart the editor to use the new game assets folder.", SETTINGS_FILE),
+                Err(e) => format!("Cannot write {}: {}", SETTINGS_FILE, e),
+            });
+        }
+    });
+    let trimmed = input.trim();
+    if !trimmed.is_empty() && !std::path::Path::new(trimmed).is_dir() {
+        ui.colored_label(egui::Color32::from_hex("#FF8866").unwrap(), "⚠ this folder does not exist");
+    }
+    ui.label("Empty = not set. Changes apply after a restart.");
+    if matches!(
+        game_assets.configured,
+        Some((_, SettingOrigin::CommandLine | SettingOrigin::Environment))
+    ) {
+        ui.label(format!(
+            "Note: {} / {} override the file.",
+            settings::GAME_ASSETS_FLAG,
+            settings::GAME_ASSETS_ENV
+        ));
+    }
 }
