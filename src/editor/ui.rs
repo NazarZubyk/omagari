@@ -70,6 +70,8 @@ pub fn app_ui(params: EditorUi) -> Result {
 
     app.layer_names = project.layers.iter().map(|l| l.name().to_string()).collect();
     app.socket_names = project.sockets.iter().map(|s| s.name.clone()).collect();
+    app.params = project.parameters.iter().map(|p| (p.name.clone(), p.kind())).collect();
+    app.trigger_names = project.triggers.iter().map(|t| t.name.clone()).collect();
 
     // Edited on a copy: writing the resource every frame would re-run the
     // systems that react to its changes.

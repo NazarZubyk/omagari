@@ -21,6 +21,28 @@ use crate::settings::GameAssets;
 pub const LIVE_PREVIEW_DELAY: f64 = 0.15;
 /// Seconds after the last edit before the checks run again.
 pub const VALIDATION_DELAY: f64 = 0.3;
+/// Length of the PARAMETERS tab's "animate" (min → max → min), seconds.
+pub const PARAM_ANIMATION_SECONDS: f32 = 4.0;
+
+/// A parameter being animated min → max → min on the preview.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamAnimation {
+    pub name: String,
+    pub elapsed: f32,
+}
+
+impl ParamAnimation {
+    /// Position in the range, 0 → 1 → 0 over [`PARAM_ANIMATION_SECONDS`].
+    pub fn fraction(&self) -> f32 {
+        let half = PARAM_ANIMATION_SECONDS * 0.5;
+        let t = (self.elapsed / half).clamp(0.0, 2.0);
+        if t <= 1.0 { t } else { 2.0 - t }
+    }
+
+    pub fn finished(&self) -> bool {
+        self.elapsed >= PARAM_ANIMATION_SECONDS
+    }
+}
 
 /// The tabs of the right panel.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -87,6 +109,13 @@ pub struct EditorSession {
     pub asset_view: Option<ChannelDef>,
     /// The id being typed in the asset rename field: (asset, text).
     pub rename_draft: Option<(String, String)>,
+    /// A parameter / trigger name being typed: (`param:<name>` or
+    /// `trigger:<name>`, text).
+    pub name_draft: Option<(String, String)>,
+    /// The PARAMETERS tab's "animate" in progress.
+    pub param_animation: Option<ParamAnimation>,
+    /// Auto-fired preview triggers carry a random point near the target.
+    pub auto_fire_random: bool,
     /// Files are dragged over the window.
     pub drop_hover: bool,
     /// The native file dialog of IMPORT, while it is open.
@@ -122,6 +151,9 @@ impl Default for EditorSession {
             selected_asset: None,
             asset_view: None,
             rename_draft: None,
+            name_draft: None,
+            param_animation: None,
+            auto_fire_random: false,
             drop_hover: false,
             import_dialog: ImportDialog::default(),
         }
@@ -166,6 +198,8 @@ impl EditorSession {
         self.view = LayerView::default();
         self.selected_asset = None;
         self.rename_draft = None;
+        self.name_draft = None;
+        self.param_animation = None;
     }
 
     /// The project was written to disk as it is now.
@@ -263,6 +297,17 @@ mod tests {
         let mut project = ProjectV2::default();
         project.layers.push(LayerDef::Particles(ParticlesLayerDef::default()));
         project
+    }
+
+    #[test]
+    fn parameter_animation_goes_min_max_min() {
+        let at = |elapsed: f32| ParamAnimation { name: "p".into(), elapsed };
+        assert_eq!(at(0.0).fraction(), 0.0);
+        assert_eq!(at(PARAM_ANIMATION_SECONDS * 0.25).fraction(), 0.5);
+        assert_eq!(at(PARAM_ANIMATION_SECONDS * 0.5).fraction(), 1.0);
+        assert_eq!(at(PARAM_ANIMATION_SECONDS * 0.75).fraction(), 0.5);
+        assert_eq!(at(PARAM_ANIMATION_SECONDS).fraction(), 0.0);
+        assert!(at(PARAM_ANIMATION_SECONDS).finished() && !at(1.0).finished());
     }
 
     #[test]

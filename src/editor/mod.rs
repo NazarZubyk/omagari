@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod assets;
+pub mod binding;
 pub mod camera;
 pub mod dialogs;
 pub mod effect;
@@ -16,6 +17,7 @@ pub mod layer_view;
 pub mod layers_panel;
 pub mod modifiers;
 pub mod package;
+pub mod params_panel;
 pub mod playback;
 pub mod problems;
 pub mod scene;
@@ -40,6 +42,10 @@ pub struct AppContext {
     pub layer_names: Vec<String>,
     /// Names of the open project's sockets (attach pickers).
     pub socket_names: Vec<String>,
+    /// The open project's parameters (expression and binding pickers).
+    pub params: Vec<(String, omagari::format::ParamKind)>,
+    /// Names of the open project's triggers (play pickers).
+    pub trigger_names: Vec<String>,
     /// File name of the open project in `saved_effects/`; `None` = untitled.
     pub filename: Option<String>,
     /// File name SAVE AS offers for an untitled project (from its recipe).
@@ -84,7 +90,11 @@ impl Plugin for EditorPlugin {
             )
             .add_systems(
                 Update,
-                (apply_preview_commands, crate::controller::sync_preview_texture_settings)
+                (
+                    apply_preview_commands,
+                    crate::controller::sync_preview_texture_settings,
+                    crate::controller::drive_preview,
+                )
                     .chain()
                     .before(omagari::runtime::VfxSystems),
             )

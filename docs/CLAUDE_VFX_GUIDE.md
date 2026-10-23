@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game.
 
 ## Workflow
 
@@ -31,7 +31,7 @@ A project has a list of **assets** (textures, referenced by id) and a list of **
             name: "sparks",              // unique; children refer to parents by name
             parent: None,                // or Some("rocket"); see section "hierarchy"
             simulation_space: Local,     // Local | Global; see section "layers"
-            play: OnStart,               // Loop | OnStart; must match the spawner
+            play: OnStart,               // Loop | OnStart | OnTrigger("name") | While("param", 0.5); must match the spawner
             texture: Some("spark1"),     // asset id; see section "textures"
             effect: (
                 capacity: 512,           // max particles alive at once; keep it near the peak count
@@ -59,7 +59,7 @@ RON rules that trip people up:
 
 Nothing is hard-coded any more: texture sampling and orientation are render modifiers, blending is `alpha_mode`. A v1 project (`effects: [...]`) still loads and is migrated (Global space, the old fixed render settings made explicit); always write v2.
 
-Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` and `triggers`, which the runtime doesn't use yet, so leave those out (the check warns).
+Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` and `triggers` (sections "parameters" and "triggers"): values and events the game sends, under names you choose.
 
 ## Layers
 
@@ -69,7 +69,9 @@ Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` 
 | `parent` | `None` / `Some("name")` | Spawned by the parent's spawn events (section "hierarchy"). |
 | `attach` | `Target` / `Socket("name")` / `Segment(from: "a", to: "b")` | Where the layer sits: the target's origin (default), a socket it follows, or a line between two sockets. Section "attach". |
 | `simulation_space` | `Local` / `Global` | See below. |
-| `play` | `Loop` / `OnStart` | `Loop` = the spawner repeats (`cycle_count: 0`); `OnStart` = one-shot (`cycle_count` ≥ 1). The check warns when they disagree. `OnTrigger`/`While` come later. |
+| `play` | `Loop` / `OnStart` / `OnTrigger("name")` / `While("param", threshold)` | `Loop` = the spawner repeats (`cycle_count: 0`); `OnStart` = one-shot (`cycle_count` ≥ 1); `OnTrigger` = the spawner plays each time the game fires the trigger (usually a burst, `cycle_count: 1`), not at the start; `While` = emits while a number parameter is ≥ threshold. The check warns when play and spawner disagree. |
+| `rate` | `None` / `Some(Const(20.0))` / `Some(Param("intensity", [(0.0, 5.0), (1.0, 40.0)]))` | Particles per second as a steady stream, replacing the spawner's `count` while it plays; a constant or a curve over a parameter (section "parameters"). Use it with a looping spawner. |
+| `visible` | `None` / `Some((param: "intensity", from: 0.6, to: 1.0, fade: 0.1))` | The layer spawns only while the parameter is in `[from, to]`, fading out over `fade` outside (section "parameters"). |
 | `texture` | `None` / `Some("asset id")` | The texture the `ParticleTexture` render modifier samples. |
 | `effect` | struct | Capacity, spawner, blending, modifiers. |
 
@@ -104,6 +106,47 @@ Socket names and nodes come from the game's model: ask the user (bone names like
 Fit scales `Local` layers only: bevy_hanabi gives `Global` layers the emitter's position, not its scale, so the check warns about `Global` layers in a fitted project.
 
 **Lifecycle** (the game controls it, section "game"): an instance plays once its package has loaded and runs until the game stops it; stopping is smooth (no new particles, live ones finish), and restarting while stopping plays it again on the same instance. An instance whose root layers are all one-shot (`play: OnStart` with `cycle_count` ≥ 1) finishes by itself after its last spawn plus its longest particle life, so one-shot effects clean up without code; looping ones run until stopped.
+
+## Parameters
+
+**Parameters are values the game sets while the effect plays**, declared by you in the project under any names, as many as the effect needs: an `intensity` 0..1 that grows with a status, a `tint` colour per enemy, a `charge` level. The game calls `vfx.set_param(instance, "intensity", 0.8)`; the plugin knows no names, so ask the user what the game will send and name parameters after that.
+
+```ron
+parameters: [
+    // kind = the variant of `default`; min/max clamp what the game sets (numbers only);
+    // smoothing = seconds to move ~63% towards a new value (0 = jump).
+    (name: "intensity", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.4),
+    (name: "tint", default: Color((0.65, 0.08, 0.95, 1.0)), smoothing: 0.2),   // linear RGBA, may go above 1 (glow)
+],
+```
+
+Where a parameter is used:
+- **Expressions**: `Param("intensity")` is f32 for a number parameter, vec4 for a colour. Init modifiers read it when a particle is born, update modifiers every frame. Typical: `Operator(Mix(a, b, Param("intensity")))` blends from `a` at 0 to `b` at 1 (sizes, speeds, colours). A colour parameter goes straight into `hdr_color`: `SetAttribute((attr: "hdr_color", attr_expr: Param("tint")))`. ColorOverLifetime gradients cannot read parameters: set the colour with `hdr_color` and shape the alpha with a white gradient and `blend: Some(Modulate)`.
+- **`rate`** (layer): particles per second, `Const(20.0)` or a curve `Param("intensity", [(0.0, 5.0), (1.0, 40.0)])`: keys (parameter value, rate) sorted by parameter value, straight lines between, flat outside. It replaces the spawner's count while the spawner plays; use a looping spawner (`cycle_count: 0`). Rate 0 = the layer spawns nothing.
+- **`visible`** (layer): `Some((param: "intensity", from: 0.6, to: 1.0, fade: 0.1))` spawns only while the parameter is in the range, fading the spawn rate to 0 over `fade` parameter units outside it. Two layers with neighbouring ranges cross-fade (a weak look and a strong look). The factor (0..1) is also `Property("visibility")`; multiply a colour by it to fade new particles' alpha too.
+- **`play: While("intensity", 0.8)`** (layer): emits while the parameter is ≥ 0.8 (an extra layer at full power).
+- **Pulses** of triggers (section "triggers").
+
+Number parameters used by `rate`, `visible`, `While` and pulses must be `Float`. `check_project` reports unknown names, kind mismatches (a colour where a number is needed), unsorted or empty curves, and notes parameters nothing uses. `analyze_project` simulates the defaults, then every number parameter at its min, middle and max (or the sets you pass as `params: [{"intensity": 0.2}, {"intensity": 0.9}]`) and lists, per layer, how counts, sizes, colours and reach change. `preview_in_editor(name, params: {"intensity": 0.8})` shows the user a value; in the editor's PARAMETERS tab they drag a slider (or press "animate" for min → max → min), which drives the preview the way the game's `set_param` would.
+
+## Triggers
+
+**Triggers are named one-shot events the game fires**: `vfx.trigger(instance, "tick")` on a damage tick, `vfx.trigger_at(instance, "hit", TriggerArgs::at(contact_point).with_direction(normal))` on a hit. Any names, any number; declare them in `triggers`:
+
+```ron
+triggers: [
+    (name: "tick", pulses: [(param: "flash", to: 1.0, decay: 0.35)]),
+    (name: "hit"),
+],
+```
+
+A trigger does two things:
+- **Layers with `play: OnTrigger("hit")` burst**: their spawner restarts from its first cycle. Give them a one-shot spawner (`cycle_count: 1`, `spawn_duration: 0.0` for an instant burst); a looping spawner would never stop after the first trigger (the check warns). They do not play when the effect starts, and restarting the effect does not replay them. A trigger fired while the effect is still loading waits for it.
+- **Pulses**: the parameter jumps to `to` and returns to its current value linearly over `decay` seconds, on number parameters only. Use a dedicated `flash` parameter (default 0, smoothing 0) and read it where the flash should show (size, colour, rate).
+
+**Payload.** `trigger_at` carries a world position, a direction and a strength (default: none, none, 1). Before an OnTrigger layer bursts, they are written into `Property("trigger_pos")` (vec3), `Property("trigger_dir")` (vec3, unit length) and `Property("trigger_strength")` (f32), in the layer's simulation space; without a position the layer's own origin is used, without a direction +Y. Spawn at the contact point with `SetAttribute((attr: "position", attr_expr: Property("trigger_pos")))` and fly along the direction with `Operator(Multiply(Property("trigger_dir"), ...))`. Use `simulation_space: Global` so the burst stays where it hit. Recipe "Hit burst at the contact point".
+
+`check_project` reports OnTrigger layers whose trigger does not exist, pulses on unknown or colour parameters, and notes triggers that do nothing. `analyze_project` simulates an OnTrigger layer as if its trigger fired once at t = 0. `preview_in_editor(name, trigger: "hit")` fires a trigger for the user; the editor's TRIGGERS tab has a FIRE button, "at random point" (a payload near the target), and auto-fire every N seconds (saved in the project's preview block as `auto_triggers: [("tick", 1.0)]`).
 
 ## Spawner
 
@@ -176,7 +219,15 @@ Putting an init modifier in `update_modifiers` (or the reverse) is an error: it 
 | `Operator(Vec3(x, y, z))` | vec3 | builds a vec3 from three f32 expressions |
 | `Operator(Vec4(x, y, z, w))` | vec4 | builds a vec4 from four f32 expressions |
 | `Operator(Pack4x8UNorm(v))` | u32 | packs a vec4 in [0, 1] into a u32 color |
+| `Operator(Mix(a, b, t))` | type of a | `a × (1 − t) + b × t`; a and b the same type, t the same type or an f32 (blend colours with a vec4 a, b and an f32 t) |
+| `Operator(Clamp(x, low, high))` | type of x | x kept in [low, high]; all the same type |
+| `Operator(SmoothStep(low, high, x))` | type of x | 0 below low, 1 above high, a smooth S-curve between; all the same type |
+| `Operator(Min(a, b))`, `Operator(Max(a, b))` | type of a | the smaller / larger; same types |
+| `Param("intensity")` | f32 / vec4 | a parameter of the project (section "parameters"): f32 for `Float`, vec4 (linear RGBA) for `Color` |
 | `Property("segment_a")`, `Property("segment_b")` | vec3 | ends of a `Segment`-attached layer (section "attach"); the analysis puts them at the sockets' offsets |
+| `Property("trigger_pos")`, `Property("trigger_dir")` | vec3 | position and direction of the last trigger of an `OnTrigger` layer (section "triggers"); the analysis uses the layer origin and +Y |
+| `Property("trigger_strength")` | f32 | strength of the last trigger (1 without a payload) |
+| `Property("visibility")` | f32 | the layer's `visible` factor, 0..1 (1 without `visible`) |
 | `Operator(Attr("<name>"))` | attribute type | this particle's attribute |
 | `Operator(ParentAttr("<name>"))` | attribute type | the parent particle's attribute (children only) |
 
@@ -188,6 +239,8 @@ Useful building blocks:
   `Operator(Multiply(<random direction>, Operator(Uniform(Float(2.0), Float(4.0)))))`
 - Mostly-up cone: `Operator(Vec3(Operator(Uniform(Float(-0.3), Float(0.3))), Operator(Uniform(Float(2.0), Float(3.0))), Operator(Uniform(Float(-0.3), Float(0.3)))))`
 - Random packed color per particle: `Operator(Pack4x8UNorm(Operator(Vec4(RandFloat, RandFloat, RandFloat, Float(1.0)))))`
+- Grows with a parameter: `Operator(Mix(Float(0.05), Float(0.15), Param("intensity")))`
+- Colour from dim to bright with a parameter: `Operator(Mix(Vec4((0.6, 0.1, 0.9, 1.0)), Vec4((3.0, 0.6, 5.0, 1.0)), Param("intensity")))` into `hdr_color`
 
 ## Attributes
 
@@ -633,6 +686,181 @@ The radius (1.4) is just outside the rock; the lower part of the bubble is under
 
 In the game, give the sockets the weapon's node (`node: Some("Sword")`) or put the package on the weapon entity and keep `node: None` with offsets along the blade. `Global` leaves the sparks behind during a swing; `Local` keeps them on the blade.
 
+### Intensity progression (one parameter drives rate, colour and size)
+
+```ron
+(
+    version: 2,
+    parameters: [
+        (name: "intensity", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.4),
+    ],
+    assets: [(id: "glow1", kind: Texture((path: "omagari://textures/glow1.png")))],
+    layers: [
+        Particles((
+            name: "embers",
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            rate: Some(Param("intensity", [(0.0, 4.0), (1.0, 40.0)])),
+            effect: (
+                capacity: 128,
+                spawner: (count: Single(10.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetPositionCircle((center_expr: Vec3((0.0, 0.1, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.4), dimension: Volume)),
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.7), Float(1.1))))),
+                    SetAttribute((attr: "size", attr_expr: Operator(Mix(Float(0.05), Float(0.14), Param("intensity"))))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Vec3(Float(0.0), Operator(Mix(Float(0.5), Float(1.6), Param("intensity"))), Float(0.0))))),
+                    SetAttribute((attr: "hdr_color", attr_expr: Operator(Mix(Vec4((1.5, 0.6, 0.2, 1.0)), Vec4((4.0, 2.0, 0.5, 1.0)), Param("intensity"))))),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((drag_expr: Float(0.8))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (1.0, 1.0, 1.0, 0.0)), (0.2, (1.0, 1.0, 1.0, 1.0)), (1.0, (1.0, 1.0, 1.0, 0.0))]),
+                        blend: Some(Modulate),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+        Particles((
+            name: "flare",
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            visible: Some((param: "intensity", from: 0.7, to: 1.0, fade: 0.15)),
+            effect: (
+                capacity: 64,
+                spawner: (count: Single(12.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetPositionSphere((center_expr: Vec3((0.0, 0.8, 0.0)), radius_expr: Float(0.3), dimension: Volume)),
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.4), Float(0.7))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.3))),
+                    SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 0.3, 0.0)))),
+                    SetAttribute((attr: "hdr_color", attr_expr: Operator(Multiply(Vec4((5.0, 3.0, 1.0, 1.0)), Property("visibility"))))),
+                ],
+                update_modifiers: [],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (1.0, 1.0, 1.0, 0.0)), (0.3, (1.0, 1.0, 1.0, 0.8)), (1.0, (1.0, 1.0, 1.0, 0.0))]),
+                        blend: Some(Modulate),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((params: [("intensity", Float(0.5))])),
+)
+```
+
+At 0 a few dim, small, slow embers; at 1 ten times as many, bigger, faster and glowing; above 0.7 a bright flare fades in. The game maps its own progress to it: `vfx.set_param(instance, "intensity", progress)`, smoothing makes jumps fade in over ~0.4 s. `analyze_project` lists the embers at min / middle / max.
+
+### Damage tick pulse (trigger flash on a looping aura)
+
+```ron
+(
+    version: 2,
+    parameters: [
+        (name: "flash", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.0),
+    ],
+    triggers: [
+        (name: "tick", pulses: [(param: "flash", to: 1.0, decay: 0.35)]),
+    ],
+    assets: [(id: "cloud2", kind: Texture((path: "omagari://textures/cloud2.png")))],
+    layers: [
+        Particles((
+            name: "mist",
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("cloud2"),
+            rate: Some(Param("flash", [(0.0, 15.0), (1.0, 60.0)])),
+            effect: (
+                capacity: 128,
+                spawner: (count: Single(15.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetPositionSphere((center_expr: Vec3((0.0, 0.9, 0.0)), radius_expr: Float(0.45), dimension: Volume)),
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.6), Float(1.0))))),
+                    SetAttribute((attr: "size", attr_expr: Operator(Mix(Float(0.25), Float(0.45), Param("flash"))))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Vec3(Float(0.0), Float(0.3), Float(0.0))))),
+                    SetAttribute((attr: "hdr_color", attr_expr: Operator(Mix(Vec4((0.5, 0.06, 0.8, 0.5)), Vec4((3.0, 0.6, 4.0, 0.9)), Param("flash"))))),
+                ],
+                update_modifiers: [],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (1.0, 1.0, 1.0, 0.0)), (0.3, (1.0, 1.0, 1.0, 1.0)), (1.0, (1.0, 1.0, 1.0, 0.0))]),
+                        blend: Some(Modulate),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((auto_triggers: [("tick", 1.0)])),
+)
+```
+
+A soft purple mist; on every `vfx.trigger(instance, "tick")` (one damage tick) `flash` jumps to 1 and falls back over 0.35 s, so new puffs are briefly brighter, bigger and four times as many. The editor auto-fires `tick` every second.
+
+### Hit burst at the contact point (trigger_at, one-shot per trigger)
+
+```ron
+(
+    version: 2,
+    triggers: [(name: "hit")],
+    assets: [(id: "spark1", kind: Texture((path: "omagari://textures/spark1.png")))],
+    layers: [
+        Particles((
+            name: "hit_sparks",
+            simulation_space: Global,
+            play: OnTrigger("hit"),
+            texture: Some("spark1"),
+            effect: (
+                capacity: 256,
+                spawner: (count: Single(40.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "position", attr_expr: Property("trigger_pos"))),
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.2), Float(0.45))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.04))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Normalized(Operator(Add(Property("trigger_dir"), Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Float(0.8))))))), Operator(Multiply(Operator(Uniform(Float(2.0), Float(5.0))), Property("trigger_strength"))))))),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((drag_expr: Float(3.0))),
+                    AccelModifier((accel_expr: Vec3((0.0, -6.0, 0.0)))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (6.0, 4.0, 1.5, 1.0)), (1.0, (2.0, 0.5, 0.1, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((auto_triggers: [("hit", 0.8)])),
+)
+```
+
+Put the package on the weapon or the struck character and call `vfx.trigger_at(instance, "hit", TriggerArgs::at(contact).with_direction(surface_normal).with_strength(1.0))` on contact: 40 sparks fly out from the contact point along the normal (strength scales their speed) and stay in the world (`Global`). Nothing plays until the first hit. In the editor, TRIGGERS → "at random point" (or auto-fire at random points) shows the payload.
+
 ### Status aura on a body (socket + fit, looping)
 
 ```ron
@@ -729,6 +957,8 @@ Pick the stage that matches how the game uses the effect. The PREVIEW tab's targ
 | nothing appears | check alpha window, size, capacity, `starts_active`, and that the camera sees it |
 | falls / should rise | sign of the Y acceleration |
 | leaves a trail / should stay on the character | `simulation_space` (`Global` trails, `Local` follows) |
+| should grow / change with something in the game | a parameter (section "parameters") read with `Mix(..., Param("name"))`, a `rate` curve or a `visible` range |
+| should react to an event (hit, tick, swing) | a trigger: an `OnTrigger` burst layer or a pulse (section "triggers") |
 
 ## Game
 
@@ -741,7 +971,16 @@ let hit = commands.spawn_vfx_at(&package, Transform::from_translation(p)); // in
 vfx.stop(instance);    // VfxControl: smooth stop
 vfx.restart(instance); // while stopping: plays again (re-applied status)
 // message VfxFinished { instance, target }: sent once when an instance ends
+
+// Parameters and triggers: the names are the ones the project declares.
+let tinted = commands.spawn_vfx_with(&package, target, VfxSpawn { params: &[("intensity", 0.3.into())] });
+vfx.set_param(instance, "intensity", progress);              // smoothed, clamped to the range
+vfx.set_param_now(instance, "tint", Color::srgb(0.2, 0.9, 1.0)); // no smoothing
+vfx.trigger(instance, "tick");                                // OnTrigger layers burst, pulses run
+vfx.trigger_at(instance, "hit", TriggerArgs::at(contact).with_direction(normal));
 ```
+
+Tell the user which parameter and trigger names (and value ranges) the game must use; the game maps its own rules to them. Unknown names are ignored with one warning. Parameter values survive hot reloads.
 
 One-shot packages (every root layer `OnStart` with a finite `cycle_count`) finish and clean up by themselves; looping ones run until `stop`. Despawning the target removes its instances (and sends `VfxFinished`). Sockets with a `node` need that node name in the target's hierarchy (section "attach"). Editing the package file while the game runs updates running instances (hot reload, when the game enables Bevy's file watcher).
 

@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use omagari::format::{
-    AssetKind, ChannelDef, PreviewMotion, ProjectV2, TexturePurpose, BUILTIN_TEXTURES_PREFIX, DEFAULT_MOTION_SPEED,
+    AssetKind, ChannelDef, ParamValue, PreviewMotion, ProjectV2, TexturePurpose, BUILTIN_TEXTURES_PREFIX,
+    DEFAULT_MOTION_SPEED,
 };
 
 use crate::asset_library as library;
@@ -92,6 +93,48 @@ pub struct PreviewRequest {
     pub motion: Option<Option<PreviewMotion>>,
     /// `orbit` or `game`; `None` keeps the project's camera.
     pub camera: Option<String>,
+    /// Preview parameter values to set (they replace the project's preview
+    /// values of those names).
+    pub params: Vec<(String, ParamValue)>,
+    /// A trigger to fire once the project plays.
+    pub trigger: Option<String>,
+}
+
+/// A parameter value from JSON: a number, or `[r, g, b]` / `[r, g, b, a]`
+/// (linear colour, like particle colours).
+pub fn param_value_from_json(value: &Value) -> Result<ParamValue, String> {
+    if let Some(v) = value.as_f64() {
+        return Ok(ParamValue::Float(v as f32));
+    }
+    if let Some(items) = value.as_array() {
+        let numbers: Option<Vec<f32>> = items.iter().map(|v| v.as_f64().map(|f| f as f32)).collect();
+        if let Some(c) = numbers {
+            match c.len() {
+                3 => return Ok(ParamValue::Color(bevy::math::Vec4::new(c[0], c[1], c[2], 1.0))),
+                4 => return Ok(ParamValue::Color(bevy::math::Vec4::new(c[0], c[1], c[2], c[3]))),
+                _ => {}
+            }
+        }
+    }
+    Err(format!("{} is not a parameter value: use a number, or [r, g, b] / [r, g, b, a] for a colour", value))
+}
+
+pub fn param_value_to_json(value: &ParamValue) -> Value {
+    match value {
+        ParamValue::Float(v) => json!(v),
+        ParamValue::Color(c) => json!([c.x, c.y, c.z, c.w]),
+    }
+}
+
+/// `{"name": value, ...}` as (name, value) pairs, in the object's order.
+pub fn param_set_from_json(value: &Value) -> Result<Vec<(String, ParamValue)>, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{} is not an object of parameter values, e.g. {{\"intensity\": 0.5}}", value))?;
+    object
+        .iter()
+        .map(|(name, v)| Ok((name.clone(), param_value_from_json(v).map_err(|e| format!("\"{}\": {}", name, e))?)))
+        .collect()
 }
 
 impl PreviewRequest {
@@ -106,6 +149,14 @@ impl PreviewRequest {
         if let Some(camera) = &self.camera {
             object["camera"] = json!(camera);
         }
+        if !self.params.is_empty() {
+            let params: serde_json::Map<String, Value> =
+                self.params.iter().map(|(n, v)| (n.clone(), param_value_to_json(v))).collect();
+            object["params"] = Value::Object(params);
+        }
+        if let Some(trigger) = &self.trigger {
+            object["trigger"] = json!(trigger);
+        }
         object.to_string()
     }
 
@@ -116,7 +167,7 @@ impl PreviewRequest {
             let mut lines = text.lines();
             let name = lines.next().unwrap_or_default().trim().to_string();
             let stage = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            return Ok(PreviewRequest { name, stage, motion: None, camera: None });
+            return Ok(PreviewRequest { name, stage, ..Default::default() });
         }
         let value: Value = serde_json::from_str(trimmed).map_err(|e| format!("invalid preview request: {}", e))?;
         let name = value
@@ -130,7 +181,12 @@ impl PreviewRequest {
             Some(m) => Some(motion_from_json(m)?),
         };
         let camera = value.get("camera").and_then(Value::as_str).map(str::to_string);
-        Ok(PreviewRequest { name, stage, motion, camera })
+        let params = match value.get("params") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(p) => param_set_from_json(p)?,
+        };
+        let trigger = value.get("trigger").and_then(Value::as_str).map(str::to_string);
+        Ok(PreviewRequest { name, stage, motion, camera, params, trigger })
     }
 }
 
@@ -310,13 +366,13 @@ fn tool_list() -> Value {
     json!([
         {
             "name": "guide",
-            "description": "Omagari effect authoring guide: workflow, file format (v2), layers, attach (sockets, segments, fit, lifecycle), modifiers, expressions, textures, recipes, game use. Read before creating effects.",
+            "description": "Omagari effect authoring guide: workflow, file format (v2), layers, attach (sockets, segments, fit, lifecycle), parameters and triggers (values and events the game sends), modifiers, expressions, textures, recipes, game use. Read before creating effects.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "One section to keep the reply short: workflow, format, layers, attach, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game. Omit for the whole guide."
+                        "description": "One section to keep the reply short: workflow, format, layers, attach, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, recipes, design, game. Omit for the whole guide."
                     }
                 }
             }
@@ -365,7 +421,12 @@ fn tool_list() -> Value {
                     "name": name_prop,
                     "ron": ron_prop,
                     "effect": { "type": "string", "description": "Only describe the layer with this name." },
-                    "samples": { "type": "integer", "description": "Particles simulated per layer (20-2000, default 300)." }
+                    "samples": { "type": "integer", "description": "Particles simulated per layer (20-2000, default 300)." },
+                    "params": {
+                        "type": "array",
+                        "items": { "type": "object" },
+                        "description": "Parameter sets to simulate and compare, each an object {\"name\": value} (number, or [r, g, b, a] linear colour); missing parameters keep their default. Default: every number parameter at its min, middle and max. The main report always uses the defaults."
+                    }
                 }
             }
         },
@@ -439,6 +500,14 @@ fn tool_list() -> Value {
                             "distance": { "type": "number" },
                             "speed": { "type": "number" }
                         }
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "Parameter values to play it with, {\"name\": value} (number, or [r, g, b, a] linear colour), like the game's set_param. They become the project's preview values in the editor."
+                    },
+                    "trigger": {
+                        "type": "string",
+                        "description": "A trigger of the project to fire once it plays, like the game's trigger."
                     }
                 },
                 "required": ["name"]
@@ -506,10 +575,32 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
         "analyze_project" => {
             let (project, notes) = load_from_args(args)?;
             let samples = args.get("samples").and_then(Value::as_u64).unwrap_or(300) as usize;
+            let sets = match args.get("params") {
+                None | Some(Value::Null) => None,
+                Some(Value::Array(items)) => {
+                    let mut sets = Vec::new();
+                    for item in items {
+                        let set = param_set_from_json(item)?;
+                        for (name, value) in set.iter() {
+                            match project.param(name) {
+                                None => return Err(format!("params: \"{}\" is not a parameter of this project", name)),
+                                Some(p) if p.kind() != value.kind() => {
+                                    return Err(format!("params: \"{}\" is a {} parameter", name, p.kind().name()))
+                                }
+                                _ => {}
+                            }
+                        }
+                        let label = format!("{}", sets.len() + 1);
+                        sets.push((label, set));
+                    }
+                    Some(sets)
+                }
+                Some(other) => return Err(format!("params must be an array of objects, got {}", other)),
+            };
             Ok(format!(
                 "{}{}",
                 notes.text(),
-                analysis::analyze_project(&project, &assets_root, samples, str_arg("effect"))
+                analysis::analyze_project_with_sets(&project, &assets_root, samples, str_arg("effect"), sets.as_deref())
             ))
         }
         "export_project" => {
@@ -566,11 +657,34 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
                 Some(c) if PREVIEW_CAMERAS.contains(&c) => Some(c.to_string()),
                 Some(other) => return Err(format!("unknown camera \"{}\": use orbit or game", other)),
             };
+            let (project, _) = parse_project(&read(&path)?)?;
+            let params = match args.get("params") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(p) => param_set_from_json(p)?,
+            };
+            for (name, value) in params.iter() {
+                match project.param(name) {
+                    None => return Err(format!("params: \"{}\" is not a parameter of {}", name, file_name)),
+                    Some(p) if p.kind() != value.kind() => {
+                        return Err(format!("params: \"{}\" is a {} parameter", name, p.kind().name()))
+                    }
+                    _ => {}
+                }
+            }
+            let trigger = str_arg("trigger").map(str::to_string);
+            if let Some(t) = &trigger {
+                if project.trigger(t).is_none() {
+                    let known: Vec<&str> = project.triggers.iter().map(|t| t.name.as_str()).collect();
+                    return Err(format!("\"{}\" is not a trigger of {} (triggers: {})", t, file_name, known.join(", ")));
+                }
+            }
             let preview = PreviewRequest {
                 name: file_name.clone(),
                 stage: stage.clone(),
                 motion,
                 camera: camera.clone(),
+                params: params.clone(),
+                trigger: trigger.clone(),
             };
             let request = Folder::SavedEffects.full_file_path(PREVIEW_REQUEST_FILE.to_string());
             fs::write(&request, preview.to_json()).map_err(|e| format!("{}: {}", request.display(), e))?;
@@ -581,9 +695,16 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
                     let in_stage = stage.map(|s| format!(" in the {} stage", s)).unwrap_or_default();
                     let moving = motion.map(|m| format!(", the target {}", motion_text(m))).unwrap_or_default();
                     let seen = camera.map(|c| format!(", seen through the {} camera", c)).unwrap_or_default();
+                    let with = if params.is_empty() {
+                        String::new()
+                    } else {
+                        let values: Vec<String> = params.iter().map(|(n, v)| format!("{} = {}", n, param_value_to_json(v))).collect();
+                        format!(", with {}", values.join(", "))
+                    };
+                    let fired = trigger.map(|t| format!(", and fired \"{}\"", t)).unwrap_or_default();
                     return Ok(format!(
-                        "The editor loaded {} and is playing it for the user{}{}{}.",
-                        file_name, in_stage, moving, seen
+                        "The editor loaded {} and is playing it for the user{}{}{}{}{}.",
+                        file_name, in_stage, moving, seen, with, fired
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -944,6 +1065,27 @@ mod tests {
         }
     }
 
+    /// `analyze_project(params: [...])` simulates the given sets; names and
+    /// kinds are checked against the project.
+    #[test]
+    fn analyze_takes_parameter_sets() {
+        let ron = guide_recipes()
+            .into_iter()
+            .find(|r| r.title.starts_with("Intensity progression"))
+            .expect("recipe")
+            .ron;
+        let args = json!({ "ron": ron, "samples": 50, "params": [{ "intensity": 0.1 }, { "intensity": 0.95 }] });
+        let report = call_tool("analyze_project", &args, &ctx()).unwrap();
+        assert!(report.contains("set 1: intensity=0.10") && report.contains("set 2: intensity=0.95"), "{}", report);
+        assert!(report.contains("[embers] changes with the parameters"), "{}", report);
+        assert!(report.contains("[flare] changes with the parameters"), "the flare tier appears: {}", report);
+
+        let bad = json!({ "ron": args["ron"], "params": [{ "power": 1.0 }] });
+        assert!(call_tool("analyze_project", &bad, &ctx()).unwrap_err().contains("\"power\" is not a parameter"));
+        let bad = json!({ "ron": args["ron"], "params": [{ "intensity": [1.0, 0.0, 0.0] }] });
+        assert!(call_tool("analyze_project", &bad, &ctx()).unwrap_err().contains("is a Float parameter"));
+    }
+
     #[test]
     fn check_and_analyze_accept_v2_text() {
         let args = json!({ "ron": recipe() });
@@ -981,13 +1123,31 @@ mod tests {
             stage: Some("floor".into()),
             motion: Some(Some(PreviewMotion::Circle { radius: 2.0, speed: 3.6 })),
             camera: Some("game".into()),
+            params: vec![
+                ("intensity".into(), ParamValue::Float(0.75)),
+                ("tint".into(), ParamValue::Color(bevy::math::Vec4::new(1.0, 0.5, 0.0, 1.0))),
+            ],
+            trigger: Some("hit".into()),
         };
         let text = request.to_json();
         assert!(text.starts_with('{'), "{}", text);
         assert_eq!(PreviewRequest::parse(&text).unwrap(), request);
 
-        let still = PreviewRequest { motion: Some(None), stage: None, camera: None, ..request.clone() };
+        let still = PreviewRequest {
+            motion: Some(None),
+            stage: None,
+            camera: None,
+            params: Vec::new(),
+            trigger: None,
+            ..request.clone()
+        };
         assert_eq!(PreviewRequest::parse(&still.to_json()).unwrap(), still);
+        assert_eq!(
+            param_value_from_json(&json!([0.1, 0.2, 0.3])).unwrap(),
+            ParamValue::Color(bevy::math::Vec4::new(0.1, 0.2, 0.3, 1.0))
+        );
+        assert!(param_value_from_json(&json!("red")).is_err());
+        assert!(param_set_from_json(&json!([1.0])).is_err());
 
         let old = PreviewRequest::parse("fire.omagari.ron\nobject").unwrap();
         assert_eq!(old.name, "fire.omagari.ron");

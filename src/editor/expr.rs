@@ -11,182 +11,77 @@ use super::AppContext;
 impl UiProvider for ExprOperatorEditor {
     fn draw_ui(&mut self, app: &mut AppContext, ui: &mut egui::Ui, index: u64) {
         let unique_id = index;
+        let info = self.info();
+        let label = format!("🖩 {}", info.name);
         match self {
-            ExprOperatorEditor::Uniform(lit1, lit2) => {
-                unique_collapsing(unique_id, "🖩 Uniform", ui).show(ui, |ui| {
-                    lit1.draw_ui(app, ui, 1);
-                    lit2.draw_ui(app, ui, 2);
-                });
-            }
-            ExprOperatorEditor::Multiply(lit1, lit2) => {
-                unique_collapsing(unique_id, "🖩 Multiply", ui).show(ui, |ui| {
-                    lit1.draw_ui(app, ui, 1);
-                    lit2.draw_ui(app, ui, 2);
-                });
-            }
-            ExprOperatorEditor::Subtract(lit1, lit2) => {
-                unique_collapsing(unique_id, "🖩 Subtract", ui).show(ui, |ui| {
-                    lit1.draw_ui(app, ui, 1);
-                    lit2.draw_ui(app, ui, 2);
-                });
-            }
-            ExprOperatorEditor::Add(lit1, lit2) => {
-                unique_collapsing(unique_id, "🖩 Add", ui).show(ui, |ui| {
-                    lit1.draw_ui(app, ui, 1);
-                    lit2.draw_ui(app, ui, 2);
-                });
-            }
-            ExprOperatorEditor::Sin(lit) => {
-                unique_collapsing(unique_id, "🖩 Sin", ui).show(ui, |ui| {
-                    lit.draw_ui(app, ui, 1);
-                });
-            }
-            ExprOperatorEditor::Cos(lit) => {
-                unique_collapsing(unique_id, "🖩 Cos", ui).show(ui, |ui| {
-                    lit.draw_ui(app, ui, 1);
-                });
-            }
-            ExprOperatorEditor::Distance(lit1, lit2) => {
-                unique_collapsing(unique_id, "🖩 Distance", ui).show(ui, |ui| {
-                    lit1.draw_ui(app, ui, 1);
-                    lit2.draw_ui(app, ui, 2);
-                });
-            }
-            ExprOperatorEditor::Vec3(lit1, lit2, lit3) => {
-                unique_collapsing(unique_id, "🖩 Vec3", ui).show(ui, |ui| {
-                    lit1.draw_ui(app, ui, 1);
-                    lit2.draw_ui(app, ui, 2);
-                    lit3.draw_ui(app, ui, 3);
-                });
-            }
-            ExprOperatorEditor::Vec4(lit1, lit2, lit3, lit4) => {
-                unique_collapsing(unique_id, "🖩 Vec4", ui).show(ui, |ui| {
-                    lit1.draw_ui(app, ui, 1);
-                    lit2.draw_ui(app, ui, 2);
-                    lit3.draw_ui(app, ui, 3);
-                    lit4.draw_ui(app, ui, 4);
-                });
-            }
-            ExprOperatorEditor::Normalized(lit1) => {
-                unique_collapsing(unique_id, "🖩 Normalized", ui).show(ui, |ui| {
-                    lit1.draw_ui(app, ui, 1);
-                });
-            }
-            ExprOperatorEditor::Pack4x8UNorm(lit1) => {
-                unique_collapsing(unique_id, "🖩 Pack4x8UNorm", ui).show(ui, |ui| {
-                    lit1.draw_ui(app, ui, 1);
-                });
-            }
             ExprOperatorEditor::Attr(attr) | ExprOperatorEditor::ParentAttr(attr) => {
                 let mut selected_attr: Attribute = attr.clone();
-                let label = match self {
-                    ExprOperatorEditor::Attr(_) => "🖩 Attr",
-                    ExprOperatorEditor::ParentAttr(_) => "🖩 ParentAttr",
-                    _ => unreachable!(),
-                };
-                unique_collapsing(unique_id, label, ui).show(ui, |ui| {
-                    let selected_text = attr_to_label(selected_attr);
+                unique_collapsing(unique_id, &label, ui)
+                    .show(ui, |ui| {
+                        let selected_text = attr_to_label(selected_attr);
 
-                    let id = ui.make_persistent_id(format!("header"));
-                    ui.vertical(|ui| {
-                        egui::collapsing_header::CollapsingState::load_with_default_open(
-                            ui.ctx(),
-                            id,
-                            false,
-                        )
-                        .show_header(ui, |ui| {
-                            egui::ComboBox::new(id, "is inherited")
-                                .selected_text(selected_text)
-                                .show_ui(ui, |ui| {
-                                    ALL_ATTRS.iter().for_each(|(attr, label)| {
-                                        ui.selectable_value(&mut selected_attr, *attr, *label);
+                        let id = ui.make_persistent_id(format!("header"));
+                        ui.vertical(|ui| {
+                            egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ui.ctx(),
+                                id,
+                                false,
+                            )
+                            .show_header(ui, |ui| {
+                                egui::ComboBox::new(id, "is inherited")
+                                    .selected_text(selected_text)
+                                    .show_ui(ui, |ui| {
+                                        ALL_ATTRS.iter().for_each(|(attr, label)| {
+                                            ui.selectable_value(&mut selected_attr, *attr, *label);
+                                        });
                                     });
-                                });
-                        })
-                        .body(|_| {});
-                    });
-                });
+                            })
+                            .body(|_| {});
+                        });
+                    })
+                    .header_response
+                    .on_hover_text(info.hint);
                 *self = if let ExprOperatorEditor::Attr(_) = self {
                     ExprOperatorEditor::Attr(selected_attr)
                 } else {
                     ExprOperatorEditor::ParentAttr(selected_attr)
                 };
             }
+            _ => {
+                let names = info.args;
+                unique_collapsing(unique_id, &label, ui)
+                    .show(ui, |ui| {
+                        for (i, arg) in self.args_mut().into_iter().enumerate() {
+                            // Named arguments where the order matters.
+                            let name = names.get(i).copied().unwrap_or_default();
+                            if names.len() >= 3 && !matches!(info.name, "Vec3" | "Vec4") {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(name).weak());
+                                    arg.draw_ui(app, ui, i as u64 + 1);
+                                });
+                            } else {
+                                arg.draw_ui(app, ui, i as u64 + 1);
+                            }
+                        }
+                    })
+                    .header_response
+                    .on_hover_text(info.hint);
+            }
         }
     }
 }
 
+/// The Operator menu: every row of [`OPERATORS`], with its hint.
 pub fn operator_menu_ui(ui: &mut egui::Ui) -> Option<Box<ExprOperatorEditor>> {
-    if ui.button("🖩 Uniform").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Uniform(
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Multiply").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Multiply(
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Subtract").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Subtract(
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Add").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Add(
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Sin").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Sin(
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Cos").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Cos(
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Distance").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Distance(
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Vec3").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Vec3(
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Normalized").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Normalized(
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Vec4").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Vec4(
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Pack4x8UNorm").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Pack4x8UNorm(
-            ExprWriterEditor::Placeholder,
-        )));
-    }
-    if ui.button("🖩 Attr").clicked() {
-        return Some(Box::new(ExprOperatorEditor::Attr(Attribute::ID)));
-    }
-    if ui.button("🖩 Parent Attr").clicked() {
-        return Some(Box::new(ExprOperatorEditor::ParentAttr(Attribute::ID)));
+    for info in OPERATORS.iter() {
+        let text = if info.args.is_empty() {
+            format!("🖩 {}", info.name)
+        } else {
+            format!("🖩 {}({})", info.name, info.args.join(", "))
+        };
+        if ui.button(text).on_hover_text(info.hint).clicked() {
+            return Some(Box::new((info.make)()));
+        }
     }
     None
 }
@@ -361,6 +256,45 @@ impl UiProvider for ExprWriterEditor {
                 *self = replace.unwrap_or(ExprWriterEditor::Property(name));
             }
 
+            ExprWriterEditor::Param(name) => {
+                let mut name = name.clone();
+                let replace = ui
+                    .horizontal(|ui| {
+                        let control = ui_tools_for_expr_writer("Param", ui);
+                        let id = ui.make_persistent_id(format!("param {}", index));
+                        let known = app.params.iter().find(|(n, _)| *n == name).map(|(_, k)| *k);
+                        egui::ComboBox::from_id_salt(id)
+                            .selected_text(name.clone())
+                            .show_ui(ui, |ui| {
+                                for (param, kind) in app.params.iter() {
+                                    ui.selectable_value(&mut name, param.clone(), param)
+                                        .on_hover_text(param_kind_hint(*kind));
+                                }
+                            })
+                            .response
+                            .on_hover_text(super::hints::PARAM_EXPR);
+                        match known {
+                            Some(kind) => {
+                                ui.label(egui::RichText::new(param_kind_label(kind)).weak());
+                            }
+                            None => {
+                                ui.colored_label(egui::Color32::from_hex("#FF8866").unwrap(), "⚠ unknown")
+                                    .on_hover_text("No parameter has this name (PARAMETERS tab); it reads 0.0");
+                            }
+                        }
+                        match control {
+                            ExprControl::Delete => Some(ExprWriterEditor::Placeholder),
+                            ExprControl::Noop => None,
+                            ExprControl::Copy => {
+                                app.expr_clipboard = Some(c);
+                                None
+                            }
+                        }
+                    })
+                    .inner;
+                *self = replace.unwrap_or(ExprWriterEditor::Param(name));
+            }
+
             ExprWriterEditor::Placeholder => {
                 ui.menu_button("+", |ui| {
                     ui.menu_button("Operator", |ui| {
@@ -395,6 +329,22 @@ impl UiProvider for ExprWriterEditor {
                     if ui.button("Vec4").clicked() {
                         *self = ExprWriterEditor::Vec4(Vec4::ZERO);
                     }
+                    ui.menu_button("Parameter", |ui| {
+                        if app.params.is_empty() {
+                            ui.label(egui::RichText::new("No parameters yet: add them in the PARAMETERS tab").weak());
+                        }
+                        for (param, kind) in app.params.iter() {
+                            if ui
+                                .button(format!("{} ({})", param, param_kind_label(*kind)))
+                                .on_hover_text(param_kind_hint(*kind))
+                                .clicked()
+                            {
+                                *self = ExprWriterEditor::Param(param.clone());
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(super::hints::PARAM_EXPR);
                     ui.menu_button("Property", |ui| {
                         for (property, _, hint) in RUNTIME_PROPERTIES {
                             if ui.button(property).on_hover_text(hint).clicked() {
@@ -410,6 +360,22 @@ impl UiProvider for ExprWriterEditor {
                             .clicked()
                         {
                             *self = segment_point_expr();
+                        }
+                        if let Some((param, _)) = app.params.iter().find(|(_, k)| *k == ParamKind::Float) {
+                            if ui
+                                .button("Mix By Parameter")
+                                .on_hover_text(format!(
+                                    "Mix(a, b, {}): from a at 0 to b at 1 of a Float parameter; fill in a and b",
+                                    param
+                                ))
+                                .clicked()
+                            {
+                                *self = ExprWriterEditor::Operator(Box::new(ExprOperatorEditor::Mix(
+                                    ExprWriterEditor::Placeholder,
+                                    ExprWriterEditor::Placeholder,
+                                    ExprWriterEditor::Param(param.clone()),
+                                )));
+                            }
                         }
                         if ui.button("Random Normalized Vector").clicked() {
                             *self = ExprWriterEditor::Operator(Box::new(
@@ -436,6 +402,20 @@ impl UiProvider for ExprWriterEditor {
                 });
             }
         }
+    }
+}
+
+fn param_kind_label(kind: ParamKind) -> &'static str {
+    match kind {
+        ParamKind::Float => "number",
+        ParamKind::Color => "colour",
+    }
+}
+
+fn param_kind_hint(kind: ParamKind) -> &'static str {
+    match kind {
+        ParamKind::Float => "A number (f32): use it where a number goes, or as the t of Mix",
+        ParamKind::Color => "A colour (vec4: red, green, blue, opacity): use it for hdr_color, or Mix two colours",
     }
 }
 

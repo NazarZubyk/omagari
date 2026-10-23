@@ -4,6 +4,7 @@
 use bevy_egui::*;
 use omagari::format::*;
 
+use super::binding::{binding_editor, float_param_picker};
 use super::helpers::*;
 use super::hints;
 use super::modifiers::ModifierLabel;
@@ -304,13 +305,126 @@ fn ui_for_texture(ui: &mut egui::Ui, texture: &mut Option<String>, assets: &mut 
     }
 }
 
-fn play_label(play: &PlayDef) -> String {
+fn play_label(play: &PlayDef) -> &'static str {
     match play {
-        PlayDef::Loop => "Loop".to_string(),
-        PlayDef::OnStart => "OnStart".to_string(),
-        PlayDef::OnTrigger(t) => format!("OnTrigger(\"{}\") (later)", t),
-        PlayDef::While(p, v) => format!("While(\"{}\", {}) (later)", p, v),
+        PlayDef::Loop => "Loop",
+        PlayDef::OnStart => "OnStart",
+        PlayDef::OnTrigger(_) => "OnTrigger",
+        PlayDef::While(..) => "While",
     }
+}
+
+/// The play mode: combo, plus the trigger or the parameter and threshold.
+fn ui_for_play(ui: &mut egui::Ui, play: &mut PlayDef, app: &AppContext, parameters: &[ParamDef], id: egui::Id) {
+    egui::ComboBox::from_id_salt(id.with("play"))
+        .selected_text(play_label(play))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(play, PlayDef::Loop, "Loop")
+                .on_hover_text("Plays for as long as the effect runs");
+            ui.selectable_value(play, PlayDef::OnStart, "OnStart")
+                .on_hover_text("Plays once when the effect starts");
+            let on_trigger = matches!(play, PlayDef::OnTrigger(_));
+            if ui
+                .selectable_label(on_trigger, "OnTrigger")
+                .on_hover_text("Bursts each time the game fires a trigger (TRIGGERS tab); not when the effect starts")
+                .clicked()
+                && !on_trigger
+            {
+                *play = PlayDef::OnTrigger(app.trigger_names.first().cloned().unwrap_or_default());
+            }
+            let while_ = matches!(play, PlayDef::While(..));
+            if ui
+                .selectable_label(while_, "While")
+                .on_hover_text("Emits while a number parameter is at or above a threshold")
+                .clicked()
+                && !while_
+            {
+                let param = parameters.iter().find(|p| p.kind() == ParamKind::Float);
+                *play = PlayDef::While(
+                    param.map(|p| p.name.clone()).unwrap_or_default(),
+                    param.map(|p| p.middle()).unwrap_or(0.5),
+                );
+            }
+        })
+        .response
+        .on_hover_text(hints::PLAY);
+    match play {
+        PlayDef::OnTrigger(trigger) => {
+            egui::ComboBox::from_id_salt(id.with("trigger"))
+                .selected_text(if trigger.is_empty() { "(pick)".to_string() } else { trigger.clone() })
+                .show_ui(ui, |ui| {
+                    if app.trigger_names.is_empty() {
+                        ui.label(egui::RichText::new("No triggers: add one in the TRIGGERS tab").weak());
+                    }
+                    for name in app.trigger_names.iter() {
+                        ui.selectable_value(trigger, name.clone(), name);
+                    }
+                })
+                .response
+                .on_hover_text("The trigger that makes this layer burst");
+            if !app.trigger_names.contains(trigger) {
+                ui.colored_label(egui::Color32::from_hex("#FF8866").unwrap(), "⚠")
+                    .on_hover_text("No trigger has this name (TRIGGERS tab)");
+            }
+        }
+        PlayDef::While(param, threshold) => {
+            float_param_picker(ui, param, &app.params, id.with("while"));
+            ui.label("≥").on_hover_text("Emits while the parameter is at or above this value");
+            *threshold = ui_for_f32_ex(ui, *threshold, -1.0e6, 1.0e6, 0.01);
+        }
+        PlayDef::Loop | PlayDef::OnStart => {}
+    }
+}
+
+/// The visible range of a layer: off, or (parameter, from, to, fade).
+fn ui_for_visible(ui: &mut egui::Ui, visible: &mut Option<VisibleRangeDef>, app: &AppContext, parameters: &[ParamDef], id: egui::Id) {
+    ui.vertical(|ui| {
+        let mut on = visible.is_some();
+        if ui.checkbox(&mut on, "only in a parameter range").on_hover_text(hints::VISIBLE).changed() {
+            *visible = on.then(|| {
+                let param = parameters.iter().find(|p| p.kind() == ParamKind::Float);
+                VisibleRangeDef {
+                    param: param.map(|p| p.name.clone()).unwrap_or_default(),
+                    from: param.map(|p| p.min).unwrap_or(0.0),
+                    to: param.map(|p| p.max).unwrap_or(1.0),
+                    fade: 0.1,
+                }
+            });
+        }
+        if let Some(v) = visible {
+            ui.horizontal(|ui| {
+                float_param_picker(ui, &mut v.param, &app.params, id.with("visible"));
+                ui.label("from");
+                v.from = ui_for_f32_ex(ui, v.from, -1.0e6, 1.0e6, 0.01);
+                ui.label("to");
+                v.to = ui_for_f32_ex(ui, v.to, -1.0e6, 1.0e6, 0.01);
+            });
+            ui.horizontal(|ui| {
+                ui.label("fade").on_hover_text("How far past From / To (in parameter units) the layer fades out");
+                v.fade = ui_for_f32_ex(ui, v.fade, 0.0, 1.0e6, 0.01);
+            });
+        }
+    });
+}
+
+/// The spawn rate: off (the spawner's count) or a binding, in particles per
+/// second.
+fn ui_for_rate(ui: &mut egui::Ui, rate: &mut Option<Binding<f32>>, app: &AppContext, parameters: &[ParamDef], id: egui::Id) {
+    ui.vertical(|ui| {
+        let mut on = rate.is_some();
+        if ui.checkbox(&mut on, "particles per second").on_hover_text(hints::RATE).changed() {
+            *rate = on.then(|| Binding::Const(20.0));
+        }
+        if let Some(binding) = rate {
+            let range = |name: &str| {
+                parameters
+                    .iter()
+                    .find(|p| p.name == name && p.kind() == ParamKind::Float)
+                    .map(|p| (p.min, p.max))
+            };
+            binding_editor(ui, binding, &app.params, range, "/s", 100000.0, id.with("rate"));
+        }
+    });
 }
 
 fn attach_label(attach: &AttachDef) -> &'static str {
@@ -402,6 +516,7 @@ fn alpha_mode_hint(mode: AlphaModeDef) -> &'static str {
 pub fn draw_particles_layer(
     layer: &mut ParticlesLayerDef,
     assets: &mut Vec<AssetDef>,
+    parameters: &[ParamDef],
     app: &mut AppContext,
     ui: &mut egui::Ui,
     index: u64,
@@ -458,31 +573,28 @@ pub fn draw_particles_layer(
         ui.end_row();
 
         ui.label("Play").on_hover_text(hints::PLAY);
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt(id.with("play"))
-                .selected_text(play_label(&layer.play))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut layer.play, PlayDef::Loop, "Loop")
-                        .on_hover_text("Plays for as long as the effect runs");
-                    ui.selectable_value(&mut layer.play, PlayDef::OnStart, "OnStart")
-                        .on_hover_text("Plays once when the effect starts");
-                    ui.add_enabled(false, egui::Button::selectable(false, "OnTrigger (P2)"));
-                    ui.add_enabled(false, egui::Button::selectable(false, "While (P2)"));
-                })
-                .response
-                .on_hover_text(hints::PLAY);
+        ui.horizontal_wrapped(|ui| {
+            ui_for_play(ui, &mut layer.play, app, parameters, id);
             let cycles = layer.effect.spawner.cycle_count;
             let mismatch = match layer.play {
                 PlayDef::Loop => cycles != 0,
-                PlayDef::OnStart => cycles == 0,
-                _ => false,
+                PlayDef::OnStart | PlayDef::OnTrigger(_) => cycles == 0,
+                PlayDef::While(..) => false,
             };
             if mismatch {
                 ui.colored_label(egui::Color32::from_hex("#FFCC66").unwrap(), "⚠").on_hover_text(
-                    "Play doesn't match the spawner: Loop usually has Cycles 0, OnStart a finite number.",
+                    "Play doesn't match the spawner: Loop usually has Cycles 0, OnStart and OnTrigger a finite number (1 = one burst).",
                 );
             }
         });
+        ui.end_row();
+
+        ui.label("Rate").on_hover_text(hints::RATE);
+        ui_for_rate(ui, &mut layer.rate, app, parameters, id);
+        ui.end_row();
+
+        ui.label("Visible").on_hover_text(hints::VISIBLE);
+        ui_for_visible(ui, &mut layer.visible, app, parameters, id);
         ui.end_row();
 
         ui.label("Blend").on_hover_text(hints::BLEND);

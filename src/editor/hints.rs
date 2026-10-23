@@ -11,7 +11,28 @@ pub const SPACE_LOCAL: &str = "Local: particles move with the target (auras, shi
 pub const SPACE_GLOBAL: &str =
     "Global: particles stay where they were born, so a moving target leaves a trail (smoke, footsteps).";
 pub const ATTACH: &str = "Where the layer sits: Target = the target's root; Socket = follows a named point (e.g. a hand bone); Segment = between two sockets (e.g. along a blade).";
-pub const PLAY: &str = "When the layer plays. Loop = all the time; OnStart = once at the start. How long it emits is set by the spawner.";
+pub const PLAY: &str = "When the layer plays. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires a trigger (a burst); While = while a parameter is at or above a threshold. How long it emits is set by the spawner.";
+pub const RATE: &str = "Particles per second as a steady stream, replacing the spawner's count while the layer plays. A constant, or a curve over a parameter (e.g. more particles at higher intensity). Off = the spawner's own count.";
+pub const VISIBLE: &str = "Show the layer only while a parameter is between From and To; outside it the layer fades out over Fade (parameter units). Neighbouring ranges cross-fade, e.g. a weak look below 0.6 and a strong one above. Fades the spawn rate; multiply alpha by Property visibility to fade live particles too.";
+pub const BINDING: &str = "Constant: one value. Curve: the value follows a number parameter: keys are (parameter value → value), straight lines in between, flat past the first and last key.";
+
+// --- parameters and triggers ----------------------------------------------------
+
+pub const PARAMETERS: &str = "Values the game sets while the effect plays, by name (any names, as many as you need), e.g. an intensity 0..1 or a tint colour. Layer values read them: expressions (Param), rate, visible range, play While.";
+pub const PARAM_EXPR: &str = "The current value of a parameter the game sets (PARAMETERS tab). Init modifiers read it when a particle is born, update modifiers every frame.";
+pub const PARAM_NAME: &str = "The name the game uses: vfx.set_param(instance, \"name\", value). Renaming updates every use in this project (expressions, rate, visible, play, pulses, preview), but not the game's code.";
+pub const PARAM_KIND: &str = "Number (with a range) or colour (red, green, blue, opacity; values above 1 glow).";
+pub const PARAM_DEFAULT: &str = "The value before the game sets one.";
+pub const PARAM_RANGE: &str = "Smallest and largest value; what the game sets is kept inside.";
+pub const PARAM_SMOOTHING: &str = "Seconds to get about two thirds of the way to a new value, so changes fade in instead of jumping. 0 = jump at once.";
+pub const PARAM_LIVE: &str = "Drives the preview like the game would (smoothed). Saved with the project as a preview value; not part of the exported effect.";
+pub const PARAM_ANIMATE: &str = "Moves the preview value from min to max and back over 4 seconds, to see every stage.";
+pub const TRIGGERS: &str = "Named one-shot events the game fires (any names), e.g. a damage tick or a hit. Layers with play OnTrigger burst; pulses make a parameter jump and fade back.";
+pub const TRIGGER_NAME: &str = "The name the game uses: vfx.trigger(instance, \"name\"). Renaming updates the layers that play on it and the preview's auto-fire.";
+pub const PULSES: &str = "When the trigger fires, the parameter jumps to To and goes back to its value over Decay seconds (a flash). Number parameters only.";
+pub const FIRE: &str = "Fires the trigger on the preview, like the game's vfx.trigger.";
+pub const FIRE_RANDOM: &str = "Fires with a position: a random point near the target, like vfx.trigger_at with a contact point. Layers reading trigger_pos / trigger_dir burst there.";
+pub const AUTO_FIRE: &str = "Fires the trigger on the preview every N seconds. Saved with the project as a preview setting.";
 pub const BLEND: &str = "How particles mix with what is behind them. Add for glows and fire, Blend for smoke.";
 
 pub const SPAWNER: &str = "When and how many particles are born. A cycle spawns Count particles over Duration seconds, then waits until Period seconds have passed.";
