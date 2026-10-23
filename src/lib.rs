@@ -18,18 +18,25 @@ use std::{
 };
 
 pub mod format;
+pub mod runtime;
 
-/// OmagariPlugin is a Bevy plugin for managing and despawning exported Omagari effects from assets.
+pub use runtime::{VfxCommandsExt, VfxControl, VfxFinished, VfxInstance, VfxPackage};
+
+/// The Omagari runtime plugin. Add it after `DefaultPlugins` and `HanabiPlugin`.
+///
+/// - VFX packages: loads `*.vfx.ron` / `*.omagari.ron` as [`VfxPackage`]s and
+///   plays them with [`VfxCommandsExt::spawn_vfx`] / [`VfxControl`].
+/// - Built-in textures (`omagari://textures/<file>`) embedded in the library.
+/// - Legacy: [`EffectComplex`] (`*.hanabi.ron` exports) and its despawn timer.
 pub struct OmagariPlugin;
 
 impl Plugin for OmagariPlugin {
-    /// Configures the Bevy App to use the OmagariPlugin.
-    /// It sets systems for effect despawning and initializes effect assets and loaders.
     fn build(&self, app: &mut App) {
         register_missing_hanabi_modifiers(app.world().resource::<AppTypeRegistry>());
         app.add_systems(Update, despawn_effects_on_timer)
            .init_asset::<EffectComplex>()
            .init_asset_loader::<OmagariAssetLoader>();
+        runtime::build(app);
     }
 }
 
