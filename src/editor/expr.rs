@@ -336,6 +336,31 @@ impl UiProvider for ExprWriterEditor {
                     .inner;
             }
 
+            ExprWriterEditor::Property(name) => {
+                let mut name = name.clone();
+                let replace = ui
+                    .horizontal(|ui| {
+                        let control = ui_tools_for_expr_writer("Property", ui);
+                        let id = ui.make_persistent_id(format!("property {}", index));
+                        egui::ComboBox::from_id_salt(id).selected_text(name.clone()).show_ui(ui, |ui| {
+                            for (property, _, hint) in RUNTIME_PROPERTIES {
+                                ui.selectable_value(&mut name, property.to_string(), property)
+                                    .on_hover_text(hint);
+                            }
+                        });
+                        match control {
+                            ExprControl::Delete => Some(ExprWriterEditor::Placeholder),
+                            ExprControl::Noop => None,
+                            ExprControl::Copy => {
+                                app.expr_clipboard = Some(c);
+                                None
+                            }
+                        }
+                    })
+                    .inner;
+                *self = replace.unwrap_or(ExprWriterEditor::Property(name));
+            }
+
             ExprWriterEditor::Placeholder => {
                 ui.menu_button("+", |ui| {
                     ui.menu_button("Operator", |ui| {
@@ -370,8 +395,22 @@ impl UiProvider for ExprWriterEditor {
                     if ui.button("Vec4").clicked() {
                         *self = ExprWriterEditor::Vec4(Vec4::ZERO);
                     }
+                    ui.menu_button("Property", |ui| {
+                        for (property, _, hint) in RUNTIME_PROPERTIES {
+                            if ui.button(property).on_hover_text(hint).clicked() {
+                                *self = ExprWriterEditor::Property(property.to_string());
+                            }
+                        }
+                    });
                     ui.separator();
                     ui.menu_button("Prebuilt", |ui| {
+                        if ui
+                            .button("Random Point On Segment")
+                            .on_hover_text("segment_a + (segment_b - segment_a) × random: for Segment-attached layers")
+                            .clicked()
+                        {
+                            *self = segment_point_expr();
+                        }
                         if ui.button("Random Normalized Vector").clicked() {
                             *self = ExprWriterEditor::Operator(Box::new(
                                 ExprOperatorEditor::Normalized(ExprWriterEditor::Operator(
@@ -398,4 +437,18 @@ impl UiProvider for ExprWriterEditor {
             }
         }
     }
+}
+
+/// `segment_a + (segment_b - segment_a) * RandFloat`: a random point on the
+/// layer's segment.
+fn segment_point_expr() -> ExprWriterEditor {
+    let a = || ExprWriterEditor::Property("segment_a".into());
+    let b = ExprWriterEditor::Property("segment_b".into());
+    ExprWriterEditor::Operator(Box::new(ExprOperatorEditor::Add(
+        a(),
+        ExprWriterEditor::Operator(Box::new(ExprOperatorEditor::Multiply(
+            ExprWriterEditor::Operator(Box::new(ExprOperatorEditor::Subtract(b, a()))),
+            ExprWriterEditor::RandFloat,
+        ))),
+    )))
 }

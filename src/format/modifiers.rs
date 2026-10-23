@@ -13,7 +13,7 @@ pub trait ModifierProducer<T>
 where
     T: bevy_hanabi::Modifier,
 {
-    fn produce(&self, writer: &bevy_hanabi::ExprWriter) -> T;
+    fn produce(&self, writer: &EffectWriter) -> T;
 }
 
 pub trait RenderModifierProducer<T>
@@ -33,7 +33,7 @@ pub struct SetAttributeModifierEditor {
 }
 
 impl ModifierProducer<SetAttributeModifier> for SetAttributeModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> SetAttributeModifier {
+    fn produce(&self, writer: &EffectWriter) -> SetAttributeModifier {
         SetAttributeModifier {
             attribute: self.attr,
             value: self.attr_expr.produce(writer).expr(),
@@ -58,7 +58,7 @@ pub struct InheritAttributeModifierEditor {
 }
 
 impl ModifierProducer<InheritAttributeModifier> for InheritAttributeModifierEditor {
-    fn produce(&self, _writer: &ExprWriter) -> InheritAttributeModifier {
+    fn produce(&self, _writer: &EffectWriter) -> InheritAttributeModifier {
         InheritAttributeModifier {
             attribute: self.attr,
         }
@@ -82,7 +82,7 @@ pub struct SetVelocityCircleModifierEditor {
 }
 
 impl ModifierProducer<SetVelocityCircleModifier> for SetVelocityCircleModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> SetVelocityCircleModifier {
+    fn produce(&self, writer: &EffectWriter) -> SetVelocityCircleModifier {
         SetVelocityCircleModifier {
             center: self.center_expr.produce(writer).expr(),
             axis: self.axis_expr.produce(writer).expr(),
@@ -109,7 +109,7 @@ pub struct SetVelocitySphereModifierEditor {
 }
 
 impl ModifierProducer<SetVelocitySphereModifier> for SetVelocitySphereModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> SetVelocitySphereModifier {
+    fn produce(&self, writer: &EffectWriter) -> SetVelocitySphereModifier {
         SetVelocitySphereModifier {
             center: self.center_expr.produce(writer).expr(),
             speed: self.speed_expr.produce(writer).expr(),
@@ -135,7 +135,7 @@ pub struct SetVelocityTangentModifierEditor {
 }
 
 impl ModifierProducer<SetVelocityTangentModifier> for SetVelocityTangentModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> SetVelocityTangentModifier {
+    fn produce(&self, writer: &EffectWriter) -> SetVelocityTangentModifier {
         SetVelocityTangentModifier {
             origin: self.origin_expr.produce(writer).expr(),
             axis: self.axis_expr.produce(writer).expr(),
@@ -168,7 +168,7 @@ pub struct SetPositionCircleModifierEditor {
 }
 
 impl ModifierProducer<SetPositionCircleModifier> for SetPositionCircleModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> SetPositionCircleModifier {
+    fn produce(&self, writer: &EffectWriter) -> SetPositionCircleModifier {
         SetPositionCircleModifier {
             center: self.center_expr.produce(writer).expr(),
             axis: self.axis_expr.produce(writer).expr(),
@@ -199,7 +199,7 @@ pub struct SetPositionSphereModifierEditor {
 }
 
 impl ModifierProducer<SetPositionSphereModifier> for SetPositionSphereModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> SetPositionSphereModifier {
+    fn produce(&self, writer: &EffectWriter) -> SetPositionSphereModifier {
         SetPositionSphereModifier {
             center: self.center_expr.produce(writer).expr(),
             radius: self.radius_expr.produce(writer).expr(),
@@ -225,7 +225,7 @@ pub struct AccelModifierEditor {
 }
 
 impl ModifierProducer<AccelModifier> for AccelModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> AccelModifier {
+    fn produce(&self, writer: &EffectWriter) -> AccelModifier {
         AccelModifier::new(self.accel_expr.produce(writer).expr())
     }
 }
@@ -251,7 +251,7 @@ pub struct LinearDragModifierEditor {
 }
 
 impl ModifierProducer<LinearDragModifier> for LinearDragModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> LinearDragModifier {
+    fn produce(&self, writer: &EffectWriter) -> LinearDragModifier {
         LinearDragModifier {
             drag: self.drag_expr.produce(writer).expr(),
         }
@@ -276,7 +276,7 @@ pub struct EmitSpawnEventModifierEditor {
 }
 
 impl ModifierProducer<EmitSpawnEventModifier> for EmitSpawnEventModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> EmitSpawnEventModifier {
+    fn produce(&self, writer: &EffectWriter) -> EmitSpawnEventModifier {
         EmitSpawnEventModifier {
             condition: self.condition,
             count: self.count_expr.produce(writer).expr(),
@@ -306,7 +306,7 @@ pub struct ConformToSphereModifierEditor {
 }
 
 impl ModifierProducer<ConformToSphereModifier> for ConformToSphereModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> ConformToSphereModifier {
+    fn produce(&self, writer: &EffectWriter) -> ConformToSphereModifier {
         ConformToSphereModifier {
             origin: self.origin_expr.produce(writer).expr(),
             radius: self.radius_expr.produce(writer).expr(),
@@ -466,7 +466,7 @@ pub struct ParticleTextureModifierEditor {
 impl ParticleTextureModifierEditor {
     /// The texture slot expression must be written before the module is
     /// finished, hence the writer.
-    pub fn produce(&self, writer: &ExprWriter) -> ParticleTextureModifier {
+    pub fn produce(&self, writer: &EffectWriter) -> ParticleTextureModifier {
         ParticleTextureModifier {
             texture_slot: writer.lit(0u32).expr(),
             sample_mapping: self.sample_mapping.into(),

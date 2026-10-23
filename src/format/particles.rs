@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::hanabi_serde::{self, SpawnerDef};
+use super::expr::{EffectWriter, ExprWriterEditor};
 use super::modifiers::*;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -25,7 +26,7 @@ pub enum ModifierEditor {
 }
 
 impl ModifierEditor {
-    fn produce(&self, writer: &ExprWriter) -> ProducedModifier {
+    fn produce(&self, writer: &EffectWriter) -> ProducedModifier {
         match self {
             ModifierEditor::SetPositionCircle(n) => {
                 ProducedModifier::SetPositionCircle(n.produce(writer))
@@ -114,7 +115,7 @@ impl EffectEditor {
         self.texture_index
     }
     pub fn produce(&self) -> EffectAsset {
-        let writer = ExprWriter::new();
+        let writer = EffectWriter::new();
 
         let mut init_modifiers: Vec<ProducedModifier> = Vec::new();
         let mut update_modifiers: Vec<ProducedModifier> = Vec::new();
@@ -127,7 +128,7 @@ impl EffectEditor {
 
         let texture_slot = writer.lit(0u32).expr();
 
-        let mut module = writer.finish();
+        let (mut module, _) = writer.finish();
         module.add_texture_slot("color");
 
         let mut e = EffectAsset::new(self.capacity, self.spawner_settings, module)
@@ -250,7 +251,7 @@ pub const PARTICLE_TEXTURES: [ParticleTexture; 7] = [
 impl ModifierEditor {
     /// Builds the bevy_hanabi modifier, boxed so it can be added to any
     /// context that supports it.
-    pub fn produce_boxed(&self, writer: &ExprWriter) -> Box<dyn Modifier> {
+    pub fn produce_boxed(&self, writer: &EffectWriter) -> Box<dyn Modifier> {
         match self.produce(writer) {
             ProducedModifier::SetVelocityTangent(m) => Box::new(m),
             ProducedModifier::SetPositionSphere(m) => Box::new(m),
@@ -263,6 +264,52 @@ impl ModifierEditor {
             ProducedModifier::LinearDragModifier(m) => Box::new(m),
             ProducedModifier::EmitSpawnEventModifier(m) => Box::new(m),
             ProducedModifier::ConformToSphere(m) => Box::new(m),
+        }
+    }
+
+    /// The modifier's expressions.
+    pub fn exprs(&self) -> Vec<&ExprWriterEditor> {
+        match self {
+            ModifierEditor::SetAttribute(m) => vec![&m.attr_expr],
+            ModifierEditor::InheritAttribute(_) => vec![],
+            ModifierEditor::SetPositionCircle(m) => vec![&m.center_expr, &m.axis_expr, &m.radius_expr],
+            ModifierEditor::SetPositionSphere(m) => vec![&m.center_expr, &m.radius_expr],
+            ModifierEditor::SetVelocityCircle(m) => vec![&m.center_expr, &m.axis_expr, &m.speed_expr],
+            ModifierEditor::SetVelocitySphere(m) => vec![&m.center_expr, &m.speed_expr],
+            ModifierEditor::SetVelocityTangent(m) => vec![&m.origin_expr, &m.axis_expr, &m.speed_expr],
+            ModifierEditor::AccelModifier(m) => vec![&m.accel_expr],
+            ModifierEditor::LinearDragModifier(m) => vec![&m.drag_expr],
+            ModifierEditor::EmitSpawnEventModifier(m) => vec![&m.count_expr],
+            ModifierEditor::ConformToSphereModifier(m) => vec![
+                &m.origin_expr,
+                &m.radius_expr,
+                &m.influence_dist_expr,
+                &m.attraction_accel_expr,
+                &m.max_attraction_speed_expr,
+            ],
+        }
+    }
+
+    /// The modifier's expressions, mutable.
+    pub fn exprs_mut(&mut self) -> Vec<&mut ExprWriterEditor> {
+        match self {
+            ModifierEditor::SetAttribute(m) => vec![&mut m.attr_expr],
+            ModifierEditor::InheritAttribute(_) => vec![],
+            ModifierEditor::SetPositionCircle(m) => vec![&mut m.center_expr, &mut m.axis_expr, &mut m.radius_expr],
+            ModifierEditor::SetPositionSphere(m) => vec![&mut m.center_expr, &mut m.radius_expr],
+            ModifierEditor::SetVelocityCircle(m) => vec![&mut m.center_expr, &mut m.axis_expr, &mut m.speed_expr],
+            ModifierEditor::SetVelocitySphere(m) => vec![&mut m.center_expr, &mut m.speed_expr],
+            ModifierEditor::SetVelocityTangent(m) => vec![&mut m.origin_expr, &mut m.axis_expr, &mut m.speed_expr],
+            ModifierEditor::AccelModifier(m) => vec![&mut m.accel_expr],
+            ModifierEditor::LinearDragModifier(m) => vec![&mut m.drag_expr],
+            ModifierEditor::EmitSpawnEventModifier(m) => vec![&mut m.count_expr],
+            ModifierEditor::ConformToSphereModifier(m) => vec![
+                &mut m.origin_expr,
+                &mut m.radius_expr,
+                &mut m.influence_dist_expr,
+                &mut m.attraction_accel_expr,
+                &mut m.max_attraction_speed_expr,
+            ],
         }
     }
 
@@ -365,7 +412,7 @@ impl ParticleEffectDef {
         simulation_space: SimulationSpace,
         warnings: &mut Vec<String>,
     ) -> EffectAsset {
-        let writer = ExprWriter::new();
+        let writer = EffectWriter::new();
 
         let mut init_modifiers = Vec::new();
         for m in self.init_modifiers.iter() {
@@ -399,7 +446,10 @@ impl ParticleEffectDef {
             AlphaModeDef::Opaque => bevy_hanabi::AlphaMode::Opaque,
         };
 
-        let mut module = writer.finish();
+        let (mut module, writer_warnings) = writer.finish();
+        for warning in writer_warnings {
+            warnings.push(format!("[{}] {}", name, warning));
+        }
         if uses_texture {
             module.add_texture_slot(PARTICLE_TEXTURE_SLOT);
         }
@@ -428,6 +478,38 @@ impl ParticleEffectDef {
             e = e.add_render_modifier(modifier);
         }
         e
+    }
+
+    /// Names of the properties its expressions read (`Property("...")`),
+    /// sorted, without duplicates.
+    pub fn properties_read(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for m in self.init_modifiers.iter().chain(self.update_modifiers.iter()) {
+            for e in m.exprs() {
+                e.visit(&mut |e| {
+                    if let ExprWriterEditor::Property(name) = e {
+                        names.push(name.clone());
+                    }
+                });
+            }
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Seconds from start until the spawner has emitted its last particle,
+    /// or `None` when it repeats forever (`cycle_count: 0`). Random values
+    /// count with their maximum.
+    pub fn emit_duration(&self) -> Option<f32> {
+        let s = &self.spawner;
+        if s.cycle_count == 0 {
+            return None;
+        }
+        let duration = s.spawn_duration.range()[1].max(0.0);
+        // A cycle lasts `period`, or `spawn_duration` when that is longer.
+        let cycle = s.period.range()[1].max(duration);
+        Some((s.cycle_count - 1) as f32 * cycle + duration)
     }
 
     /// Longest time a particle of this effect can live, in seconds, estimated
