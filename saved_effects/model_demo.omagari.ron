@@ -1,0 +1,152 @@
+// P3 demo: model, animation and sockets. A glow on the right hand bone
+// (socket "hand" on mixamorig:RightHand), sparks along a virtual blade held
+// in that hand (sockets "blade_base" / "blade_tip": offsets from the hand,
+// no weapon file needed; the "random point on segment with radius" preset),
+// a burst on the blade at 0.3 s of every animation loop (trigger "swing",
+// preview animation trigger) and a Local aura on the target root.
+//
+// The preview uses the Mixamo Y Bot of the game assets folder
+// (anim/tpose.glb) running with the clip of anim/run.glb; without those
+// files the MODEL stage shows the capsule.
+(
+    version: 2,
+    triggers: [
+        (name: "swing"),
+    ],
+    assets: [
+        (id: "glow1", kind: Texture((path: "omagari://textures/glow1.png"))),
+        (id: "spark1", kind: Texture((path: "omagari://textures/spark1.png"))),
+    ],
+    sockets: [
+        (name: "hand", node: Some("mixamorig:RightHand"), offset: (0.0, 0.08, 0.0)),
+        (name: "blade_base", node: Some("mixamorig:RightHand"), offset: (0.0, 0.1, 0.0)),
+        (name: "blade_tip", node: Some("mixamorig:RightHand"), offset: (0.0, 0.9, 0.0)),
+    ],
+    layers: [
+        Particles((
+            name: "hand_glow",
+            attach: Socket("hand"),
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 64,
+                spawner: (count: Single(30.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.4), Float(0.7))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.25))),
+                    SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(0.04), dimension: Volume)),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (1.0, 0.5, 3.0, 0.0)), (0.3, (1.0, 0.5, 3.0, 0.6)), (1.0, (0.4, 0.1, 1.5, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+        Particles((
+            name: "blade_sparks",
+            attach: Segment(from: "blade_base", to: "blade_tip"),
+            simulation_space: Global,
+            play: Loop,
+            texture: Some("spark1"),
+            effect: (
+                capacity: 256,
+                spawner: (count: Single(60.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.15), Float(0.35))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.03))),
+                    SetAttribute((attr: "position", attr_expr: Operator(Add(Operator(Mix(Property("segment_a"), Property("segment_b"), RandFloat)), Operator(Multiply(Operator(Normalized(Operator(Add(Operator(Cross(Operator(Subtract(Property("segment_b"), Property("segment_a"))), Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))))), Vec3((0.000001, 0.0, 0.0)))))), Operator(Multiply(Float(0.03), Operator(Sqrt(RandFloat)))))))))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Float(0.4))))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (2.0, 3.0, 5.0, 0.0)), (0.1, (2.0, 3.0, 5.0, 1.0)), (1.0, (0.5, 1.0, 3.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+        Particles((
+            name: "swing_burst",
+            attach: Segment(from: "blade_base", to: "blade_tip"),
+            simulation_space: Global,
+            play: OnTrigger("swing"),
+            texture: Some("spark1"),
+            effect: (
+                capacity: 128,
+                spawner: (count: Single(60.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.3), Float(0.6))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.05))),
+                    SetAttribute((attr: "position", attr_expr: Operator(Add(Operator(Mix(Property("segment_a"), Property("segment_b"), RandFloat)), Operator(Multiply(Operator(Normalized(Operator(Add(Operator(Cross(Operator(Subtract(Property("segment_b"), Property("segment_a"))), Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))))), Vec3((0.000001, 0.0, 0.0)))))), Operator(Multiply(Float(0.05), Operator(Sqrt(RandFloat)))))))))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Float(2.5))))),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((drag_expr: Float(3.0))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (6.0, 3.0, 1.0, 1.0)), (1.0, (2.0, 0.5, 0.1, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+        Particles((
+            name: "aura",
+            attach: Target,
+            simulation_space: Local,
+            play: Loop,
+            texture: Some("glow1"),
+            effect: (
+                capacity: 128,
+                spawner: (count: Single(40.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.8), Float(1.2))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.1))),
+                    SetPositionCircle((center_expr: Vec3((0.0, -0.85, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.45), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Vec3(Float(0.0), Operator(Uniform(Float(0.8), Float(1.4))), Float(0.0))))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (0.2, 1.0, 0.6, 0.0)), (0.2, (0.3, 2.0, 1.0, 0.7)), (1.0, (0.1, 0.6, 0.3, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: ParallelCameraDepthPlane)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((
+        stage: Model,
+        camera: Game,
+        model: Some("anim/tpose.glb"),
+        animation: Some("mixamo.com"),
+        animation_speed: 1.0,
+        motion: Some(Circle(radius: 3.0, speed: 3.6)),
+        root_height: 0.9,
+        animation_file: Some("anim/run.glb"),
+        animation_triggers: [("swing", 0.3)],
+    )),
+)
