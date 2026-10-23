@@ -1,0 +1,150 @@
+(
+    effects: [
+        (
+            name: "Name your effect",
+            parent: None,
+            texture_index: Some(1),
+            effect_asset: (
+                name: "Name your effect",
+                capacity: 2400,
+                spawner: (
+                    count: Single(500.0),
+                    spawn_duration: Single(0.1),
+                    period: Single(1.0),
+                    cycle_count: 1,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                z_layer_2d: 0.0,
+                simulation_space: Global,
+                simulation_condition: WhenVisible,
+                prng_seed: 0,
+                init_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::position::SetPositionSphereModifier": (
+                            center: "#1",
+                            radius: "#2",
+                            dimension: Volume,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "velocity",
+                            value: "#3",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "size",
+                            value: "#4",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "age",
+                            value: "#5",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "lifetime",
+                            value: "#8",
+                        ),
+                    },
+                ],
+                update_modifiers: [],
+                render_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::output::ColorOverLifetimeModifier": (
+                            gradient: (
+                                keys: [
+                                    (
+                                        ratio: 0.0,
+                                        value: (4.0, 4.0, 4.0, 0.0),
+                                    ),
+                                    (
+                                        ratio: 0.05,
+                                        value: (4.0, 4.0, 0.0, 1.0),
+                                    ),
+                                    (
+                                        ratio: 0.11,
+                                        value: (4.0, 0.0, 0.0, 0.5),
+                                    ),
+                                    (
+                                        ratio: 0.3,
+                                        value: (0.1, 0.1, 0.1, 0.2),
+                                    ),
+                                    (
+                                        ratio: 1.0,
+                                        value: (0.0, 0.0, 0.0, 0.0),
+                                    ),
+                                ],
+                            ),
+                            blend: Overwrite,
+                            mask: (15),
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::SizeOverLifetimeModifier": (
+                            gradient: (
+                                keys: [
+                                    (
+                                        ratio: 0.3,
+                                        value: (0.45, 0.45, 0.45),
+                                    ),
+                                    (
+                                        ratio: 1.0,
+                                        value: (0.1, 0.1, 0.1),
+                                    ),
+                                ],
+                            ),
+                            screen_space_size: false,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::ParticleTextureModifier": (
+                            texture_slot: "#9",
+                            sample_mapping: ModulateOpacityFromR,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::OrientModifier": (
+                            mode: AlongVelocity,
+                            rotation: None,
+                        ),
+                    },
+                ],
+                motion_integration: PostUpdate,
+                module: (
+                    expressions: [
+                        Literal(Vector(Vec3((0.0, 0.0, 0.0)))),
+                        Literal(Scalar(Float(0.28))),
+                        Attribute((
+                            attr: "position",
+                        )),
+                        Literal(Scalar(Float(0.45))),
+                        Literal(Scalar(Float(0.0))),
+                        Literal(Scalar(Float(2.1))),
+                        Literal(Scalar(Float(5.51))),
+                        Binary(
+                            op: UniformRand,
+                            left: "#6",
+                            right: "#7",
+                        ),
+                        Literal(Scalar(Uint(0))),
+                    ],
+                    properties: [],
+                    texture_layout: (
+                        layout: [
+                            (
+                                name: "color",
+                            ),
+                        ],
+                    ),
+                ),
+                alpha_mode: Blend,
+                mesh: None,
+            ),
+        ),
+    ],
+)

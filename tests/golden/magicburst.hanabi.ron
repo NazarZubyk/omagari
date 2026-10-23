@@ -1,0 +1,186 @@
+(
+    effects: [
+        (
+            name: "Magic",
+            parent: None,
+            texture_index: Some(4),
+            effect_asset: (
+                name: "Magic",
+                capacity: 16384,
+                spawner: (
+                    count: Single(2500.0),
+                    spawn_duration: Single(0.05),
+                    period: Single(0.0),
+                    cycle_count: 1,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                z_layer_2d: 0.0,
+                simulation_space: Global,
+                simulation_condition: WhenVisible,
+                prng_seed: 0,
+                init_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "age",
+                            value: "#1",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::attr::SetAttributeModifier": (
+                            attribute: "lifetime",
+                            value: "#4",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::position::SetPositionCircleModifier": (
+                            center: "#5",
+                            axis: "#6",
+                            radius: "#7",
+                            dimension: Surface,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::velocity::SetVelocityCircleModifier": (
+                            center: "#8",
+                            axis: "#9",
+                            speed: "#10",
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::velocity::SetVelocityTangentModifier": (
+                            origin: "#11",
+                            axis: "#12",
+                            speed: "#15",
+                        ),
+                    },
+                ],
+                update_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::accel::AccelModifier": (
+                            accel: "#20",
+                        ),
+                    },
+                ],
+                render_modifiers: [
+                    {
+                        "bevy_hanabi::modifier::output::SizeOverLifetimeModifier": (
+                            gradient: (
+                                keys: [
+                                    (
+                                        ratio: 0.3,
+                                        value: (0.1, 0.1, 0.1),
+                                    ),
+                                    (
+                                        ratio: 1.0,
+                                        value: (1.0, 1.0, 1.0),
+                                    ),
+                                ],
+                            ),
+                            screen_space_size: false,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::ColorOverLifetimeModifier": (
+                            gradient: (
+                                keys: [
+                                    (
+                                        ratio: 0.0,
+                                        value: (0.0, 4.0, 4.0, 0.0),
+                                    ),
+                                    (
+                                        ratio: 0.1,
+                                        value: (0.0, 4.0, 4.0, 1.0),
+                                    ),
+                                    (
+                                        ratio: 0.3,
+                                        value: (4.0, 0.0, 0.0, 0.22),
+                                    ),
+                                    (
+                                        ratio: 0.6,
+                                        value: (4.0, 2.2, 4.15, 0.0),
+                                    ),
+                                    (
+                                        ratio: 1.0,
+                                        value: (4.0, 6.57, 4.35, 0.0),
+                                    ),
+                                ],
+                            ),
+                            blend: Overwrite,
+                            mask: (15),
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::ParticleTextureModifier": (
+                            texture_slot: "#21",
+                            sample_mapping: ModulateOpacityFromR,
+                        ),
+                    },
+                    {
+                        "bevy_hanabi::modifier::output::OrientModifier": (
+                            mode: AlongVelocity,
+                            rotation: None,
+                        ),
+                    },
+                ],
+                motion_integration: PostUpdate,
+                module: (
+                    expressions: [
+                        Literal(Scalar(Float(0.0))),
+                        Literal(Scalar(Float(0.6))),
+                        Literal(Scalar(Float(4.3))),
+                        Binary(
+                            op: UniformRand,
+                            left: "#2",
+                            right: "#3",
+                        ),
+                        Literal(Vector(Vec3((0.0, 0.0, 0.0)))),
+                        Literal(Vector(Vec3((0.0, 1.0, 0.0)))),
+                        Literal(Scalar(Float(0.2))),
+                        Literal(Vector(Vec3((0.0, 0.0, 0.0)))),
+                        Literal(Vector(Vec3((0.0, 1.0, 0.0)))),
+                        Literal(Scalar(Float(0.5))),
+                        Literal(Vector(Vec3((0.0, 0.0, 0.0)))),
+                        Literal(Vector(Vec3((0.0, 1.0, 0.0)))),
+                        Literal(Scalar(Float(0.2))),
+                        Literal(Scalar(Float(1.0))),
+                        Binary(
+                            op: UniformRand,
+                            left: "#13",
+                            right: "#14",
+                        ),
+                        BuiltIn((
+                            operator: Rand(Vector((
+                                elem_type: Float,
+                                count: 3,
+                            ))),
+                        )),
+                        Literal(Vector(Vec3((2.0, 2.0, 2.0)))),
+                        Binary(
+                            op: Mul,
+                            left: "#16",
+                            right: "#17",
+                        ),
+                        Literal(Vector(Vec3((1.0, 1.0, 1.0)))),
+                        Binary(
+                            op: Sub,
+                            left: "#18",
+                            right: "#19",
+                        ),
+                        Literal(Scalar(Uint(0))),
+                    ],
+                    properties: [],
+                    texture_layout: (
+                        layout: [
+                            (
+                                name: "color",
+                            ),
+                        ],
+                    ),
+                ),
+                alpha_mode: Blend,
+                mesh: None,
+            ),
+        ),
+    ],
+)
