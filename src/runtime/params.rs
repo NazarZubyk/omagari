@@ -43,15 +43,24 @@ pub fn smooth_value(current: ParamValue, target: ParamValue, dt: f32, smoothing:
     }
 }
 
-/// Evaluates a binding over the instance's current parameter values;
-/// `None` when it reads an unknown or non-Float parameter (or has no keys).
-/// Shared by every CPU-side bound value (spawn rate now; light, surface
-/// values later).
+/// Evaluates a binding over the instance's current parameter values (an
+/// `Age` curve at age 0); `None` when it reads an unknown or non-Float
+/// parameter (or has no keys).
 pub fn evaluate_binding<T>(binding: &Binding<T>, params: &ParamState) -> Option<T>
 where
     T: Copy + std::ops::Add<Output = T> + std::ops::Mul<f32, Output = T>,
 {
-    binding.evaluate(|name| params.float(name))
+    evaluate_binding_at(binding, params, 0.0)
+}
+
+/// [`evaluate_binding`] for a layer of `age` seconds. Shared by the CPU-side
+/// bound values (spawn rate; surface and shape values go through
+/// `EffectMaterialDef::evaluate_at`).
+pub fn evaluate_binding_at<T>(binding: &Binding<T>, params: &ParamState, age: f32) -> Option<T>
+where
+    T: Copy + std::ops::Add<Output = T> + std::ops::Mul<f32, Output = T>,
+{
+    binding.evaluate_at(|name| params.float(name), age)
 }
 
 // --- per-instance state ------------------------------------------------------
@@ -298,13 +307,15 @@ pub(crate) fn sync_instance(instance: &mut VfxInstance, package: &VfxPackage, wa
 /// Writes the current parameter values into the hanabi properties of every
 /// running layer that declares them (only changed values are written, so
 /// hanabi uploads only then), and works out the layers' CPU-side values:
-/// visibility factor and bound spawn rate.
+/// age, visibility factor and bound spawn rate.
 pub(crate) fn upload_layer_values(
+    time: Res<Time>,
     packages: Res<Assets<VfxPackage>>,
     mut warned: ResMut<VfxWarnOnce>,
     instances: Query<&VfxInstance>,
     mut layers: Query<(&mut VfxLayerState, Option<&mut EffectProperties>)>,
 ) {
+    let dt = time.delta_secs();
     for instance in instances.iter() {
         let Some(package) = packages.get(&instance.package) else { continue };
         if !instance.params.is_synced(instance.package.id()) {
@@ -313,6 +324,13 @@ pub(crate) fn upload_layer_values(
         for (index, &entity) in instance.layers.iter().enumerate() {
             let Some(prepared) = package.particle_layers.get(index) else { continue };
             let Ok((mut state, properties)) = layers.get_mut(entity) else { continue };
+            if state.generation != instance.generation {
+                // Restarted: layers play again from age 0.
+                state.generation = instance.generation;
+                state.age = 0.0;
+            } else {
+                state.age += dt;
+            }
 
             let visibility = match &prepared.visible {
                 Some(visible) => match instance.params.float(&visible.param) {
@@ -331,7 +349,7 @@ pub(crate) fn upload_layer_values(
             };
             // Child layers are spawned by their parent's particles.
             let rate = prepared.rate.as_ref().filter(|_| prepared.parent.is_none()).and_then(|binding| {
-                let rate = evaluate_binding(binding, &instance.params);
+                let rate = evaluate_binding_at(binding, &instance.params, state.age);
                 if rate.is_none() {
                     warned.warn(&instance.package, &format!("rate|{}", prepared.name), || {
                         format!(

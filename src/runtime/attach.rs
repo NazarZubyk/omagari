@@ -17,6 +17,7 @@
 //!   and keep their authored size.
 
 use bevy::camera::primitives::Aabb;
+use bevy::ecs::query::QueryFilter;
 use bevy::ecs::system::SystemParam;
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
@@ -26,6 +27,7 @@ use bevy_hanabi::prelude::*;
 
 use super::instance::{VfxInstance, VfxLayer};
 use super::package::VfxPackage;
+use super::shape::VfxShapeLayer;
 use super::surface::VfxSurfaceOverlay;
 use crate::format::{AttachDef, FitDef, ProjectV2, SimulationSpaceDef};
 
@@ -141,7 +143,7 @@ pub fn to_simulation_space(world: Vec3, layer: &GlobalTransform, space: Simulati
 pub struct TargetHierarchy<'w, 's> {
     children: Query<'w, 's, &'static Children>,
     names: Query<'w, 's, &'static Name>,
-    vfx: Query<'w, 's, (), Or<(With<VfxInstance>, With<VfxLayer>, With<VfxSurfaceOverlay>)>>,
+    vfx: Query<'w, 's, (), Or<(With<VfxInstance>, With<VfxLayer>, With<VfxSurfaceOverlay>, With<VfxShapeLayer>)>>,
     model_roots: Query<'w, 's, (), Or<(With<WorldAssetRoot>, With<DynamicWorldRoot>, With<ScenePatchInstance>)>>,
     separate: Query<'w, 's, (), With<VfxSeparateModel>>,
     meshes: Query<'w, 's, (), With<Mesh3d>>,
@@ -288,6 +290,49 @@ impl SocketAttach {
             first: true,
         }
     }
+
+    /// Resolves the sockets (all of them on the first call or when the
+    /// hierarchy changed, else only lost ones) and warns once about sockets
+    /// still unresolved after [`SOCKET_TIMEOUT`]; `who` names the layer.
+    pub(crate) fn update(&mut self, hierarchy: &TargetHierarchy, target: Entity, any_change: bool, dt: f32, who: &str) {
+        let force = any_change || self.first;
+        self.first = false;
+        for socket in self.sockets.iter_mut() {
+            socket.resolve(hierarchy, target, force);
+        }
+        if self.sockets.iter().any(SocketBinding::is_pending) {
+            self.waited += dt;
+            if self.waited >= SOCKET_TIMEOUT && !self.warned {
+                self.warned = true;
+                for socket in self.sockets.iter().filter(|s| s.is_pending()) {
+                    warn!(
+                        "VFX layer {}: socket \"{}\" not found (no node named \"{}\" under the target); using the target root",
+                        who,
+                        socket.name,
+                        socket.node.as_deref().unwrap_or_default()
+                    );
+                }
+            }
+        } else {
+            self.waited = 0.0;
+        }
+    }
+
+    /// World position of each socket: on its node, else the offset from the
+    /// instance (target root, at fit scale).
+    pub fn world_positions(&self, instance: &GlobalTransform, globals: &Query<&GlobalTransform, impl QueryFilter>) -> Vec<Vec3> {
+        let instance_scale = instance.scale();
+        self.sockets
+            .iter()
+            .map(|socket| match socket.resolution {
+                SocketResolution::Node(node) => match globals.get(node) {
+                    Ok(node_global) => socket_world_position(node_global, instance_scale, socket.offset),
+                    Err(_) => instance.transform_point(socket.offset),
+                },
+                SocketResolution::Root | SocketResolution::Pending => instance.transform_point(socket.offset),
+            })
+            .collect()
+    }
 }
 
 /// Whether anything in the world's hierarchy changed since the last run
@@ -317,27 +362,7 @@ pub(crate) fn resolve_sockets(
             continue;
         };
         let target = instance.target();
-        let force = any_change || attach.first;
-        attach.first = false;
-        for socket in attach.sockets.iter_mut() {
-            socket.resolve(&hierarchy, target, force);
-        }
-        if attach.sockets.iter().any(SocketBinding::is_pending) {
-            attach.waited += dt;
-            if attach.waited >= SOCKET_TIMEOUT && !attach.warned {
-                attach.warned = true;
-                for socket in attach.sockets.iter().filter(|s| s.is_pending()) {
-                    warn!(
-                        "VFX layer {}: socket \"{}\" not found (no node named \"{}\" under the target); using the target root",
-                        entity,
-                        socket.name,
-                        socket.node.as_deref().unwrap_or_default()
-                    );
-                }
-            }
-        } else {
-            attach.waited = 0.0;
-        }
+        attach.update(&hierarchy, target, any_change, dt, &entity.to_string());
         if attach.segment {
             continue;
         }

@@ -1,6 +1,6 @@
 //! The VFX runtime: [`VfxPackage`] assets, instances attached to entities
-//! (sockets, segments, size fit), parameters and triggers, surface layers
-//! with Omagari's effect material, and built-in textures. Added by
+//! (sockets, segments, size fit), parameters and triggers, surface and shape
+//! layers with Omagari's effect material, and built-in textures. Added by
 //! [`crate::OmagariPlugin`].
 
 mod attach;
@@ -10,6 +10,8 @@ mod instance;
 mod package;
 mod params;
 mod render_fix;
+mod shape;
+mod shape_mesh;
 mod surface;
 mod triggers;
 
@@ -18,10 +20,15 @@ pub use builtin::{resolve_asset_path, resolve_asset_path_in, BUILTIN_TEXTURES};
 pub use effect_material::*;
 pub use instance::*;
 pub use package::*;
+pub use shape::*;
+pub use shape_mesh::*;
 pub use surface::*;
-pub use params::{evaluate_binding, smooth, smooth_value, ParamError, ParamSlot, ParamState, VfxWarnOnce};
+pub use params::{
+    evaluate_binding, evaluate_binding_at, smooth, smooth_value, ParamError, ParamSlot, ParamState, VfxWarnOnce,
+};
 pub use triggers::TriggerArgs;
 
+use bevy::camera::visibility::VisibilitySystems;
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use bevy_hanabi::EffectSystems;
@@ -40,6 +47,7 @@ pub(crate) fn build(app: &mut App) {
     app.init_asset::<VfxPackage>()
         .init_asset_loader::<VfxPackageLoader>()
         .init_resource::<VfxWarnOnce>()
+        .init_resource::<ShapeMeshCache>()
         .add_message::<VfxFinished>()
         .add_observer(instance::on_instance_removed)
         .add_observer(instance::on_layer_removed)
@@ -57,6 +65,7 @@ pub(crate) fn build(app: &mut App) {
                 params::upload_layer_values,
                 surface::sync_surface_overlays,
                 surface::update_surface_materials,
+                shape::update_shapes,
                 instance::finish_instances,
             )
                 .chain()
@@ -66,6 +75,9 @@ pub(crate) fn build(app: &mut App) {
             PostUpdate,
             (
                 attach::write_segment_properties.after(TransformSystems::Propagate),
+                shape::place_shapes
+                    .after(TransformSystems::Propagate)
+                    .before(VisibilitySystems::CheckVisibility),
                 triggers::scale_spawn_counts.after(EffectSystems::TickSpawners),
             )
                 .in_set(VfxSystems),
