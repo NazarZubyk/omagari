@@ -13,4 +13,6 @@ Use the `omagari` MCP server (`omagari --mcp`, configured in `.mcp.json`). Call 
 - `docs/CLAUDE_VFX_GUIDE.md` is compiled into the MCP server and its recipes are tested, so keep it in sync with `src/mcp/analysis.rs`.
 - In MCP mode nothing but JSON-RPC may go to stdout; log to stderr.
 - The effect data model and `produce()` live in the library (`src/format/`, serde only, no egui; v1 `OmagariProject` and v2 `ProjectV2` + migration); their egui widgets live in the editor (`src/editor/`).
-- `tests/format_golden.rs` compares exports and re-saved projects with `tests/golden/`; after an intended format/produce change, rerun it with `OMAGARI_UPDATE_GOLDEN=1` and review the diff.
+- `tests/format_golden.rs` compares exports and re-saved projects with `tests/golden/`; after an intended format/produce change, rerun it with `OMAGARI_UPDATE_GOLDEN=1` and review the diff. v1 golden inputs live in `tests/golden/inputs/`; `examples/` must equal `tests/golden/v2/`.
+- The game assets folder comes from `--game-assets <dir>` > `OMAGARI_GAME_ASSETS` > `omagari_settings.ron` (repo root, git-ignored) > the repo's `assets/`. It is registered as the `game` asset source at startup, so changes need a restart.
+- The VFX roadmap is `docs/VFX_SYSTEM_PLAN.md`.
