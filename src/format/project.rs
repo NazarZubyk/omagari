@@ -188,18 +188,22 @@ impl ProjectV2 {
 
     /// The texture asset with this id.
     pub fn texture(&self, id: &str) -> Option<&TextureAssetDef> {
-        self.asset(id).and_then(|a| match &a.kind {
-            AssetKind::Texture(t) => Some(t),
-        })
+        self.asset(id).and_then(|a| a.kind.as_texture())
     }
 
-    /// Names of the layers that use the asset `id` (particle textures,
-    /// texture slots of surface, shape, trail and afterimage layers).
+    /// The mesh asset with this id.
+    pub fn mesh(&self, id: &str) -> Option<&MeshAssetDef> {
+        self.asset(id).and_then(|a| a.kind.as_mesh())
+    }
+
+    /// Names of the layers that use the asset `id` (particle textures and
+    /// meshes, texture slots of surface, shape, trail and afterimage
+    /// layers).
     pub fn asset_users(&self, id: &str) -> Vec<String> {
         self.layers
             .iter()
             .filter(|l| match l {
-                LayerDef::Particles(p) => p.texture.as_deref() == Some(id),
+                LayerDef::Particles(p) => p.texture.as_deref() == Some(id) || p.mesh_asset() == Some(id),
                 _ => l.material().is_some_and(|m| m.texture_slots().iter().any(|(_, slot)| slot.asset == id)),
             })
             .map(|l| l.name().to_string())
@@ -230,6 +234,11 @@ impl ProjectV2 {
                 LayerDef::Particles(p) => {
                     if p.texture.as_deref() == Some(from) {
                         p.texture = Some(to.to_string());
+                    }
+                    if let Some(ParticleMeshDef::Asset(id)) = &mut p.mesh {
+                        if id == from {
+                            *id = to.to_string();
+                        }
                     }
                 }
                 _ => {
@@ -921,15 +930,95 @@ pub struct AssetDef {
     pub kind: AssetKind,
 }
 
-/// Asset kinds. More (models, meshes, animations) come later.
+/// Asset kinds. More (models, animations) come later.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub enum AssetKind {
     Texture(TextureAssetDef),
+    /// One mesh of a glTF file, drawn by mesh particles.
+    Mesh(MeshAssetDef),
 }
 
 impl Default for AssetKind {
     fn default() -> Self {
         AssetKind::Texture(TextureAssetDef::default())
+    }
+}
+
+impl AssetKind {
+    pub fn as_texture(&self) -> Option<&TextureAssetDef> {
+        match self {
+            AssetKind::Texture(t) => Some(t),
+            AssetKind::Mesh(_) => None,
+        }
+    }
+
+    pub fn as_texture_mut(&mut self) -> Option<&mut TextureAssetDef> {
+        match self {
+            AssetKind::Texture(t) => Some(t),
+            AssetKind::Mesh(_) => None,
+        }
+    }
+
+    pub fn as_mesh(&self) -> Option<&MeshAssetDef> {
+        match self {
+            AssetKind::Mesh(m) => Some(m),
+            AssetKind::Texture(_) => None,
+        }
+    }
+
+    /// The file of the asset, relative to the game's `assets/` folder (or a
+    /// built-in `omagari://` path).
+    pub fn path(&self) -> &str {
+        match self {
+            AssetKind::Texture(t) => &t.path,
+            AssetKind::Mesh(m) => &m.path,
+        }
+    }
+
+    /// `"texture"` or `"mesh"`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            AssetKind::Texture(_) => "texture",
+            AssetKind::Mesh(_) => "mesh",
+        }
+    }
+}
+
+/// One mesh primitive of a glTF file (`.glb` / `.gltf`, path relative to
+/// the game's `assets/` folder), by index: Bevy loads it as the sub-asset
+/// `<path>#Mesh<mesh>/Primitive<primitive>` (Bevy 0.19's
+/// `GltfAssetLabel::Primitive`). `name` is the mesh's name in the file when
+/// it was picked, so a check can tell when the file changed.
+///
+/// ```ron
+/// (id: "rock", kind: Mesh((path: "models/debris.glb", mesh: 0, primitive: 0, name: Some("Rock"))))
+/// ```
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct MeshAssetDef {
+    pub path: String,
+    /// Index of the mesh in the file.
+    pub mesh: u32,
+    /// Index of the primitive in the mesh (a mesh with several materials has
+    /// one primitive per material).
+    pub primitive: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl MeshAssetDef {
+    pub fn new(path: impl Into<String>, mesh: u32, primitive: u32, name: Option<String>) -> Self {
+        MeshAssetDef { path: path.into(), mesh, primitive, name }
+    }
+
+    /// The glTF sub-asset label: `Mesh0/Primitive0`.
+    pub fn label(&self) -> String {
+        format!("Mesh{}/Primitive{}", self.mesh, self.primitive)
+    }
+
+    /// The asset path Bevy loads: `models/debris.glb#Mesh0/Primitive0`.
+    pub fn asset_path(&self) -> String {
+        format!("{}#{}", self.path, self.label())
     }
 }
 
@@ -1560,10 +1649,25 @@ pub struct ParticlesLayerDef {
     pub play: PlayDef,
     /// Asset id of the texture bound to the `"color"` slot.
     pub texture: Option<String>,
+    /// What each particle draws: `None` = bevy_hanabi's quad (1 m at size
+    /// 1), or a mesh (P3b, written only when set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<ParticleMeshDef>,
     /// Spawn rate override (particles per second); `None` = the spawner's own.
     pub rate: Option<Binding<f32>>,
     pub visible: Option<VisibleRangeDef>,
+    /// Added to the layer's distance in the transparent draw order
+    /// (metres), like `sort_bias` of shape, trail and afterimage layers:
+    /// positive = drawn later (over other effects at a similar distance),
+    /// negative = earlier. Blended layers only (`Blend`, `Add`, `Premultiply`,
+    /// `Multiply`); written only when not 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub sort_bias: f32,
     pub effect: ParticleEffectDef,
+}
+
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
 }
 
 impl Default for ParticlesLayerDef {
@@ -1575,14 +1679,83 @@ impl Default for ParticlesLayerDef {
             simulation_space: SimulationSpaceDef::Local,
             play: PlayDef::Loop,
             texture: None,
+            mesh: None,
             rate: None,
             visible: None,
+            sort_bias: 0.0,
             effect: ParticleEffectDef::default(),
         }
     }
 }
 
+/// What each particle of a mesh-particle layer draws instead of the quad.
+///
+/// ```ron
+/// mesh: Some(Shape(Cube)),       // a built-in shape, 1 m across at size 1
+/// mesh: Some(Asset("rock")),     // a mesh asset of the project
+/// ```
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub enum ParticleMeshDef {
+    Shape(ParticleShapeDef),
+    /// Id of a `Mesh` asset in the project's `assets`.
+    Asset(String),
+}
+
+/// Built-in particle meshes: low-poly, centred, 1 m across (they fit a 1 m
+/// box, like bevy_hanabi's quad), so the particle size is the size in
+/// metres; `size3` stretches them per axis.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ParticleShapeDef {
+    /// A 1 m cube.
+    Cube,
+    /// A sphere of 1 m diameter (12 segments, 8 rings).
+    Sphere,
+    /// A cone along Y, 1 m high, 1 m across at the base.
+    Cone,
+    /// A cylinder along Y, 1 m high, 1 m across.
+    Cylinder,
+    /// A pointed shard: an octahedron 0.5 × 1 × 0.3 m (long along Y).
+    Shard,
+    /// A ring-shaped tube around Y, 1 m across (tube 0.3 m thick).
+    Torus,
+    /// A flat 1 m square in the XY plane facing +Z, drawn from both sides
+    /// (like the default quad).
+    Quad,
+}
+
+impl ParticleShapeDef {
+    pub const ALL: [ParticleShapeDef; 7] = [
+        ParticleShapeDef::Cube,
+        ParticleShapeDef::Sphere,
+        ParticleShapeDef::Cone,
+        ParticleShapeDef::Cylinder,
+        ParticleShapeDef::Shard,
+        ParticleShapeDef::Torus,
+        ParticleShapeDef::Quad,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ParticleShapeDef::Cube => "Cube",
+            ParticleShapeDef::Sphere => "Sphere",
+            ParticleShapeDef::Cone => "Cone",
+            ParticleShapeDef::Cylinder => "Cylinder",
+            ParticleShapeDef::Shard => "Shard",
+            ParticleShapeDef::Torus => "Torus",
+            ParticleShapeDef::Quad => "Quad",
+        }
+    }
+}
+
 impl ParticlesLayerDef {
+    /// The id of the mesh asset the layer draws, if it draws one.
+    pub fn mesh_asset(&self) -> Option<&str> {
+        match &self.mesh {
+            Some(ParticleMeshDef::Asset(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     /// Builds the layer's bevy_hanabi effect (named after the layer, in the
     /// layer's simulation space), with `Param(..)` reads resolved against the
     /// package's `params`. See [`ParticleEffectDef::produce`]. Root layers
