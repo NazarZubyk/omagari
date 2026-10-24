@@ -71,7 +71,15 @@ pub fn layers_panel(ui: &mut egui::Ui, project: &ProjectV2, session: &mut Editor
                     session.actions.push(Action::AddAfterimageLayer);
                     ui.close();
                 }
-                ui.add_enabled(false, egui::Button::new("Light, distortion… (later phases)"));
+                if ui
+                    .button("💡 Light layer")
+                    .on_hover_text("A point light at the target or a socket that lights the floor and the model: a weapon glow, a hit flash, a torch flicker (presets in the inspector)")
+                    .clicked()
+                {
+                    session.actions.push(Action::AddLightLayer);
+                    ui.close();
+                }
+                ui.add_enabled(false, egui::Button::new("Distortion… (later phase)"));
             })
             .response
             .on_hover_text("Add a layer");
@@ -165,6 +173,7 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
             LayerDef::Shape(_) => "🔷",
             LayerDef::Trail(_) => "〰",
             LayerDef::Afterimage(_) => "👥",
+            LayerDef::Light(_) => "💡",
         };
         let mut text = RichText::new(format!("{} {}", icon, name));
         if !shows {
@@ -193,6 +202,15 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
                 a.lifetime,
                 a.ghosts_on_screen(),
                 a.emit.kind_name()
+            ),
+            LayerDef::Light(l) => format!(
+                "Light layer: a point light, range {}, plays {}{}. Right-click for more.",
+                match &l.range {
+                    omagari::format::Binding::Const(r) => format!("{} m", r),
+                    _ => "bound".to_string(),
+                },
+                l.play.kind_name(),
+                if l.shadows { ", casts shadows" } else { "" }
             ),
         });
         if response.clicked() {

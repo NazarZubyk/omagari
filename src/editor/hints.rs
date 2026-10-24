@@ -11,7 +11,7 @@ pub const SPACE_LOCAL: &str = "Local: particles move with the target (auras, shi
 pub const SPACE_GLOBAL: &str =
     "Global: particles stay where they were born, so a moving target leaves a trail (smoke, footsteps).";
 pub const ATTACH: &str = "Where the layer sits: Target = the target's root; Socket = follows a named point (e.g. a hand bone); Segment = between two sockets (e.g. along a blade).";
-pub const PLAY: &str = "When the layer plays. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires a trigger (a burst); While = while a parameter is at or above a threshold. How long it emits is set by the spawner.";
+pub const PLAY: &str = "When the layer plays. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires a trigger (a burst); While = while a parameter is at or above a threshold; Between = from a start trigger until a stop trigger (e.g. sparks only during a swing). How long it emits is set by the spawner.";
 pub const RATE: &str = "Particles per second as a steady stream, replacing the spawner's count while the layer plays. A constant, or a curve over a parameter (e.g. more particles at higher intensity). Off = the spawner's own count.";
 pub const VISIBLE: &str = "Show the layer only while a parameter is between From and To; outside it the layer fades out over Fade (parameter units). Neighbouring ranges cross-fade, e.g. a weak look below 0.6 and a strong one above. Fades the spawn rate; multiply alpha by Property visibility to fade live particles too.";
 pub const BINDING: &str = "Constant: one value. Curve over parameter: the value follows a number parameter: keys are (parameter value → value), straight lines in between, flat past the first and last key. Curve over age: the value changes over the seconds since the layer started (or its trigger played it).";
@@ -186,7 +186,7 @@ pub const SHAPE_OFFSET: &str = "Metres from the attach point (scaled with the si
 pub const SHAPE_ROTATION: &str = "Degrees about X, then Y, then Z. A flat ring or arc at 0 lies flat; 90 about X stands it up facing forward.";
 pub const SHAPE_SCALE: &str = "Scale (X, Y, Z) on top of the shape's size. Make it a curve over age for a shockwave that grows, or over a parameter for a shield that swells.";
 pub const SHAPE_SPIN: &str = "Turning speed in degrees per second around the axis (in the shape's own space; Y = the shape's up). Can be a curve.";
-pub const SHAPE_PLAY: &str = "When the shape shows. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires the trigger (the age starts over; with a payload position it plays there); While = while a parameter is at or above a threshold.";
+pub const SHAPE_PLAY: &str = "When the shape shows. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires the trigger (the age starts over; with a payload position it plays there); While = while a parameter is at or above a threshold; Between = from a start trigger until a stop trigger.";
 pub const SHAPE_DURATION: &str = "Seconds an OnStart / OnTrigger shape plays (it fades in and out inside this time and is gone after it). For Loop / While shapes the age starts over every Duration seconds, so age curves repeat. Off = plays until the effect stops.";
 pub const SHAPE_FADE: &str = "One-shots fade in over In after they start and out over Out before they end. Other shapes fade in when they start and out when they stop (While: when the parameter drops). Every shape fades out over Out when the game stops the effect.";
 pub const SHAPE_SORT: &str = "Draw order among see-through things at a similar distance (metres added to its distance): positive = drawn later, on top of particles and skin effects; negative = earlier.";
@@ -211,3 +211,19 @@ pub const GHOST_INTERVAL: &str = "Seconds between two copies while emitting (at 
 pub const GHOST_LIFETIME: &str = "Seconds each copy stays, fading over its life.";
 pub const GHOST_MAX: &str = "Most copies at once; the oldest goes first. Copies on screen ≈ lifetime / interval.";
 pub const GHOST_FADE: &str = "Opacity of a copy over its life as (fraction of the lifetime, factor). (0.8 → 0) starts at 80% and fades out. Empty = full until it goes.";
+
+// --- light layers ------------------------------------------------------------------
+
+pub const LIGHT: &str = "A light layer is a point light at the attach point: it lights the floor, the model and the scene around it (a weapon glow, a flash on a hit, a torch flicker). The game shows at most a few Omagari lights at once (the weakest are switched off), so keep one or two per effect.";
+pub const LIGHT_ATTACH: &str = "Where the light is: Target = the target's root; Socket = follows a named point (e.g. the hand bone or the blade's middle); Segment = the middle between two sockets.";
+pub const LIGHT_OFFSET: &str = "Metres from the attach point, in its space (scaled with the size fit).";
+pub const LIGHT_COLOR: &str = "The light's colour. Keep the brightest channel at about 1: how bright it is comes from Intensity. Can follow a colour parameter (tint) or a curve.";
+pub const LIGHT_INTENSITY: &str = "How bright, in lumens (Bevy's unit): a 60 W bulb ≈ 800 lm. Effect lights seen from a game camera: a soft glow 3 000–20 000, a strong glow 20 000–60 000, a hit flash 50 000–200 000. Make it a curve over a parameter (a glow that grows) or over age (a flash that fades).";
+pub const LIGHT_RANGE: &str = "Metres: nothing farther is lit; the light fades smoothly to 0 there. 2–6 m for a character effect. Larger ranges cost more (more pixels to shade).";
+pub const LIGHT_RADIUS: &str = "Size of the glowing source (metres): softer highlights on shiny surfaces. It does not change how far it lights.";
+pub const LIGHT_FLICKER: &str = "Random brightness changes, different for every copy of the effect: Amount = how much (0.2 = between 80% and 120%), Speed = about how many changes per second (a torch 4–8, an electric crackle 15–25).";
+pub const LIGHT_PLAY: &str = "When it shines. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires the trigger (a flash; with a payload position it shines there; give it a Duration); While = while a parameter is at or above a threshold; Between = from a start trigger until a stop trigger (light only during a swing).";
+pub const LIGHT_DURATION: &str = "Seconds an OnStart / OnTrigger light shines (a flash: it fades in and out inside this time). For the other modes the age starts over every Duration seconds. Off = shines until the effect stops.";
+pub const LIGHT_FADE: &str = "Seconds to fade in when it starts and out when it stops (and when the game stops the effect; the effect waits for it). A flash fades inside its duration.";
+pub const LIGHT_SHADOWS: &str = "Cast shadows. Costly (six shadow maps per light, every frame): leave off for effect lights unless the shadow matters.";
+pub const LIGHT_GIZMO: &str = "Draws the lights of the preview in the viewport: a star at the light and a circle at its range (the selected light layer brighter).";

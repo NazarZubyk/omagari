@@ -15,6 +15,7 @@ pub mod history;
 pub mod inspector;
 pub mod layer_view;
 pub mod layers_panel;
+pub mod light;
 pub mod model;
 pub mod model_panel;
 pub mod modifiers;
@@ -78,6 +79,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<assets::TexturePreviews>()
             .init_resource::<model::ModelPreview>()
             .init_resource::<scene::StageFloor>()
+            .init_resource::<scene::LitFloor>()
             .init_gizmo_group::<model::SocketGizmos>()
             .add_systems(
                 Startup,
@@ -97,6 +99,7 @@ impl Plugin for EditorPlugin {
                     assets::poll_import_dialog,
                     assets::update_texture_previews,
                     scene::sync_stage,
+                    scene::sync_lit_floor,
                     move_preview_target,
                     camera::follow_preview_target.after(move_preview_target),
                     camera::focus_camera,
@@ -127,6 +130,7 @@ impl Plugin for EditorPlugin {
                         .after(bevy::app::AnimationSystems)
                         .before(bevy::transform::TransformSystems::Propagate),
                     model::draw_trail_samples.after(omagari::runtime::VfxSystems),
+                    light::draw_light_gizmos.after(omagari::runtime::VfxSystems),
                 ),
             )
             .add_systems(
@@ -136,7 +140,8 @@ impl Plugin for EditorPlugin {
                     .run_if(
                         resource_changed::<scene::Backdrop>
                             .or_else(resource_changed::<scene::Stage>)
-                            .or_else(resource_changed::<scene::StageFloor>),
+                            .or_else(resource_changed::<scene::StageFloor>)
+                            .or_else(resource_changed::<scene::LitFloor>),
                     ),
             )
             .add_systems(
