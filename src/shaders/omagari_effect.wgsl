@@ -1,6 +1,7 @@
 // Omagari effect shader: surface layers (overlay copies of a model's meshes),
-// shape layers (Omagari's own meshes) and, later, trail and afterimage
-// layers. Rust side:
+// shape layers (Omagari's own meshes), trail ribbons (vertex colours carry the
+// fade along the trail) and afterimage ghosts (copies of meshes with frozen
+// joints). Rust side:
 // `src/runtime/effect_material.rs` (`OmagariEffectMaterial`, `EffectUniforms`).
 //
 // BEVY UPGRADES: the vertex stage mirrors bevy_pbr 0.19.1
@@ -83,6 +84,9 @@ struct EffectVertexOutput {
     @location(4) rest_normal: vec3<f32>,
     // 0 at the model's low end along the fill axis, 1 at its high end.
     @location(5) fill_coord: f32,
+    // The mesh's vertex colour (white without one): multiplies the colour
+    // and opacity (trail fade along its length).
+    @location(6) tint: vec4<f32>,
 }
 
 // Unit vector from a world position toward the camera (as
@@ -189,6 +193,11 @@ fn vertex(vertex_no_morph: Vertex) -> EffectVertexOutput {
 #else
     out.uv = vec2<f32>(0.0);
 #endif
+#ifdef VERTEX_COLORS
+    out.tint = vertex.color;
+#else
+    out.tint = vec4<f32>(1.0);
+#endif
 
     let rest = vertex_no_morph.position;
     out.rest_position = rest * (rest_scale / max(material.shape.y, 0.0001));
@@ -274,7 +283,7 @@ fn fragment(in: EffectVertexOutput) -> @location(0) vec4<f32> {
     let flash = material.params.z;
     let fade = material.params.w;
 
-    var rgb = material.color.rgb * emissive * mix(1.0, pattern, 0.5);
+    var rgb = material.color.rgb * emissive * mix(1.0, pattern, 0.5) * in.tint.rgb;
     var alpha = material.color.a * opacity * pattern;
 
     // Rim / fresnel: brighter where the surface turns away from the camera;
@@ -329,7 +338,7 @@ fn fragment(in: EffectVertexOutput) -> @location(0) vec4<f32> {
         alpha = alpha * mix(1.0, m, material.mask.w);
     }
 
-    alpha = clamp(alpha * fade, 0.0, 1.0);
+    alpha = clamp(alpha * fade * in.tint.a, 0.0, 1.0);
     if alpha <= 0.0001 {
         discard;
     }

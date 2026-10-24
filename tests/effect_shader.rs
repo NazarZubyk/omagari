@@ -110,6 +110,8 @@ fn effect_shader_composes_with_bevy_imports_and_validates() {
             [&mesh[..], &["SKINNED", "BLEND_PREMULTIPLIED_ALPHA", "PREMULTIPLY_ALPHA", "TONEMAP_IN_SHADER"]].concat(),
         ),
         ("positions only (no normals, no UVs)", vec!["VERTEX_POSITIONS"]),
+        ("trail ribbon (vertex colours), additive", [&mesh[..], &["VERTEX_COLORS", "BLEND_PREMULTIPLIED_ALPHA", "PREMULTIPLY_ALPHA"]].concat()),
+        ("skinned ghost with vertex colours", [&mesh[..], &["SKINNED", "VERTEX_COLORS", "VERTEX_TANGENTS"]].concat()),
     ];
     for (i, (label, names)) in variants.iter().enumerate() {
         let module = match cache.get(i, effect, &defs(names)) {

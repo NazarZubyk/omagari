@@ -10,8 +10,8 @@ use bevy_hanabi::prelude::*;
 
 use super::builtin::{resolve_asset_path, resolve_asset_path_in};
 use crate::format::{
-    param_property_name, AttachDef, Binding, EffectMaterialDef, ParamKind, PlayDef, ProjectV2, ShapeLayerDef,
-    SimulationSpaceDef, SurfaceLayerDef, TextureAssetDef, TextureColorSpace, TextureFilter, TextureSlotDef, TextureWrap,
+    param_property_name, AfterimageLayerDef, AttachDef, Binding, EffectMaterialDef, EmitDef, ParamKind, PlayDef,
+    ProjectV2, ShapeLayerDef, SimulationSpaceDef, SurfaceLayerDef, TextureAssetDef, TrailLayerDef, TextureColorSpace, TextureFilter, TextureSlotDef, TextureWrap,
     VisibleRangeDef,
 };
 
@@ -30,11 +30,15 @@ pub struct VfxPackage {
     pub surface_layers: Vec<PreparedSurfaceLayer>,
     /// One entry per shape layer, in layer order.
     pub shape_layers: Vec<PreparedShapeLayer>,
+    /// One entry per trail layer, in layer order.
+    pub trail_layers: Vec<PreparedTrailLayer>,
+    /// One entry per afterimage layer, in layer order.
+    pub afterimage_layers: Vec<PreparedAfterimageLayer>,
     /// Seconds after which an instance finishes by itself: set when every
     /// root particle layer is one-shot (`play: OnStart` with a finite
     /// `cycle_count`), every shape layer is one-shot (`play: OnStart` with a
-    /// `duration`) and there are no surface layers; the last spawn plus the
-    /// longest particle life, or the longest shape.
+    /// `duration`) and there are no surface, trail or afterimage layers; the
+    /// last spawn plus the longest particle life, or the longest shape.
     pub auto_finish: Option<f32>,
 }
 
@@ -53,6 +57,25 @@ impl PreparedShapeLayer {
     pub fn name(&self) -> &str {
         &self.def.name
     }
+}
+
+/// A trail layer ready to be spawned: its definition and the textures of
+/// its material's slots.
+pub struct PreparedTrailLayer {
+    /// Index of the layer in `project.layers`.
+    pub layer_index: usize,
+    pub def: TrailLayerDef,
+    /// Textures of noise A, noise B and the mask.
+    pub textures: [Option<Handle<Image>>; 3],
+}
+
+/// An afterimage layer ready to be spawned.
+pub struct PreparedAfterimageLayer {
+    /// Index of the layer in `project.layers`.
+    pub layer_index: usize,
+    pub def: AfterimageLayerDef,
+    /// Textures of noise A, noise B and the mask.
+    pub textures: [Option<Handle<Image>>; 3],
 }
 
 /// A surface layer ready to be spawned: its definition and the textures of
@@ -402,6 +425,21 @@ impl VfxPackage {
             });
         }
 
+        let mut trail_layers = Vec::new();
+        for (layer_index, layer) in project.trail_layers() {
+            check_material_params(&project, &layer.name, &layer.material, layer.visible.as_ref(), warnings);
+            check_emit(&project, &layer.name, &layer.emit, warnings);
+            let slots = material_textures(&project, &layer.name, &layer.material, assets, &mut textures, warnings);
+            trail_layers.push(PreparedTrailLayer { layer_index, def: layer.clone(), textures: slots });
+        }
+        let mut afterimage_layers = Vec::new();
+        for (layer_index, layer) in project.afterimage_layers() {
+            check_material_params(&project, &layer.name, &layer.material, layer.visible.as_ref(), warnings);
+            check_emit(&project, &layer.name, &layer.emit, warnings);
+            let slots = material_textures(&project, &layer.name, &layer.material, assets, &mut textures, warnings);
+            afterimage_layers.push(PreparedAfterimageLayer { layer_index, def: layer.clone(), textures: slots });
+        }
+
         // A layer's particles can be spawned by its parents until their
         // particles die, so its linger includes the whole parent chain.
         let mut auto_finish = (!particle_layers.is_empty()).then_some(0.0f32);
@@ -447,8 +485,9 @@ impl VfxPackage {
             };
         }
 
-        // Surface layers play until the instance is stopped.
-        if !surface_layers.is_empty() {
+        // Surface, trail and afterimage layers play until the instance is
+        // stopped.
+        if !surface_layers.is_empty() || !trail_layers.is_empty() || !afterimage_layers.is_empty() {
             auto_finish = None;
         }
 
@@ -457,6 +496,8 @@ impl VfxPackage {
             particle_layers,
             surface_layers,
             shape_layers,
+            trail_layers,
+            afterimage_layers,
             auto_finish,
         }
     }
@@ -469,6 +510,8 @@ impl VfxPackage {
             .map(|l| l.linger)
             .chain(self.surface_layers.iter().map(|l| l.def.linger()))
             .chain(self.shape_layers.iter().map(|l| l.def.linger()))
+            .chain(self.trail_layers.iter().map(|l| l.def.linger()))
+            .chain(self.afterimage_layers.iter().map(|l| l.def.linger()))
             .fold(0.0, f32::max)
     }
 
@@ -480,15 +523,19 @@ impl VfxPackage {
             .filter_map(|l| l.texture.as_ref())
             .chain(self.surface_layers.iter().flat_map(|l| l.textures.iter().flatten()))
             .chain(self.shape_layers.iter().flat_map(|l| l.textures.iter().flatten()))
+            .chain(self.trail_layers.iter().flat_map(|l| l.textures.iter().flatten()))
+            .chain(self.afterimage_layers.iter().flat_map(|l| l.textures.iter().flatten()))
     }
 
-    /// Every surface and shape material with the textures of its slots
+    /// Every surface, shape, trail and afterimage material with the textures of its slots
     /// (noise A, noise B, mask), e.g. to apply changed texture settings.
     pub fn material_textures(&self) -> Vec<(&EffectMaterialDef, &[Option<Handle<Image>>; 3])> {
         self.surface_layers
             .iter()
             .map(|l| (&l.def.material, &l.textures))
             .chain(self.shape_layers.iter().map(|l| (&l.def.material, &l.textures)))
+            .chain(self.trail_layers.iter().map(|l| (&l.def.material, &l.textures)))
+            .chain(self.afterimage_layers.iter().map(|l| (&l.def.material, &l.textures)))
             .collect()
     }
 }
@@ -582,6 +629,32 @@ fn check_shape_layer(project: &ProjectV2, layer: &ShapeLayerDef, warnings: &mut 
             Some(ParamKind::Color) => warnings.push(format!(
                 "[{}] {} reads \"{}\", a Color parameter; it needs a Float one",
                 layer.name, what, param
+            )),
+            Some(ParamKind::Float) => {}
+        }
+    }
+}
+
+/// Warnings for a trail's or afterimage's emission: unknown triggers, the
+/// `While` parameter.
+fn check_emit(project: &ProjectV2, layer: &str, emit: &EmitDef, warnings: &mut Vec<String>) {
+    for trigger in emit.triggers() {
+        if project.trigger(trigger).is_none() {
+            warnings.push(format!(
+                "[{}] emits on trigger \"{}\", which is not a trigger of this package",
+                layer, trigger
+            ));
+        }
+    }
+    if let Some(param) = emit.param() {
+        match project.param(param).map(|p| p.kind()) {
+            None => warnings.push(format!(
+                "[{}] emit While reads \"{}\", which is not a parameter of this package",
+                layer, param
+            )),
+            Some(ParamKind::Color) => warnings.push(format!(
+                "[{}] emit While reads \"{}\", a Color parameter; it needs a Float one",
+                layer, param
             )),
             Some(ParamKind::Float) => {}
         }

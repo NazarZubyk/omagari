@@ -27,8 +27,10 @@ use bevy_hanabi::prelude::*;
 
 use super::instance::{VfxInstance, VfxLayer};
 use super::package::VfxPackage;
+use super::afterimage::{VfxAfterimageLayer, VfxGhost};
 use super::shape::VfxShapeLayer;
 use super::surface::VfxSurfaceOverlay;
+use super::trail::VfxTrailLayer;
 use crate::format::{AttachDef, FitDef, ProjectV2, SimulationSpaceDef};
 
 /// Seconds a socket may stay unresolved before a warning is logged (the
@@ -143,7 +145,20 @@ pub fn to_simulation_space(world: Vec3, layer: &GlobalTransform, space: Simulati
 pub struct TargetHierarchy<'w, 's> {
     children: Query<'w, 's, &'static Children>,
     names: Query<'w, 's, &'static Name>,
-    vfx: Query<'w, 's, (), Or<(With<VfxInstance>, With<VfxLayer>, With<VfxSurfaceOverlay>, With<VfxShapeLayer>)>>,
+    vfx: Query<
+        'w,
+        's,
+        (),
+        Or<(
+            With<VfxInstance>,
+            With<VfxLayer>,
+            With<VfxSurfaceOverlay>,
+            With<VfxShapeLayer>,
+            With<VfxTrailLayer>,
+            With<VfxAfterimageLayer>,
+            With<VfxGhost>,
+        )>,
+    >,
     model_roots: Query<'w, 's, (), Or<(With<WorldAssetRoot>, With<DynamicWorldRoot>, With<ScenePatchInstance>)>>,
     separate: Query<'w, 's, (), With<VfxSeparateModel>>,
     meshes: Query<'w, 's, (), With<Mesh3d>>,

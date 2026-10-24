@@ -13,7 +13,9 @@ use super::attach::to_simulation_space;
 use super::instance::{VfxInstance, VfxLayerState, VfxState};
 use super::package::VfxPackage;
 use super::params::VfxWarnOnce;
+use super::afterimage::AfterimageLayerState;
 use super::shape::ShapeLayerState;
+use super::trail::TrailLayerState;
 use crate::format::{PlayDef, SimulationSpaceDef};
 
 /// What a trigger carries (`trigger_at`): an optional world position and
@@ -80,7 +82,8 @@ impl TriggerArgs {
 /// Applies the triggers fired since the last frame on running instances:
 /// pulses start, `OnTrigger` layers get a burst queued (played by
 /// [`drive_layer_spawners`] once their spawner exists), `OnTrigger` shape
-/// layers start over (with the payload position). Triggers wait while
+/// layers start over (with the payload position), trail and afterimage
+/// layers start or stop emitting. Triggers wait while
 /// the instance is starting (so `spawn_vfx` + `trigger_at` in one frame
 /// works) and are dropped while it stops.
 pub(crate) fn apply_triggers(
@@ -89,6 +92,8 @@ pub(crate) fn apply_triggers(
     mut instances: Query<&mut VfxInstance>,
     mut layers: Query<&mut VfxLayerState>,
     mut shapes: Query<&mut ShapeLayerState>,
+    mut trails: Query<&mut TrailLayerState>,
+    mut afterimages: Query<&mut AfterimageLayerState>,
 ) {
     for mut instance in instances.iter_mut() {
         if instance.triggers.is_empty() {
@@ -141,6 +146,29 @@ pub(crate) fn apply_triggers(
                 if fires {
                     if let Ok(mut state) = shapes.get_mut(entity) {
                         state.pending_trigger = Some(args);
+                    }
+                }
+            }
+            // Trails and afterimages start / stop emitting.
+            for (index, &entity) in instance.trails.iter().enumerate() {
+                let listens = package
+                    .trail_layers
+                    .get(index)
+                    .is_some_and(|l| l.def.emit.triggers().contains(&name.as_str()));
+                if listens {
+                    if let Ok(mut state) = trails.get_mut(entity) {
+                        state.pending.push(name.clone());
+                    }
+                }
+            }
+            for (index, &entity) in instance.afterimages.iter().enumerate() {
+                let listens = package
+                    .afterimage_layers
+                    .get(index)
+                    .is_some_and(|l| l.def.emit.triggers().contains(&name.as_str()));
+                if listens {
+                    if let Ok(mut state) = afterimages.get_mut(entity) {
+                        state.pending.push(name.clone());
                     }
                 }
             }
