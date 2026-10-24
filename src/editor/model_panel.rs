@@ -173,6 +173,10 @@ pub fn model_section(ui: &mut egui::Ui, project: &mut ProjectV2, model: &mut Mod
         ui.add(egui::DragValue::new(&mut preview.animation_speed).speed(0.01).range(-5.0..=5.0).suffix("×"));
         ui.end_row();
 
+        ui.label("In place").on_hover_text(hints::IN_PLACE);
+        ui.checkbox(&mut preview.in_place, "remove root motion").on_hover_text(hints::IN_PLACE);
+        ui.end_row();
+
         // Target.
         ui.label("Instance on").on_hover_text(hints::ATTACH_TO);
         ui.horizontal(|ui| {
@@ -448,6 +452,20 @@ pub fn apply_node_action(
                 .find(|s| s.node.as_deref() == Some(node))
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| node.to_string());
+            if let Some(trail) = project.layers.get_mut(index).and_then(|l| l.as_trail_mut()) {
+                if what == NodeAction::SegmentFrom {
+                    trail.from = socket.clone();
+                } else {
+                    trail.to = socket.clone();
+                }
+                app.status = Some(format!(
+                    "Trail \"{}\": {} is \"{}\"",
+                    trail.name,
+                    if what == NodeAction::SegmentFrom { "From" } else { "To" },
+                    socket
+                ));
+                return;
+            }
             let Some(layer) = project.layers.get_mut(index).and_then(|l| l.as_particles_mut()) else { return };
             let (from, to) = match &layer.attach {
                 AttachDef::Segment { from, to } => (from.clone(), to.clone()),

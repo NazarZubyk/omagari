@@ -61,8 +61,8 @@ impl LayerView {
 
     /// The project the preview builds: particle layers that don't show get an
     /// alpha mask nothing passes, so they still simulate and spawn children;
-    /// surface layers that don't show lose their shells, shapes become fully
-    /// transparent.
+    /// surface layers that don't show lose their shells, shapes, trails and
+    /// afterimages become fully transparent.
     pub fn apply(&self, project: &ProjectV2) -> ProjectV2 {
         let mut project = project.clone();
         for layer in project.layers.iter_mut() {
@@ -81,10 +81,21 @@ impl LayerView {
                     s.material.dissolve = None;
                 }
                 LayerDef::Shape(_) => {}
+                LayerDef::Trail(t) if !shows => hide_material(&mut t.material),
+                LayerDef::Afterimage(a) if !shows => hide_material(&mut a.material),
+                LayerDef::Trail(_) | LayerDef::Afterimage(_) => {}
             }
         }
         project
     }
+}
+
+/// Makes an effect material fully transparent (a hidden layer).
+fn hide_material(m: &mut omagari::format::EffectMaterialDef) {
+    m.opacity = omagari::format::Binding::Const(0.0);
+    m.rim = None;
+    m.flash = None;
+    m.dissolve = None;
 }
 
 #[cfg(test)]

@@ -161,6 +161,8 @@ pub struct ModelPreview {
     pub selected_socket: Option<String>,
     hover: Option<usize>,
     drag: Option<SocketDrag>,
+    /// (body, skeleton root entity, its rest translation): "in place".
+    root_bone: Option<(Entity, Entity, Vec3)>,
 }
 
 impl Default for ModelPreview {
@@ -188,6 +190,7 @@ impl Default for ModelPreview {
             selected_socket: None,
             hover: None,
             drag: None,
+            root_bone: None,
         }
     }
 }
@@ -600,6 +603,91 @@ pub fn drive_model_animation(
     clip.last_time = *time;
 }
 
+/// The local translation of a skeleton root that keeps only the vertical
+/// part of its animated motion: `animated` and `rest` are local
+/// translations (in the parent's space), `parent_rotation` the parent's
+/// world rotation. The horizontal (world XZ) offset from the rest position
+/// is removed, so a clip with root motion plays in place.
+pub fn in_place_translation(animated: Vec3, rest: Vec3, parent_rotation: Quat) -> Vec3 {
+    let world = parent_rotation * (animated - rest);
+    rest + parent_rotation.inverse() * Vec3::new(0.0, world.y, 0.0)
+}
+
+/// The skeleton root of a model: the first bone whose parent is not a bone
+/// (Mixamo: `mixamorig:Hips`), with its rest translation.
+pub fn skeleton_root(info: &ModelInfo) -> Option<(String, Vec3)> {
+    info.nodes
+        .iter()
+        .find(|n| n.bone && n.parent.is_none_or(|p| !info.nodes[p].bone))
+        .map(|n| (n.name.clone(), n.rest.to_scale_rotation_translation().2))
+}
+
+/// The preview's "in place" (`preview.in_place`, default on): after the
+/// animation, the model's skeleton root loses its horizontal root motion so
+/// the model stays on the target (editor preview only; the game decides
+/// root motion itself).
+#[allow(clippy::too_many_arguments)]
+pub fn keep_model_in_place(
+    project: Res<ProjectV2>,
+    game_assets: Res<GameAssets>,
+    mut model: ResMut<ModelPreview>,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    parents: Query<&ChildOf>,
+    globals: Query<&GlobalTransform>,
+    mut transforms: Query<&mut Transform>,
+) {
+    let Some(preview) = project.preview.as_ref().filter(|p| p.shows_model() && p.in_place) else { return };
+    let (Some(body), Some(_)) = (model.body, model.clip.as_ref()) else { return };
+    let Some(path) = preview.model.as_deref() else { return };
+    let cached = model.root_bone.filter(|(b, e, _)| *b == body && transforms.contains(*e));
+    let (entity, rest) = match cached {
+        Some((_, e, rest)) => (e, rest),
+        None => {
+            let Ok(info) = model_info(&game_assets, path) else { return };
+            let Some((name, rest)) = skeleton_root(&info) else { return };
+            let Some(e) = find_named(&children, &names, body, &name, None) else { return };
+            model.root_bone = Some((body, e, rest));
+            (e, rest)
+        }
+    };
+    let parent_rotation = parents
+        .get(entity)
+        .ok()
+        .and_then(|p| globals.get(p.parent()).ok())
+        .map(|g| g.to_scale_rotation_translation().1)
+        .unwrap_or(Quat::IDENTITY);
+    if let Ok(mut transform) = transforms.get_mut(entity) {
+        let wanted = in_place_translation(transform.translation, rest, parent_rotation);
+        if transform.translation != wanted {
+            transform.translation = wanted;
+        }
+    }
+}
+
+/// Draws the samples of trail layers (the TRAIL inspector's "show
+/// samples"): a line from From to To per sample, and both edges.
+pub fn draw_trail_samples(
+    session: Res<super::session::EditorSession>,
+    trails: Query<&omagari::runtime::TrailLayerState>,
+    mut gizmos: Gizmos<SocketGizmos>,
+) {
+    if !session.show_trail_samples {
+        return;
+    }
+    for state in trails.iter() {
+        let mut previous: Option<(Vec3, Vec3)> = None;
+        for s in state.samples.samples() {
+            gizmos.line(s.a, s.b, Color::srgb(1.0, 0.9, 0.2));
+            if let Some((a, b)) = previous {
+                gizmos.line(a, s.a, Color::srgb(0.3, 0.9, 1.0));
+                gizmos.line(b, s.b, Color::srgb(1.0, 0.4, 0.9));
+            }
+            previous = Some((s.a, s.b));
+        }
+    }
+}
+
 /// Whether a clip going from `last` to `now` (forward when `speed` ≥ 0,
 /// wrapping around at the loop) passed time `at`.
 pub fn passes(last: f32, now: f32, at: f32, speed: f32) -> bool {
@@ -709,8 +797,8 @@ pub fn update_socket_markers(
 
     let mut names: Vec<(String, Option<usize>)> =
         project.sockets.iter().enumerate().map(|(i, s)| (s.name.clone(), Some(i))).collect();
-    for attach in project.layers.iter().filter_map(|l| l.attach()) {
-        for name in attach.socket_names() {
+    for layer in project.layers.iter() {
+        for name in layer.socket_names() {
             if !name.is_empty() && !names.iter().any(|(n, _)| n == name) {
                 names.push((name.to_string(), None));
             }
@@ -736,15 +824,13 @@ pub fn update_socket_markers(
             SocketMarker { name, package, world, screen, pending, frame }
         })
         .collect();
+    let at = |n: &str| markers.iter().find(|m| m.name == n).map(|m| m.world);
     let segments: Vec<(Vec3, Vec3)> = project
         .layers
         .iter()
-        .filter_map(|l| l.attach())
-        .filter_map(|attach| match attach {
-            AttachDef::Segment { from, to } => {
-                let at = |n: &str| markers.iter().find(|m| m.name == n).map(|m| m.world);
-                Some((at(from)?, at(to)?))
-            }
+        .filter_map(|l| match (l.attach(), l.as_trail()) {
+            (Some(AttachDef::Segment { from, to }), _) => Some((at(from)?, at(to)?)),
+            (_, Some(trail)) => Some((at(&trail.from)?, at(&trail.to)?)),
             _ => None,
         })
         .collect();
@@ -937,6 +1023,35 @@ mod tests {
         assert_eq!(floor_depth(&model, 0.9), 0.9);
         assert_eq!(body_transform(&BodyKind::Capsule, 0.9), Transform::default());
         assert_eq!(floor_depth(&BodyKind::Capsule, 0.0), 0.9, "half the capsule");
+    }
+
+    #[test]
+    fn in_place_removes_only_horizontal_root_motion() {
+        let rest = Vec3::new(0.0, 100.0, 0.0);
+        // Parent without rotation: X / Z go back to rest, Y (the bob) stays.
+        let t = in_place_translation(Vec3::new(30.0, 95.0, -70.0), rest, Quat::IDENTITY);
+        assert!((t - Vec3::new(0.0, 95.0, 0.0)).length() < 1e-4, "{}", t);
+        // A parent turned 90° about X (local Z is world up): local Z is the
+        // vertical that stays, local X / Y are horizontal.
+        let parent = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let rest = Vec3::new(0.0, 0.0, 1.0);
+        let t = in_place_translation(Vec3::new(0.4, 0.3, 0.9), rest, parent);
+        let world = parent * (t - rest);
+        assert!(world.x.abs() < 1e-5 && world.z.abs() < 1e-5, "no horizontal motion: {}", world);
+        assert!((world.y - (parent * Vec3::new(0.4, 0.3, -0.1)).y).abs() < 1e-5, "vertical kept");
+        // Idempotent: applying it twice changes nothing.
+        let again = in_place_translation(t, rest, parent);
+        assert!((again - t).length() < 1e-6);
+    }
+
+    #[test]
+    fn skeleton_roots_are_the_top_bones() {
+        let dir = crate::asset_library::tests::temp_dir("skeleton_root");
+        crate::model_info::tests::write_fixture(&dir.join("hero.gltf"), Some(("Wave", 1.0)));
+        let info = ModelInfo::load(&dir.join("hero.gltf")).unwrap();
+        let (name, rest) = skeleton_root(&info).expect("a skeleton root");
+        assert_eq!(name, "Hips", "the first bone below the (non-bone) armature");
+        assert!((rest - Vec3::new(0.0, 0.9, 0.0)).length() < 1e-6);
     }
 
     #[test]

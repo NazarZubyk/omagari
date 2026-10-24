@@ -191,3 +191,23 @@ pub const SHAPE_DURATION: &str = "Seconds an OnStart / OnTrigger shape plays (it
 pub const SHAPE_FADE: &str = "One-shots fade in over In after they start and out over Out before they end. Other shapes fade in when they start and out when they stop (While: when the parameter drops). Every shape fades out over Out when the game stops the effect.";
 pub const SHAPE_SORT: &str = "Draw order among see-through things at a similar distance (metres added to its distance): positive = drawn later, on top of particles and skin effects; negative = earlier.";
 pub const MASK: &str = "A mask texture: where it is dark the layer is transparent.";
+
+// --- trail and afterimage layers ---------------------------------------------------
+
+pub const IN_PLACE: &str = "Removes the clip's horizontal root motion (the skeleton root, e.g. Mixamo's hips, walking away from the model's origin) after the animation, so the model stays on the target while effects are tuned; the vertical bob stays. Preview only (saved in the preview block); the game handles root motion itself.";
+pub const TRAIL: &str = "A trail layer draws a glowing ribbon between two moving sockets (a blade's base and tip) that stays in the world behind them and fades: a sword swing's arc, a comet tail.";
+pub const AFTERIMAGE: &str = "An afterimage layer leaves fading copies of the target's meshes along their path while it emits (sword shadows along a swing, dash echoes). Skinned meshes are copied in their current pose.";
+pub const TRAIL_SOCKETS: &str = "The two points the ribbon runs between, sampled every frame: package sockets (⚓ SOCKETS & FIT, e.g. offsets from the hand bone) or node names of the target's model. From = the v = 0 edge (blade base), To = the v = 1 edge (tip).";
+pub const TRAIL_LENGTH: &str = "Seconds a sample stays: how long the trail is in time (a sword swing: 0.15–0.3 s). When emission stops the rest ages out over this time.";
+pub const TRAIL_SUBDIVISIONS: &str = "Curve segments (Catmull-Rom) between two samples, so a fast swing stays round instead of showing corners. 1 = straight lines; 4–8 for fast weapons.";
+pub const TRAIL_MIN_DISTANCE: &str = "A new sample is kept once an end moved this far (metres); the newest point always follows the sockets. Larger = fewer samples on slow motion.";
+pub const TRAIL_WIDTH: &str = "Width along the trail as (u, fraction of the From → To distance): u = 0 at the newest end, 1 at the oldest; it shrinks toward To. Empty = full width.";
+pub const TRAIL_FADE_U: &str = "Opacity along the trail as (u, factor): u = 0 at the newest end, 1 at the oldest. (1 → 0) fades the tail out. Empty = no fade.";
+pub const EMITTER_FADE: &str = "Lifecycle fade: in when the effect starts, out when the game stops it (the trail also ages out, copies fade over their lifetime).";
+pub const EMIT: &str = "When it emits. Always = while the effect runs; Trigger = from the start trigger to the stop trigger (the game fires e.g. swing_start / swing_end from its attack state; the same trigger twice = toggle); While = while a number parameter is at or above a threshold. When emission stops what is there ages out.";
+pub const SWING_PREVIEW: &str = "Fires the start / stop triggers at these times of the preview animation (each loop), e.g. at the start and end of the swing in the clip (saved in the preview block as animation triggers).";
+pub const GHOST_SOURCE: &str = "Which meshes of the target's own model are copied (a weapon in the hand is a separate model: put the package on the weapon for weapon copies).";
+pub const GHOST_INTERVAL: &str = "Seconds between two copies while emitting (at most one per frame).";
+pub const GHOST_LIFETIME: &str = "Seconds each copy stays, fading over its life.";
+pub const GHOST_MAX: &str = "Most copies at once; the oldest goes first. Copies on screen ≈ lifetime / interval.";
+pub const GHOST_FADE: &str = "Opacity of a copy over its life as (fraction of the lifetime, factor). (0.8 → 0) starts at 80% and fades out. Empty = full until it goes.";
