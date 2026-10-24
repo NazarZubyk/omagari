@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::{ExportedEffect, ExportedProject};
 
 pub mod coverage;
+mod distortion;
 mod expr;
 pub mod hanabi_serde;
 mod light;
@@ -30,6 +31,7 @@ mod surface;
 mod trail;
 pub mod unknown_fields;
 
+pub use distortion::*;
 pub use expr::*;
 pub use hanabi_serde::{CpuValueDef, CpuVecDef, SpawnerDef, SpawnerPreset};
 pub use light::*;

@@ -21,6 +21,7 @@ use super::expr::ExprWriterEditor;
 use super::migrate::migrate_v1;
 use super::particles::ParticleEffectDef;
 use super::shape::ShapeLayerDef;
+use super::distortion::{DistortionLayerDef, DistortionSourceDef};
 use super::light::LightLayerDef;
 use super::surface::{EffectMaterialDef, FadeDef, SurfaceLayerDef};
 use super::trail::{AfterimageLayerDef, TrailLayerDef};
@@ -204,6 +205,7 @@ impl ProjectV2 {
             .iter()
             .filter(|l| match l {
                 LayerDef::Particles(p) => p.texture.as_deref() == Some(id) || p.mesh_asset() == Some(id),
+                LayerDef::Distortion(d) => d.texture_slots().iter().any(|(_, slot)| slot.asset == id),
                 _ => l.material().is_some_and(|m| m.texture_slots().iter().any(|(_, slot)| slot.asset == id)),
             })
             .map(|l| l.name().to_string())
@@ -238,6 +240,13 @@ impl ProjectV2 {
                     if let Some(ParticleMeshDef::Asset(id)) = &mut p.mesh {
                         if id == from {
                             *id = to.to_string();
+                        }
+                    }
+                }
+                LayerDef::Distortion(d) => {
+                    for slot in d.texture_slots_mut() {
+                        if slot.asset == from {
+                            slot.asset = to.to_string();
                         }
                     }
                 }
@@ -346,6 +355,14 @@ impl ProjectV2 {
             .filter_map(|(i, l)| l.as_light().map(|s| (i, s)))
     }
 
+    /// The distortion layers, with their index in `layers`.
+    pub fn distortion_layers(&self) -> impl Iterator<Item = (usize, &DistortionLayerDef)> {
+        self.layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| l.as_distortion().map(|s| (i, s)))
+    }
+
     /// The parameter with this name.
     pub fn param(&self, name: &str) -> Option<&ParamDef> {
         self.parameters.iter().find(|p| p.name == name)
@@ -450,6 +467,23 @@ impl ProjectV2 {
                 users.push(format!("layer \"{}\" ({})", layer.name, what.join(", ")));
             }
         }
+        for (_, layer) in self.distortion_layers() {
+            let mut what: Vec<&str> = Vec::new();
+            for (value, param) in layer.binding_params() {
+                if param == name && !what.contains(&value) {
+                    what.push(value);
+                }
+            }
+            if layer.visible.as_ref().is_some_and(|v| v.param == name) {
+                what.push("visible");
+            }
+            if layer.play.param() == Some(name) {
+                what.push("play While");
+            }
+            if !what.is_empty() {
+                users.push(format!("layer \"{}\" ({})", layer.name, what.join(", ")));
+            }
+        }
         for trigger in self.triggers.iter() {
             if trigger.pulses.iter().any(|p| p.param == name) {
                 users.push(format!("trigger \"{}\" (pulse)", trigger.name));
@@ -467,6 +501,11 @@ impl ProjectV2 {
             .map(|(_, l)| l.name.clone())
             .chain(self.shape_layers().filter(|(_, l)| l.play.triggers().contains(&name)).map(|(_, l)| l.name.clone()))
             .chain(self.light_layers().filter(|(_, l)| l.play.triggers().contains(&name)).map(|(_, l)| l.name.clone()))
+            .chain(
+                self.distortion_layers()
+                    .filter(|(_, l)| l.play.triggers().contains(&name))
+                    .map(|(_, l)| l.name.clone()),
+            )
             .chain(self.trail_layers().filter(|(_, l)| l.emit.triggers().contains(&name)).map(|(_, l)| l.name.clone()))
             .chain(
                 self.afterimage_layers()
@@ -510,6 +549,9 @@ impl ProjectV2 {
                 s.rename_param(from, to);
             }
             if let LayerDef::Light(s) = layer {
+                s.rename_param(from, to);
+            }
+            if let LayerDef::Distortion(s) = layer {
                 s.rename_param(from, to);
             }
             let Some(layer) = layer.as_particles_mut() else { continue };
@@ -578,6 +620,7 @@ impl ProjectV2 {
                 LayerDef::Particles(p) => p.play.rename_trigger(from, to),
                 LayerDef::Shape(s) => s.play.rename_trigger(from, to),
                 LayerDef::Light(l) => l.play.rename_trigger(from, to),
+                LayerDef::Distortion(d) => d.play.rename_trigger(from, to),
                 LayerDef::Trail(t) => t.emit.rename_trigger(from, to),
                 LayerDef::Afterimage(a) => a.emit.rename_trigger(from, to),
                 LayerDef::Surface(_) => {}
@@ -1457,8 +1500,7 @@ impl VisibleRangeDef {
 
 // --- layers ------------------------------------------------------------------
 
-/// One visual part of a package. More kinds (distortion) are added as new
-/// variants.
+/// One visual part of a package.
 #[derive(Serialize, Deserialize, Clone)]
 pub enum LayerDef {
     Particles(ParticlesLayerDef),
@@ -1473,6 +1515,9 @@ pub enum LayerDef {
     Afterimage(AfterimageLayerDef),
     /// A point light at the attach point (see [`LightLayerDef`]).
     Light(LightLayerDef),
+    /// The air bends inside a volume: heat haze, ripples (see
+    /// [`DistortionLayerDef`]).
+    Distortion(DistortionLayerDef),
 }
 
 impl LayerDef {
@@ -1484,6 +1529,7 @@ impl LayerDef {
             LayerDef::Trail(s) => &s.name,
             LayerDef::Afterimage(s) => &s.name,
             LayerDef::Light(s) => &s.name,
+            LayerDef::Distortion(s) => &s.name,
         }
     }
 
@@ -1495,11 +1541,12 @@ impl LayerDef {
             LayerDef::Trail(s) => &mut s.name,
             LayerDef::Afterimage(s) => &mut s.name,
             LayerDef::Light(s) => &mut s.name,
+            LayerDef::Distortion(s) => &mut s.name,
         }
     }
 
     /// `"particles"` / `"surface"` / `"shape"` / `"trail"` / `"afterimage"` /
-    /// `"light"`.
+    /// `"light"` / `"distortion"`.
     pub fn kind_name(&self) -> &'static str {
         match self {
             LayerDef::Particles(_) => "particles",
@@ -1508,17 +1555,22 @@ impl LayerDef {
             LayerDef::Trail(_) => "trail",
             LayerDef::Afterimage(_) => "afterimage",
             LayerDef::Light(_) => "light",
+            LayerDef::Distortion(_) => "distortion",
         }
     }
 
-    /// Where a particle, shape or light layer is attached (surface layers
-    /// cover the target's meshes instead; trails use
-    /// [`LayerDef::socket_names`]).
+    /// Where a particle, shape, light or distortion layer is attached
+    /// (surface layers and surface-source distortions cover the target's
+    /// meshes instead; trails use [`LayerDef::socket_names`]).
     pub fn attach(&self) -> Option<&AttachDef> {
         match self {
             LayerDef::Particles(p) => Some(&p.attach),
             LayerDef::Shape(s) => Some(&s.attach),
             LayerDef::Light(l) => Some(&l.attach),
+            LayerDef::Distortion(d) => match d.source {
+                DistortionSourceDef::Shape { .. } => Some(&d.attach),
+                DistortionSourceDef::Surface { .. } => None,
+            },
             LayerDef::Surface(_) | LayerDef::Trail(_) | LayerDef::Afterimage(_) => None,
         }
     }
@@ -1534,7 +1586,7 @@ impl LayerDef {
     /// The effect material of a surface, shape, trail or afterimage layer.
     pub fn material(&self) -> Option<&EffectMaterialDef> {
         match self {
-            LayerDef::Particles(_) | LayerDef::Light(_) => None,
+            LayerDef::Particles(_) | LayerDef::Light(_) | LayerDef::Distortion(_) => None,
             LayerDef::Surface(s) => Some(&s.material),
             LayerDef::Shape(s) => Some(&s.material),
             LayerDef::Trail(s) => Some(&s.material),
@@ -1544,11 +1596,25 @@ impl LayerDef {
 
     pub fn material_mut(&mut self) -> Option<&mut EffectMaterialDef> {
         match self {
-            LayerDef::Particles(_) | LayerDef::Light(_) => None,
+            LayerDef::Particles(_) | LayerDef::Light(_) | LayerDef::Distortion(_) => None,
             LayerDef::Surface(s) => Some(&mut s.material),
             LayerDef::Shape(s) => Some(&mut s.material),
             LayerDef::Trail(s) => Some(&mut s.material),
             LayerDef::Afterimage(s) => Some(&mut s.material),
+        }
+    }
+
+    pub fn as_distortion(&self) -> Option<&DistortionLayerDef> {
+        match self {
+            LayerDef::Distortion(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_distortion_mut(&mut self) -> Option<&mut DistortionLayerDef> {
+        match self {
+            LayerDef::Distortion(s) => Some(s),
+            _ => None,
         }
     }
 
