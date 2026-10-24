@@ -4,7 +4,7 @@ Bevy-Hanabi 3D particle effects editor (Bevy 0.19, bevy_hanabi 0.19). The editor
 
 ## Creating effects
 
-Use the `omagari` MCP server (`omagari --mcp`, configured in `.mcp.json`). Call its `guide` tool with `section: "workflow"` before making an effect. You cannot see effects: describe them with `analyze_project` and let the user watch with `preview_in_editor`. Human docs: `docs/MCP.md`.
+Use the `omagari` MCP server (`omagari --mcp`, configured in `.mcp.json`). Call its `guide` tool with `section: "workflow"` before making an effect. You cannot see effects: describe them with `analyze_project` and let the user watch with `preview_in_editor`. Human docs: `README.md` and `docs/` (`GETTING_STARTED`, `EDITOR`, `MODELS`, `GAME_INTEGRATION`, `FORMAT`, `MCP`, `DEVELOPMENT`).
 
 ## Development
 
@@ -16,4 +16,5 @@ Use the `omagari` MCP server (`omagari --mcp`, configured in `.mcp.json`). Call 
 - `tests/format_golden.rs` compares exports and re-saved projects with `tests/golden/`; after an intended format/produce change, rerun it with `OMAGARI_UPDATE_GOLDEN=1` and review the diff. v1 golden inputs live in `tests/golden/inputs/`; `examples/` must equal `tests/golden/v2/`.
 - The game assets folder comes from `--game-assets <dir>` > `OMAGARI_GAME_ASSETS` > `omagari_settings.ron` (repo root, git-ignored) > the repo's `assets/`. It is registered as the `game` asset source at startup, so changes need a restart.
 - The VFX roadmap is `docs/VFX_SYSTEM_PLAN.md`.
-- To check the editor UI without seeing the screen, use the developer flags (`--open`, `--camera`, `--tab`, `--screenshot <png>`, … see README "Development") and read the saved screenshot.
+- `examples/game_integration.rs` plays the packages in `assets/vfx/`, exports of projects in `saved_effects/` / `examples/` (`tests/example_packages.rs` keeps them equal; re-export after changing those projects). Code snippets in `docs/` should compile.
+- To check the editor UI without seeing the screen, use the developer flags (`--open`, `--camera`, `--tab`, `--screenshot <png>`, … see `docs/DEVELOPMENT.md`) and read the saved screenshot.

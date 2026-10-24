@@ -1,9 +1,11 @@
 # Omagari VFX system: specification and roadmap
 
+> **Status:** phases P0a–P7 are implemented on the `vfx-system` branch (October 2026). This is the design document and work order the system was built from, kept as a record and roadmap; it may mention the game it was built for. **User documentation** is in [README.md](../README.md) and `docs/`: [Getting started](GETTING_STARTED.md), [Editor](EDITOR.md), [Models](MODELS.md), [Game integration](GAME_INTEGRATION.md), [File format](FORMAT.md), [MCP](MCP.md).
+
 This document is the work order for the agents that extend Omagari and integrate it into the game. It describes **what** to build, **why**, the **file format**, the **runtime API**, the **editor changes**, and **acceptance criteria** per phase. Items marked *verify* are best guesses about Bevy 0.19 / bevy_hanabi 0.19 APIs that the implementing agent must confirm in the crate sources (`~/.cargo/registry/src/*/bevy_*-0.19.1`, `bevy_hanabi-0.19.0`).
 
 Owners used below:
-- **Omagari agent**: works in this repository (`C:\bevy\omagari\omagari`): library (runtime plugin + data model), editor, MCP server, docs.
+- **Omagari agent**: works in this repository: library (runtime plugin + data model), editor, MCP server, docs.
 - **Game agent**: works in the game repository; consumes the library. Game phases start only after the user confirms.
 
 ---
@@ -549,7 +551,7 @@ Follow the current egui style; use common app practice:
 
 ## 6. Game integration (game agent, after user confirmation)
 
-Facts provided by the user about the game (game repo, likely `C:\bevy\justForFun`, *confirm with the user*):
+Facts provided by the user about the game (the game repository):
 - Player capsule radius 0.35, height 1.5 (`player/mod.rs:56-59`); visible model Mixamo Y Bot ≈ 1.8 m; root 0.9 above the feet (`player_rig.rs:19`); metres, Y up.
 - Camera: orthographic true-isometric (45° yaw, ≈35.26° pitch), offset (20,20,20), ≈16 world units visible vertically (`world/camera.rs:31-34`). Effects must read at ~1/10 screen height per character.
 - Statuses (example usage): Poison 4 s, damage every 1 s, re-contact resets the timer, poison zone (2.5 m, 8 s) re-applies every 0.5 s; Slow half speed 3 s, own cyan cue; Ignite orange, rises. Placeholder poison colour `srgb(0.65, 0.08, 0.95)` (`combat_periodic_status/visual.rs:20`). Enemies can be affected.
