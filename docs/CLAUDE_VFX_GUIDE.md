@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, lights, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, lights, ribbons, meshes, order, recipes, design, game.
 
 ## Workflow
 
@@ -18,7 +18,7 @@ The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSph
 
 ## Format
 
-A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"); a `Shape` layer draws a simple 3D shape (sphere, ring, arc, ...) with the same shader (section "shapes"); a `Trail` layer draws a ribbon between two moving sockets, e.g. a sword swing's arc (section "trails"); an `Afterimage` layer leaves fading copies of the target's meshes (section "afterimages"); a `Light` layer is a point light that lights the floor and the model around it (section "lights"). All layers play at the same point, the target (the origin in the editor); Y is up.
+A project has a list of **assets** (textures, and meshes for mesh particles, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"); a `Shape` layer draws a simple 3D shape (sphere, ring, arc, ...) with the same shader (section "shapes"); a `Trail` layer draws a ribbon between two moving sockets, e.g. a sword swing's arc (section "trails"); an `Afterimage` layer leaves fading copies of the target's meshes (section "afterimages"); a `Light` layer is a point light that lights the floor and the model around it (section "lights"). All layers play at the same point, the target (the origin in the editor); Y is up.
 
 ```ron
 (
@@ -73,6 +73,8 @@ Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` 
 | `rate` | `None` / `Some(Const(20.0))` / `Some(Param("intensity", [(0.0, 5.0), (1.0, 40.0)]))` | Particles per second as a steady stream, replacing the spawner's `count` while it plays; a constant or a curve over a parameter (section "parameters"). Use it with a looping spawner. |
 | `visible` | `None` / `Some((param: "intensity", from: 0.6, to: 1.0, fade: 0.1))` | The layer spawns only while the parameter is in `[from, to]`, fading out over `fade` outside (section "parameters"). |
 | `texture` | `None` / `Some("asset id")` | The texture the `ParticleTexture` render modifier samples. |
+| `mesh` | `None` / `Some(Shape(Cube))` / `Some(Asset("rock"))` | What each particle draws: the default 1 m quad, a built-in 3D shape or a mesh asset (section "meshes"). |
+| `sort_bias` | `0.0` (default, not written) / metres | Draw order among see-through things at a similar distance: positive = drawn later, on top (section "order"). |
 | `effect` | struct | Capacity, spawner, blending, modifiers. |
 
 The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces"; so do `Shape` layers (shield bubbles, ground rings, shockwaves, slash arcs): section "shapes"; `Trail` layers (sword trails, comet tails): section "trails"; `Afterimage` layers (sword shadows, dash echoes): section "afterimages"; `Light` layers (weapon glows, hit flashes, torches): section "lights".
@@ -319,10 +321,12 @@ Useful building blocks:
 | `"hdr_color"` | vec4 | (1,1,1,1) | Unpacked color, may go above 1 (glow). |
 | `"alpha"` | f32 | 1.0 | |
 | `"f32_0"`…`"f32_3"`, `"f32x2_0"`…, `"f32x3_0"`…, `"f32x4_0"`…, `"u32_0"`…`"u32_3"` | various | 0 | Free slots, e.g. to pass data to children with `ParentAttr`. |
-
 | `"sprite_index"` | i32 | 0 | The frame a `Flipbook` draws; set it with a `Cast(..., I32)` (section "render"). |
+| `"ribbon_id"` | u32 | 0 | Particles with the same id are drawn as one ribbon (section "ribbons"). |
+| `"particle_counter"` | u32 | unique | A different value for every particle ever spawned (read with `Attr`): a unique id for a parent's ribbon. |
+| `"axis_x"`, `"axis_y"`, `"axis_z"` | vec3 | X, Y, Z | The particle's own axes when drawn (set by Orient); mesh particles turn with them. |
 
-Others exist (`"id"`, `"particle_counter"`, `"axis_x"`, `"axis_y"`, `"axis_z"`, `"prev"`, `"next"`, `"ribbon_id"`) but are rarely useful here (ribbons come later).
+Others exist (`"id"` = the particle's slot, reused when it dies; `"prev"`, `"next"` = old ribbon links, unused by bevy_hanabi 0.19) but are not useful here.
 
 ## Render
 
@@ -392,7 +396,7 @@ Other textures use a path relative to the game's `assets/` folder (`vfx/textures
 
 ## Assets
 
-**Import** a file with `import_asset(path, purpose?, id?, project?)`. A file outside the game assets folder is copied to `<game assets>/vfx/textures/` (a name taken by a different file gets `_2`, `_3`, ...; an identical file is reused); a file already inside it is used where it is. The reply has the asset entry; with `project` it is added to that saved project. `list_assets` lists the built-ins and every texture file in the game assets folder with size, layout and which saved projects use it.
+**Import** a file with `import_asset(path, purpose?, id?, project?)` (a texture; a glTF model becomes a `Mesh` asset, section "meshes"). A file outside the game assets folder is copied to `<game assets>/vfx/textures/` (a name taken by a different file gets `_2`, `_3`, ...; an identical file is reused); a file already inside it is used where it is. The reply has the asset entry; with `project` it is added to that saved project. `list_assets` lists the built-ins and every texture file in the game assets folder with size, layout and which saved projects use it.
 
 Formats: **PNG** (works everywhere), **JPG** (the game needs Bevy's `jpeg` feature; the check adds a note), KTX2 (copied, not inspected). Avoid 16-bit grayscale PNGs: Bevy loads them as integer textures that cannot be sampled (the check warns; `extract_channel` with `Luminance` writes an 8-bit copy).
 
@@ -622,6 +626,50 @@ Light((
 - **Checks**: intensity below 0, range ≤ 0, a negative radius, unknown triggers and parameters (a Color parameter only for `color`) are errors; a light that never shines, a peak under 200 lm (too dim to see) or over 1 000 000 lm (blinding), ranges over 25 m (costly), a radius larger than the range, flicker outside 0..1 or with speed 0 or above 40 /s, `shadows: true`, an `OnTrigger` light without a duration, age keys past the duration and more than three lights in a package warn.
 
 The editor's 💡 Light layer (➕ ADD) has presets "weapon glow" (blue, growing with the first number parameter), "hit flash" (warm, 0.25 s on the first trigger) and "torch flicker" (orange, flickering), every value with tooltips and units, and draws the lights in the viewport (a star at the light, a circle at its range; the selected layer's range sphere). While a project has a light layer, the editor's floor is lit (FLOOR, CAPSULE and MODEL stages; the dark room shows light best), and the model is lit as in the game. Recipes "Weapon glow growing with a parameter" and "Hit flash light".
+
+## Ribbons
+
+A **ribbon** joins a particle layer's particles into a strip: bevy_hanabi draws a quad from each particle to the one before it **with the same `ribbon_id`**, in age order (the newest particle is the head, the oldest the tail). Use it for magic streaks behind flying particles, a ribbon swirling around a body, a comet tail on a socket. It is a particle layer like any other plus one init attribute; `analyze_project` describes it (number of ribbons, particles per ribbon, length).
+
+- **`ribbon_id`** (u32, init): all particles of one ribbon share it. `U32(0)` = one ribbon per emitter (a streak behind the target or a socket, a traced path). Under a parent layer, `Operator(ParentAttr("u32_0"))` gives every parent particle its own ribbon, with the parent storing a unique value: `SetAttribute((attr: "u32_0", attr_expr: Operator(Attr("particle_counter"))))` (not the parent's `id`, which bevy_hanabi reuses when a parent dies). A random or per-particle id (`Rand`, `Attr("particle_counter")` on the ribbon itself) joins nothing: the check warns. The old `prev` / `next` attributes do nothing in bevy_hanabi 0.19 (soft-deprecated): don't set them.
+- **`age`** must be set in init (`SetAttribute((attr: "age", attr_expr: Float(0.0)))`): bevy_hanabi sorts ribbons by it and refuses to build the shaders without it (the check reports it as an error).
+- **Constant lifetime**: particles that die early cut the ribbon across (the check warns about a random lifetime).
+- **`motion_integration: None`** for streaks that stay where they were drawn: the particles do not move; the ribbon is the path of the emitter (a moving target or socket) or of the parent particles (children inherit the parent's position each frame). Moving ribbon particles bend and stretch the ribbon (the check warns).
+- **`Orient((mode: FaceCameraPosition))`**: the ribbon's width faces the camera. Without Orient it lies in the XY plane; `AlongVelocity` breaks without a velocity (both warned).
+- **Width** = the particle size (`SizeOverLifetime` from the head's width to 0 tapers the tail); the length of each piece is the distance between neighbouring particles. Colour and alpha come from the usual render modifiers (fade the tail with `ColorOverLifetime`).
+- **Density**: one particle per frame per ribbon (a rate of 60/s, or `EmitSpawnEventModifier((condition: Always, count_expr: U32(1), child_index: 0))` on the parent) is smooth; more particles per frame stack on one point (wasted).
+- **Space**: `Global` leaves the ribbon behind a moving target (a trail); `Local` keeps it on the target (a swirl around the body).
+- Textures: a `ParticleTexture` repeats once per piece (between two particles); untextured ribbons with an `Add` blend glow best.
+
+Ribbons are **GPU particle streaks**. For a weapon's swing arc between two sockets (blade base and tip), use a **Trail layer** (section "trails"): it is a real two-edged ribbon of the blade's sweep with Omagari's effect shader, independent of particles. The editor's particle inspector has presets "Ribbon: magic streaks" (adds a ribbon child to a layer of swirling wisps), "Ribbon: swirl" and "Ribbon: streak behind the emitter" (needs a moving target or socket). Recipes "Magic streaks" and "Swirling ribbon".
+
+## Meshes
+
+**Mesh particles**: a particle layer's `mesh` makes every particle draw a 3D mesh instead of bevy_hanabi's 1 m quad: debris, shards, pebbles, leaves, rings.
+
+```ron
+mesh: Some(Shape(Cube)),     // built-in: Cube, Sphere, Cone, Cylinder, Shard, Torus, Quad
+mesh: Some(Asset("rock")),   // a Mesh asset of the project (below)
+```
+
+- **Built-in shapes** are low-poly (12 segments; a cube and a shard 24 vertices), centred and **1 m across**, so the particle `size` is the size in metres (`size3` stretches per axis: `Vec3((0.2, 0.05, 0.1))` = a flat chip). Shard = a pointed octahedron 0.5 × 1 × 0.3 m along Y.
+- **Mesh assets** are one mesh of a glTF file of the game assets folder: `(id: "rock", kind: Mesh((path: "vfx/models/debris.glb", mesh: 0, primitive: 0, name: Some("Rock"))))`. `import_asset("C:/art/debris.glb", project: "x")` copies a `.glb` into `vfx/models/` and adds its first usable mesh (pass `mesh` / `primitive` for another; `describe_model` and `list_assets` list every model's meshes as `MeshI/PrimitiveJ` with vertex counts and size). The game loads `path#MeshI/PrimitiveJ` (Bevy's glTF label), so the file ships with the game. The mesh needs texture coordinates (Omagari adds zero UVs to a mesh without, with a warning); skinned meshes draw in their rest pose. The size of the mesh in the file times the particle `size` is the size on screen (`analyze_project` says both).
+- **Unlit**: bevy_hanabi draws mesh particles in one flat colour per particle (no shading). Give each particle its own colour (`hdr_color` from a `Mix` of two colours with `RandFloat`) so a burst reads as separate pieces; silhouettes change as they turn.
+- **Blending**: use `alpha_mode: Opaque` (solid debris; written to the depth buffer) or `Mask`, or `Add` for glowing shards. A see-through `Blend` draws a mesh's far side over its near side (bevy_hanabi does not sort triangles): the check warns.
+- **Turning**: `Orient((mode: AlongVelocity))` points the mesh's X axis along its flight (shards tumble as gravity bends their path); without Orient a mesh keeps the layer's axes (fine for meshes, unlike quads); the axis attributes (`axis_x`, `axis_y`, `axis_z`) set any orientation.
+- **Cost**: every particle draws the whole mesh: vertices × capacity per frame (the check warns above 1 000 000, and about meshes over 2 000 vertices). Shrinking pieces before they die: an update `SetAttribute` of `size` from a stored size (`f32_0`) times `Saturate((lifetime − age) × 6)` (recipe "Debris burst"); `Opaque` particles cannot fade.
+- In the **game camera** (16 m tall view) pieces under 5 cm vanish: use sizes of 6–15 cm.
+
+The editor's particle inspector has a **Mesh** row (built-in shapes and the project's mesh assets) and presets "Mesh: debris burst" and "Mesh: glowing shards"; the ASSETS tab imports models (button or drag & drop) and picks the mesh of the file. Recipes "Debris burst" and "Glowing shards from a mesh asset".
+
+## Order
+
+**Draw order between effects.** Blended layers (`Blend`, `Add`, `Premultiply`, `Multiply`) are drawn back to front, each sorted as one piece by the distance of its centre from the camera: a particle layer by its **emitter** (the layer's attach point, not where its particles are), shape layers by the shape's centre, trails and afterimages by their entity, surface overlays by each mesh. Opaque and Mask layers are depth-tested and need no order.
+
+- **`sort_bias`** (metres, default 0, every particle / shape / trail / afterimage layer) is added to that distance: positive = drawn later, on top of transparent things up to that far in front; negative = earlier, below. Use a few tenths of a metre to a few metres: sparks over a shield bubble at the same point (`sort_bias: 0.5` on the sparks), smoke under a glow (`sort_bias: -0.5` on the smoke). It is per layer, not per particle: particles inside one layer are not sorted against each other.
+- When two layers overlap in space they cannot both be in front everywhere; additive layers (`Add`) look the same in any order, so prefer `Add` for glows and keep the bias for `Blend` layers (smoke, dust, shields).
+- `sort_bias` has no effect on `Opaque` / `Mask` layers, and over ±50 m it moves the layer past everything (both warned). bevy_hanabi 0.19 has no draw-order setting of its own in 3D (its `z_layer_2d` is 2D only); Omagari sets the bias on bevy_hanabi's draws.
+- The editor: **Draw order** row in the particle, shape and trail inspectors.
 
 ## Recipes
 
@@ -1824,6 +1872,209 @@ A warm white flash of 150 000 lm that drops quickly and is gone after 0.25 s, ea
 ```
 
 Blue glowing copies of the target's meshes every 0.06 s, each fading from 70% to nothing over 0.3 s: 5 echoes on screen behind a moving character (here the capsule; in the game the model the package is on, skinned characters in their pose). For a sword's shadows put it on the weapon with `emit: Trigger(start: "swing_start", stop: "swing_end")`, `interval: 0.04`, `lifetime: 0.25`.
+
+### Magic streaks (ribbons following swirling particles)
+
+```ron
+(
+    version: 2,
+    layers: [
+        Particles((
+            name: "wisps",
+            simulation_space: Local,
+            play: Loop,
+            effect: (
+                capacity: 32,
+                spawner: (count: Single(8.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Float(1.6))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.07))),
+                    SetAttribute((attr: "u32_0", attr_expr: Operator(Attr("particle_counter")))),
+                    SetPositionCircle((center_expr: Vec3((0.0, -0.6, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), radius_expr: Float(0.5), dimension: Surface)),
+                    SetVelocityTangent((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), speed_expr: Float(2.0))),
+                ],
+                update_modifiers: [
+                    TangentAccel((origin_expr: Vec3((0.0, 0.0, 0.0)), axis_expr: Vec3((0.0, 1.0, 0.0)), accel_expr: Float(0.5))),
+                    RadialAccel((origin_expr: Vec3((0.0, 0.0, 0.0)), accel_expr: Float(-8.0))),
+                    AccelModifier((accel_expr: Vec3((0.0, 0.9, 0.0)))),
+                    EmitSpawnEventModifier((condition: Always, count_expr: U32(1), child_index: 0)),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (2.0, 4.0, 6.0, 0.0)), (0.15, (2.0, 4.0, 6.0, 1.0)), (1.0, (1.5, 0.6, 5.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    Round((roundness_expr: Float(1.0))),
+                    Orient((mode: FaceCameraPosition)),
+                ],
+            ),
+        )),
+        Particles((
+            name: "streaks",
+            parent: Some("wisps"),
+            simulation_space: Local,
+            play: Loop,
+            effect: (
+                capacity: 512,
+                spawner: (count: Single(1.0), spawn_duration: Single(0.0), period: Single(0.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                motion_integration: None,
+                init_modifiers: [
+                    InheritAttribute((attr: "position")),
+                    SetAttribute((attr: "ribbon_id", attr_expr: Operator(ParentAttr("u32_0")))),
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Float(0.4))),
+                ],
+                update_modifiers: [],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (1.5, 3.0, 6.0, 1.0)), (1.0, (1.5, 0.4, 4.0, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    SizeOverLifetime((gradient: (g: [(0.0, (0.07, 0.07, 0.07)), (1.0, (0.0, 0.0, 0.0))]))),
+                    Orient((mode: FaceCameraPosition)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule)),
+)
+```
+
+Eight glowing wisps a second start at the feet, circle the body (TangentAccel + RadialAccel) and rise; each drags a tapering ribbon of the last 0.4 s of its path. The ribbon id is the wisp's own `u32_0` (set from `particle_counter`), so every wisp has its own ribbon. A longer child `lifetime` = longer streaks; a wider first SizeOverLifetime key = thicker streaks (keep ≥ 0.05 m for the game camera).
+
+### Swirling ribbon (one ribbon traced around the target)
+
+```ron
+(
+    version: 2,
+    layers: [
+        Particles((
+            name: "ribbon",
+            simulation_space: Local,
+            play: Loop,
+            effect: (
+                capacity: 128,
+                spawner: (count: Single(60.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                motion_integration: None,
+                init_modifiers: [
+                    SetAttribute((attr: "position", attr_expr: Operator(Vec3(
+                        Operator(Multiply(Operator(Cos(Operator(Multiply(Time, Float(4.0))))), Float(0.6))),
+                        Operator(Multiply(Operator(Sin(Operator(Multiply(Time, Float(1.3))))), Float(0.5))),
+                        Operator(Multiply(Operator(Sin(Operator(Multiply(Time, Float(4.0))))), Float(0.6))),
+                    )))),
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Float(1.0))),
+                    SetAttribute((attr: "ribbon_id", attr_expr: U32(0))),
+                ],
+                update_modifiers: [],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (6.0, 3.5, 1.0, 1.0)), (1.0, (3.0, 0.6, 0.2, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    SizeOverLifetime((gradient: (g: [(0.0, (0.1, 0.1, 0.1)), (1.0, (0.0, 0.0, 0.0))]))),
+                    Orient((mode: FaceCameraPosition)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule)),
+)
+```
+
+Sixty particles a second are born on a moving point (the init position is a function of `Time`: around the target at 0.6 m, going up and down by 0.5 m) and stay there (`motion_integration: None`); one ribbon (`ribbon_id` 0) joins the last second of them into a golden band that winds around the body and fades at its tail. Faster `Time` factors = a tighter spiral. For a streak that follows a moving hand instead, attach the layer to a socket, set `position` to `Vec3((0.0, 0.0, 0.0))` and use `simulation_space: Global`.
+
+### Debris burst (mesh particles: tumbling cubes, one-shot)
+
+```ron
+(
+    version: 2,
+    layers: [
+        Particles((
+            name: "debris",
+            simulation_space: Local,
+            play: OnStart,
+            mesh: Some(Shape(Cube)),
+            effect: (
+                capacity: 32,
+                spawner: (count: Single(24.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Opaque,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.8), Float(1.1))))),
+                    SetAttribute((attr: "f32_0", attr_expr: Operator(Uniform(Float(0.06), Float(0.12))))),
+                    SetAttribute((attr: "size", attr_expr: Operator(Attr("f32_0")))),
+                    SetAttribute((attr: "hdr_color", attr_expr: Operator(Mix(Vec4((0.16, 0.11, 0.07, 1.0)), Vec4((0.55, 0.45, 0.33, 1.0)), RandFloat)))),
+                    SetPositionSphere((center_expr: Vec3((0.0, -0.8, 0.0)), radius_expr: Float(0.1), dimension: Volume)),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Normalized(Operator(Add(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Vec3((0.0, 1.5, 0.0)))))), Operator(Uniform(Float(2.5), Float(4.5))))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel_expr: Vec3((0.0, -9.8, 0.0)))),
+                    LinearDragModifier((drag_expr: Float(0.6))),
+                    KillAabb((center_expr: Vec3((0.0, -6.0, 0.0)), half_size_expr: Vec3((20.0, 5.0, 20.0)), kill_inside: true)),
+                    SetAttribute((attr: "size", attr_expr: Operator(Multiply(Operator(Attr("f32_0")), Operator(Saturate(Operator(Multiply(Operator(Subtract(Operator(Attr("lifetime")), Age)), Float(6.0))))))))),
+                ],
+                render_modifiers: [
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule)),
+)
+```
+
+Twenty-four solid cubes (6–12 cm, a brown to sand colour each) burst up and out from near the feet, tumble as gravity bends their flight (AlongVelocity turns each cube with its path) and shrink away in their last 0.17 s; the KillAabb below y = −1 (the floor is 0.9 m below a character's root) removes pieces that fall through the floor. `mesh: Some(Shape(Shard))` gives pointed shards, `Sphere` pebbles; `play: OnTrigger("hit")` with `trigger_at` bursts them at a contact point.
+
+### Glowing shards from a mesh asset (mesh particles from the asset library)
+
+```ron
+(
+    version: 2,
+    assets: [(id: "rock", kind: Mesh((path: "vfx/models/debris.glb", mesh: 0, primitive: 0, name: Some("Rock"))))],
+    layers: [
+        Particles((
+            name: "shards",
+            simulation_space: Local,
+            play: OnStart,
+            mesh: Some(Asset("rock")),
+            effect: (
+                capacity: 32,
+                spawner: (count: Single(16.0), spawn_duration: Single(0.0), period: Single(1.0), cycle_count: 1, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Float(0.8))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.25))),
+                    SetPositionSphere((center_expr: Vec3((0.0, 0.0, 0.0)), radius_expr: Float(0.15), dimension: Volume)),
+                    SetVelocitySphere((center_expr: Vec3((0.0, 0.0, 0.0)), speed_expr: Operator(Uniform(Float(2.0), Float(3.5))))),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((drag_expr: Float(2.0))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (0.8, 2.5, 5.0, 1.0)), (1.0, (0.0, 0.0, 0.0, 1.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule)),
+)
+```
+
+Sixteen copies of the mesh "Rock" of `vfx/models/debris.glb` (0.4 m in the file × size 0.25 = 10 cm) fly out in all directions, glow cyan (additive) and darken to nothing in 0.8 s. Bring your own model with `import_asset("path/to/model.glb", project: "...")` and change the asset; the check reports a missing file, a mesh index the file does not have and a mesh without UVs.
 
 ## Design
 
