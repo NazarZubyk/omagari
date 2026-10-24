@@ -10,8 +10,8 @@ use bevy_hanabi::prelude::*;
 
 use super::builtin::{resolve_asset_path, resolve_asset_path_in};
 use crate::format::{
-    param_property_name, AfterimageLayerDef, AttachDef, Binding, EffectMaterialDef, EmitDef, ParamKind, PlayDef,
-    ProjectV2, ShapeLayerDef, SimulationSpaceDef, SurfaceLayerDef, TextureAssetDef, TrailLayerDef, TextureColorSpace, TextureFilter, TextureSlotDef, TextureWrap,
+    param_property_name, AfterimageLayerDef, AttachDef, Binding, EffectMaterialDef, EmitDef, LightLayerDef, ParamKind,
+    PlayDef, ProjectV2, ShapeLayerDef, TimedPlay, SimulationSpaceDef, SurfaceLayerDef, TextureAssetDef, TrailLayerDef, TextureColorSpace, TextureFilter, TextureSlotDef, TextureWrap,
     VisibleRangeDef,
 };
 
@@ -34,12 +34,22 @@ pub struct VfxPackage {
     pub trail_layers: Vec<PreparedTrailLayer>,
     /// One entry per afterimage layer, in layer order.
     pub afterimage_layers: Vec<PreparedAfterimageLayer>,
+    /// One entry per light layer, in layer order.
+    pub light_layers: Vec<PreparedLightLayer>,
     /// Seconds after which an instance finishes by itself: set when every
     /// root particle layer is one-shot (`play: OnStart` with a finite
-    /// `cycle_count`), every shape layer is one-shot (`play: OnStart` with a
-    /// `duration`) and there are no surface, trail or afterimage layers; the
-    /// last spawn plus the longest particle life, or the longest shape.
+    /// `cycle_count`), every shape and light layer is one-shot (`play:
+    /// OnStart` with a `duration`) and there are no surface, trail or
+    /// afterimage layers; the last spawn plus the longest particle life, or
+    /// the longest shape / light.
     pub auto_finish: Option<f32>,
+}
+
+/// A light layer ready to be spawned.
+pub struct PreparedLightLayer {
+    /// Index of the layer in `project.layers`.
+    pub layer_index: usize,
+    pub def: LightLayerDef,
 }
 
 /// A shape layer ready to be spawned: its definition and the textures of
@@ -332,7 +342,7 @@ impl VfxPackage {
                     )),
                 }
             }
-            if let Some(trigger) = layer.play.trigger() {
+            for trigger in layer.play.triggers() {
                 if project.trigger(trigger).is_none() {
                     warnings.push(format!(
                         "[{}] plays on trigger \"{}\", which is not a trigger of this package",
@@ -439,6 +449,11 @@ impl VfxPackage {
             let slots = material_textures(&project, &layer.name, &layer.material, assets, &mut textures, warnings);
             afterimage_layers.push(PreparedAfterimageLayer { layer_index, def: layer.clone(), textures: slots });
         }
+        let mut light_layers = Vec::new();
+        for (layer_index, layer) in project.light_layers() {
+            check_light_layer(&project, layer, warnings);
+            light_layers.push(PreparedLightLayer { layer_index, def: layer.clone() });
+        }
 
         // A layer's particles can be spawned by its parents until their
         // particles die, so its linger includes the whole parent chain.
@@ -467,12 +482,17 @@ impl VfxPackage {
             };
         }
 
-        // Shape layers: one-shots (OnStart with a duration) end after it;
-        // any other shape plays until the instance is stopped.
-        if !shape_layers.is_empty() {
-            let ends: Option<Vec<f32>> = shape_layers
+        // Shape and light layers: one-shots (OnStart with a duration) end
+        // after it; any other plays until the instance is stopped.
+        let timed: Vec<&dyn TimedPlay> = shape_layers
+            .iter()
+            .map(|s| &s.def as &dyn TimedPlay)
+            .chain(light_layers.iter().map(|l| &l.def as &dyn TimedPlay))
+            .collect();
+        if !timed.is_empty() {
+            let ends: Option<Vec<f32>> = timed
                 .iter()
-                .map(|s| match (&s.def.play, s.def.one_shot_duration()) {
+                .map(|s| match (s.play_def(), s.one_shot_duration()) {
                     (PlayDef::OnStart, Some(d)) => Some(d),
                     _ => None,
                 })
@@ -498,6 +518,7 @@ impl VfxPackage {
             shape_layers,
             trail_layers,
             afterimage_layers,
+            light_layers,
             auto_finish,
         }
     }
@@ -512,6 +533,7 @@ impl VfxPackage {
             .chain(self.shape_layers.iter().map(|l| l.def.linger()))
             .chain(self.trail_layers.iter().map(|l| l.def.linger()))
             .chain(self.afterimage_layers.iter().map(|l| l.def.linger()))
+            .chain(self.light_layers.iter().map(|l| l.def.linger()))
             .fold(0.0, f32::max)
     }
 
@@ -605,7 +627,7 @@ fn check_material_params(
 /// Warnings for a shape layer's own reads: its trigger, the parameters of
 /// `scale`, `rotation_speed` and `play: While`.
 fn check_shape_layer(project: &ProjectV2, layer: &ShapeLayerDef, warnings: &mut Vec<String>) {
-    if let Some(trigger) = layer.play.trigger() {
+    for trigger in layer.play.triggers() {
         if project.trigger(trigger).is_none() {
             warnings.push(format!(
                 "[{}] plays on trigger \"{}\", which is not a trigger of this package",
@@ -631,6 +653,38 @@ fn check_shape_layer(project: &ProjectV2, layer: &ShapeLayerDef, warnings: &mut 
                 layer.name, what, param
             )),
             Some(ParamKind::Float) => {}
+        }
+    }
+}
+
+/// Warnings for a light layer's reads: its triggers, the parameters of its
+/// bindings (the colour may read a Color parameter), `visible` and `play:
+/// While`.
+fn check_light_layer(project: &ProjectV2, layer: &LightLayerDef, warnings: &mut Vec<String>) {
+    for trigger in layer.play.triggers() {
+        if project.trigger(trigger).is_none() {
+            warnings.push(format!(
+                "[{}] plays on trigger \"{}\", which is not a trigger of this package",
+                layer.name, trigger
+            ));
+        }
+    }
+    let reads = layer
+        .binding_params()
+        .into_iter()
+        .chain(layer.visible.as_ref().map(|v| ("visible", v.param.as_str())))
+        .chain(layer.play.param().map(|p| ("play While", p)));
+    for (what, param) in reads {
+        match project.param(param).map(|p| p.kind()) {
+            None => warnings.push(format!(
+                "[{}] {} reads \"{}\", which is not a parameter of this package",
+                layer.name, what, param
+            )),
+            Some(ParamKind::Color) if !LightLayerDef::is_color_binding(what) => warnings.push(format!(
+                "[{}] {} reads \"{}\", a Color parameter; it needs a Float one",
+                layer.name, what, param
+            )),
+            _ => {}
         }
     }
 }

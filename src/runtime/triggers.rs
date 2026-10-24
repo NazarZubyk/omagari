@@ -1,7 +1,8 @@
 //! Triggers and the layers the runtime plays: `play: OnTrigger(name)`
-//! bursts, trigger pulses on parameters, the trigger payload (position,
-//! direction, strength), `play: While(param, threshold)`, and the CPU-side
-//! spawn rate (`rate` binding × `visible` factor).
+//! bursts, `play: Between(start, stop)` held emission, trigger pulses on
+//! parameters, the trigger payload (position, direction, strength), `play:
+//! While(param, threshold)`, and the CPU-side spawn rate (`rate` binding ×
+//! `visible` factor).
 //!
 //! The package declares its triggers (any names, any number); the game fires
 //! them with [`super::VfxControl::trigger`] / [`super::VfxControl::trigger_at`].
@@ -14,6 +15,7 @@ use super::instance::{VfxInstance, VfxLayerState, VfxState};
 use super::package::VfxPackage;
 use super::params::VfxWarnOnce;
 use super::afterimage::AfterimageLayerState;
+use super::light::LightLayerState;
 use super::shape::ShapeLayerState;
 use super::trail::TrailLayerState;
 use crate::format::{PlayDef, SimulationSpaceDef};
@@ -81,9 +83,10 @@ impl TriggerArgs {
 
 /// Applies the triggers fired since the last frame on running instances:
 /// pulses start, `OnTrigger` layers get a burst queued (played by
-/// [`drive_layer_spawners`] once their spawner exists), `OnTrigger` shape
-/// layers start over (with the payload position), trail and afterimage
-/// layers start or stop emitting. Triggers wait while
+/// [`drive_layer_spawners`] once their spawner exists), `Between` layers are
+/// held on / let go, `OnTrigger` shape and light layers start over (with the
+/// payload position), `Between` shapes and lights switch, trail and
+/// afterimage layers start or stop emitting. Triggers wait while
 /// the instance is starting (so `spawn_vfx` + `trigger_at` in one frame
 /// works) and are dropped while it stops.
 pub(crate) fn apply_triggers(
@@ -94,6 +97,7 @@ pub(crate) fn apply_triggers(
     mut shapes: Query<&mut ShapeLayerState>,
     mut trails: Query<&mut TrailLayerState>,
     mut afterimages: Query<&mut AfterimageLayerState>,
+    mut lights: Query<&mut LightLayerState>,
 ) {
     for mut instance in instances.iter_mut() {
         if instance.triggers.is_empty() {
@@ -128,24 +132,43 @@ pub(crate) fn apply_triggers(
                 }),
             }
             for (index, &entity) in instance.layers.iter().enumerate() {
-                let fires = package
-                    .particle_layers
-                    .get(index)
-                    .is_some_and(|l| l.play.trigger() == Some(name.as_str()));
-                if fires {
+                let Some(layer) = package.particle_layers.get(index) else { continue };
+                if layer.play.trigger() == Some(name.as_str()) {
                     if let Ok(mut state) = layers.get_mut(entity) {
                         state.burst = Some(args);
+                    }
+                } else if let Ok(mut state) = layers.get_mut(entity) {
+                    // Between: held on from the start trigger (its payload
+                    // is written when the spawner starts) to the stop one.
+                    if let Some(on) = layer.play.on_between(&name, state.held) {
+                        if on && !state.held {
+                            state.burst = Some(args);
+                        }
+                        state.held = on;
                     }
                 }
             }
             for (index, &entity) in instance.shapes.iter().enumerate() {
-                let fires = package
-                    .shape_layers
-                    .get(index)
-                    .is_some_and(|l| l.def.play.trigger() == Some(name.as_str()));
-                if fires {
-                    if let Ok(mut state) = shapes.get_mut(entity) {
-                        state.pending_trigger = Some(args);
+                let Some(play) = package.shape_layers.get(index).map(|l| &l.def.play) else { continue };
+                if !play.triggers().contains(&name.as_str()) {
+                    continue;
+                }
+                if let Ok(mut state) = shapes.get_mut(entity) {
+                    match play {
+                        PlayDef::OnTrigger(_) => state.pending_trigger = Some(args),
+                        _ => state.pending_switches.push(name.clone()),
+                    }
+                }
+            }
+            for (index, &entity) in instance.lights.iter().enumerate() {
+                let Some(play) = package.light_layers.get(index).map(|l| &l.def.play) else { continue };
+                if !play.triggers().contains(&name.as_str()) {
+                    continue;
+                }
+                if let Ok(mut state) = lights.get_mut(entity) {
+                    match play {
+                        PlayDef::OnTrigger(_) => state.pending_trigger = Some(args),
+                        _ => state.pending_switches.push(name.clone()),
                     }
                 }
             }
@@ -179,9 +202,10 @@ pub(crate) fn apply_triggers(
 /// Switches the spawners of an instance's layers: off while the instance
 /// stops and for retired layers; `OnTrigger` layers burst (payload written,
 /// spawner reset and switched on); `While` layers emit while their parameter
-/// is at or above the threshold (restarting from their first cycle when it
-/// rises). bevy_hanabi inserts the spawner on its first tick, so this runs
-/// every frame.
+/// is at or above the threshold, `Between` layers from their start to their
+/// stop trigger (both restarting from their first cycle when they switch
+/// on; `Between` writes the start trigger's payload). bevy_hanabi inserts
+/// the spawner on its first tick, so this runs every frame.
 pub(crate) fn drive_layer_spawners(
     packages: Res<Assets<VfxPackage>>,
     instances: Query<&VfxInstance>,
@@ -207,6 +231,7 @@ pub(crate) fn drive_layer_spawners(
                 if let Ok((mut state, _, _)) = layers.get_mut(entity) {
                     state.burst = None;
                     state.while_on = false;
+                    state.held = false;
                 }
                 continue;
             }
@@ -219,25 +244,46 @@ pub(crate) fn drive_layer_spawners(
                 // Spawned by the parent's particles; play and rate do not apply.
                 continue;
             }
+            let write_payload = |args: TriggerArgs, properties: Option<Mut<EffectProperties>>| {
+                if let Some(mut properties) = properties {
+                    let (position, direction, strength) = args.in_layer_space(global, prepared.simulation_space);
+                    for (name, value) in [
+                        ("trigger_pos", position.into()),
+                        ("trigger_dir", direction.into()),
+                        ("trigger_strength", strength.into()),
+                    ] {
+                        if prepared.properties.iter().any(|p| p == name) {
+                            properties = EffectProperties::set_if_changed(properties, name, value);
+                        }
+                    }
+                }
+            };
             match &prepared.play {
                 PlayDef::OnTrigger(_) => {
                     let Some(spawner) = spawner.as_mut() else { continue };
                     let Some(args) = state.burst.take() else { continue };
-                    if let Some(mut properties) = properties {
-                        let (position, direction, strength) = args.in_layer_space(global, prepared.simulation_space);
-                        for (name, value) in [
-                            ("trigger_pos", position.into()),
-                            ("trigger_dir", direction.into()),
-                            ("trigger_strength", strength.into()),
-                        ] {
-                            if prepared.properties.iter().any(|p| p == name) {
-                                properties = EffectProperties::set_if_changed(properties, name, value);
-                            }
-                        }
-                    }
+                    write_payload(args, properties);
                     spawner.reset();
                     spawner.active = true;
                     state.age = 0.0;
+                }
+                PlayDef::Between { .. } => {
+                    let on = state.held;
+                    let Some(spawner) = spawner.as_mut() else { continue };
+                    if on && !state.while_on {
+                        if let Some(args) = state.burst.take() {
+                            write_payload(args, properties);
+                        }
+                        spawner.reset();
+                        state.age = 0.0;
+                    }
+                    if !on {
+                        state.burst = None;
+                    }
+                    if spawner.active != on {
+                        spawner.active = on;
+                    }
+                    state.while_on = on;
                 }
                 PlayDef::While(param, threshold) => {
                     let on = instance.params.float(param).is_some_and(|v| v >= *threshold);

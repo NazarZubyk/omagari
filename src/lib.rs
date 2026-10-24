@@ -22,8 +22,8 @@ pub mod runtime;
 
 pub use format::ParamValue;
 pub use runtime::{
-    TriggerArgs, VfxCommandsExt, VfxControl, VfxFinished, VfxInstance, VfxPackage, VfxSeparateModel, VfxSpawn,
-    VfxState,
+    TriggerArgs, VfxCommandsExt, VfxControl, VfxFinished, VfxInstance, VfxPackage, VfxSeparateModel, VfxSettings,
+    VfxSpawn, VfxState,
 };
 
 /// The Omagari runtime plugin. Add it after `DefaultPlugins` and `HanabiPlugin`.

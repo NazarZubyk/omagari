@@ -25,7 +25,7 @@ use super::instance::{VfxInstance, VfxState};
 use super::package::{PreparedShapeLayer, VfxPackage};
 use super::shape_mesh::shape_mesh;
 use super::triggers::TriggerArgs;
-use crate::format::{number_value, vector_value, AttachDef, FollowDef, ParamValue, PlayDef, ShapeDef, ShapeLayerDef};
+use crate::format::{number_value, vector_value, AttachDef, FollowDef, ParamValue, PlayDef, ShapeDef, ShapeLayerDef, TimedPlay};
 
 /// A shape layer entity of an instance (a child of the instance).
 #[derive(Component, Clone, Copy, Debug)]
@@ -35,31 +35,35 @@ pub struct VfxShapeLayer {
     pub index: usize,
 }
 
-/// The play state of a shape layer as a plain state machine (no ECS).
+/// The play state of a layer with its own clock (shape and light layers)
+/// as a plain state machine (no ECS).
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct ShapePlayer {
     /// Seconds since the layer started (or its trigger last played it, or a
-    /// `While` parameter last rose over its threshold).
+    /// `While` parameter / `Between` start trigger last switched it on).
     pub age: f32,
     /// Whether it plays: `Loop` / `OnStart` from the start, `OnTrigger` once
-    /// triggered, `While` while the parameter is high; one-shots stop after
-    /// their `duration`.
+    /// triggered, `While` while the parameter is high, `Between` from its
+    /// start to its stop trigger; one-shots stop after their `duration`.
     pub active: bool,
     /// Fade level 0..1 (the lifecycle fade; one-shots use their envelope
     /// over the age instead and keep this at 1 until the instance stops).
     pub level: f32,
     while_on: bool,
+    /// A `Between` layer's trigger state (on between start and stop).
+    held: bool,
 }
 
 impl ShapePlayer {
     /// A layer that just started, at fade level `level` (a rebuilt layer
     /// keeps the level of the one it replaces).
-    pub fn new(def: &ShapeLayerDef, level: f32) -> Self {
+    pub fn new(def: &impl TimedPlay, level: f32) -> Self {
         ShapePlayer {
             age: 0.0,
-            active: matches!(def.play, PlayDef::Loop | PlayDef::OnStart),
+            active: matches!(def.play_def(), PlayDef::Loop | PlayDef::OnStart),
             level: if def.is_one_shot() { 1.0 } else { level },
             while_on: false,
+            held: false,
         }
     }
 
@@ -69,31 +73,53 @@ impl ShapePlayer {
         self.active = true;
     }
 
+    /// The trigger `name` fired on a `Between` layer: it switches on at its
+    /// start trigger and off at its stop trigger (the age starts over when it
+    /// switches on, at the next [`ShapePlayer::step`]).
+    pub fn switch(&mut self, def: &impl TimedPlay, name: &str) {
+        if let Some(on) = def.play_def().on_between(name, self.held) {
+            self.held = on;
+        }
+    }
+
+    /// Whether a `Between` layer is between its start and stop trigger.
+    pub fn is_held(&self) -> bool {
+        self.held
+    }
+
     /// Advances by `dt`. `running` = the instance runs (not stopping);
     /// `while_value` = the current value of a `While` layer's parameter.
-    pub fn step(&mut self, def: &ShapeLayerDef, dt: f32, running: bool, while_value: Option<f32>) {
+    pub fn step(&mut self, def: &impl TimedPlay, dt: f32, running: bool, while_value: Option<f32>) {
         self.age += dt;
-        if let PlayDef::While(_, threshold) = &def.play {
-            let on = running && while_value.is_some_and(|v| v >= *threshold);
+        if !running {
+            self.held = false;
+        }
+        let switched = match def.play_def() {
+            PlayDef::While(_, threshold) => Some(running && while_value.is_some_and(|v| v >= *threshold)),
+            PlayDef::Between { .. } => Some(running && self.held),
+            _ => None,
+        };
+        if let Some(on) = switched {
             if on && !self.while_on {
                 self.age = 0.0;
             }
             self.while_on = on;
             self.active = on;
         }
+        let fade = def.fade_def();
         if let Some(duration) = def.one_shot_duration() {
             if self.active && self.age >= duration {
                 self.active = false;
             }
-            self.level = if running { 1.0 } else { def.fade.step(self.level, false, dt) };
+            self.level = if running { 1.0 } else { fade.step(self.level, false, dt) };
         } else {
-            self.level = def.fade.step(self.level, running && self.active, dt);
+            self.level = fade.step(self.level, running && self.active, dt);
         }
     }
 
     /// Opacity factor: the fade level, times the envelope of a one-shot (0
     /// when it is not playing).
-    pub fn opacity(&self, def: &ShapeLayerDef) -> f32 {
+    pub fn opacity(&self, def: &impl TimedPlay) -> f32 {
         if def.is_one_shot() {
             if self.active {
                 self.level * def.envelope(self.age)
@@ -105,9 +131,9 @@ impl ShapePlayer {
         }
     }
 
-    /// The age `Age` bindings read (repeating for `Loop` / `While` shapes
-    /// with a duration).
-    pub fn binding_age(&self, def: &ShapeLayerDef) -> f32 {
+    /// The age `Age` bindings read (repeating for layers that are not
+    /// one-shots and have a duration).
+    pub fn binding_age(&self, def: &impl TimedPlay) -> f32 {
         def.binding_age(self.age)
     }
 }
@@ -132,6 +158,8 @@ pub struct ShapeLayerState {
     pub mesh: Option<Handle<Mesh>>,
     /// A trigger waiting for the next update.
     pub(crate) pending_trigger: Option<TriggerArgs>,
+    /// `Between` triggers waiting for the next update.
+    pub(crate) pending_switches: Vec<String>,
     mesh_key: String,
     generation: u32,
     started: bool,
@@ -354,6 +382,11 @@ pub(crate) fn update_shapes(
                 state.trigger_position = args.position;
             }
         }
+        for name in std::mem::take(&mut state.pending_switches) {
+            if running {
+                state.player.switch(def, &name);
+            }
+        }
         let while_value = match &def.play {
             PlayDef::While(param, _) => instance.params.float(param),
             _ => None,
@@ -549,6 +582,31 @@ mod tests {
         assert_eq!(p.opacity(&def), 1.0);
         p.step(&def, 0.1, true, Some(0.1));
         assert!((p.opacity(&def) - 0.5).abs() < 1e-5, "fades out");
+
+        // Between: on from the start trigger to the stop trigger, age from
+        // the start; a stop of the instance lets go.
+        let def = ShapeLayerDef {
+            play: PlayDef::Between { start: "a".into(), stop: "b".into() },
+            fade: FadeDef { fade_in: 0.0, fade_out: 0.2 },
+            ..Default::default()
+        };
+        let mut p = ShapePlayer::new(&def, 0.0);
+        p.step(&def, 0.1, true, None);
+        assert_eq!(p.opacity(&def), 0.0, "waits for its start");
+        p.switch(&def, "b");
+        p.step(&def, 0.1, true, None);
+        assert_eq!(p.opacity(&def), 0.0, "a stop alone does nothing");
+        p.switch(&def, "a");
+        p.step(&def, 0.1, true, None);
+        assert!(p.is_held() && p.active && p.age == 0.0 && p.opacity(&def) == 1.0);
+        p.step(&def, 0.1, true, None);
+        assert!((p.age - 0.1).abs() < 1e-6);
+        p.switch(&def, "b");
+        p.step(&def, 0.1, true, None);
+        assert!(!p.active && (p.opacity(&def) - 0.5).abs() < 1e-5, "fades out after the stop trigger");
+        p.switch(&def, "a");
+        p.step(&def, 0.1, false, None);
+        assert!(!p.is_held() && !p.active, "a stopping instance lets go");
 
         // Loop: fades in, and out when the instance stops.
         let def = ShapeLayerDef { fade: FadeDef { fade_in: 0.2, fade_out: 0.4 }, ..Default::default() };

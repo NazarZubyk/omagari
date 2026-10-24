@@ -28,6 +28,7 @@ use bevy_hanabi::prelude::*;
 use super::instance::{VfxInstance, VfxLayer};
 use super::package::VfxPackage;
 use super::afterimage::{VfxAfterimageLayer, VfxGhost};
+use super::light::VfxLightLayer;
 use super::shape::VfxShapeLayer;
 use super::surface::VfxSurfaceOverlay;
 use super::trail::VfxTrailLayer;
@@ -157,6 +158,7 @@ pub struct TargetHierarchy<'w, 's> {
             With<VfxTrailLayer>,
             With<VfxAfterimageLayer>,
             With<VfxGhost>,
+            With<VfxLightLayer>,
         )>,
     >,
     model_roots: Query<'w, 's, (), Or<(With<WorldAssetRoot>, With<DynamicWorldRoot>, With<ScenePatchInstance>)>>,

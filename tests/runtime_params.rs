@@ -358,3 +358,92 @@ fn hot_reload_applies_changed_texture_settings() {
     let ImageSampler::Descriptor(sampler) = &image.sampler else { panic!("{:?}", image.sampler) };
     assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat, "noise repeats");
 }
+
+/// Sparks along a blade during a swing: a segment layer with `play:
+/// Between(start, stop)` emits from the start trigger to the stop trigger
+/// (held emission, no parameter), writes the start trigger's payload,
+/// restarts its spawner at each start, toggles with one trigger, and is let
+/// go by a stop of the instance and never switched on by a restart.
+#[test]
+fn between_layers_emit_from_their_start_to_their_stop_trigger() {
+    const HELD: &str = r#"(
+        triggers: [(name: "swing_start"), (name: "swing_end"), (name: "toggle")],
+        sockets: [
+            (name: "blade_base", node: None, offset: (0.3, 1.0, 0.0)),
+            (name: "blade_tip", node: None, offset: (0.3, 2.0, 0.0)),
+        ],
+        layers: [
+            Particles((
+                name: "sparks",
+                attach: Segment(from: "blade_base", to: "blade_tip"),
+                play: Between(start: "swing_start", stop: "swing_end"),
+                effect: (
+                    spawner: (count: Single(40.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0),
+                    init_modifiers: [
+                        SetAttribute((attr: "lifetime", attr_expr: Float(0.3))),
+                        SetAttribute((attr: "position", attr_expr: Operator(Mix(Property("segment_a"), Property("segment_b"), RandFloat)))),
+                        SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Property("trigger_dir"), Float(2.0))))),
+                    ],
+                ),
+            )),
+            Particles((
+                name: "toggled",
+                play: Between(start: "toggle", stop: "toggle"),
+                effect: (spawner: (count: Single(5.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0)),
+            )),
+        ],
+    )"#;
+    let mut app = app();
+    let package = add_package(&mut app, HELD);
+    let target = app.world_mut().spawn((Transform::default(), Visibility::default())).id();
+    let instance = spawn(&mut app, &package, target, vec![]);
+    app.update();
+    insert_spawners(&mut app, instance);
+    let [sparks, toggled] = layers(&app, instance)[..] else { panic!() };
+    app.update();
+    assert!(!spawner(&app, sparks).active && !spawner(&app, toggled).active, "Between layers wait for their start");
+
+    control(&mut app, move |vfx| vfx.trigger_at(instance, "swing_start", TriggerArgs::default().with_direction(Vec3::X)));
+    app.update();
+    assert!(spawner(&app, sparks).active, "on from the start trigger");
+    assert_eq!(property(&app, sparks, "trigger_dir"), Some(Value::from(Vec3::X)), "the start trigger's payload");
+    for _ in 0..5 {
+        app.update();
+        assert!(spawner(&app, sparks).active, "held on while the swing lasts");
+    }
+    let state = *app.world().get::<VfxLayerState>(sparks).unwrap();
+    assert!(state.held && (state.age - 0.6).abs() < 1e-4, "age since the start: {:?}", state);
+    // A second start while held changes nothing.
+    control(&mut app, move |vfx| vfx.trigger(instance, "swing_start"));
+    app.update();
+    assert!(spawner(&app, sparks).active);
+
+    control(&mut app, move |vfx| vfx.trigger(instance, "swing_end"));
+    app.update();
+    assert!(!spawner(&app, sparks).active, "off at the stop trigger");
+    app.update();
+    assert!(!spawner(&app, sparks).active, "and stays off");
+
+    // The same trigger twice toggles.
+    control(&mut app, move |vfx| vfx.trigger(instance, "toggle"));
+    app.update();
+    assert!(spawner(&app, toggled).active);
+    control(&mut app, move |vfx| vfx.trigger(instance, "toggle"));
+    app.update();
+    assert!(!spawner(&app, toggled).active);
+
+    // Held through a stop: let go; a restart does not switch it on.
+    control(&mut app, move |vfx| vfx.trigger(instance, "swing_start"));
+    app.update();
+    assert!(spawner(&app, sparks).active);
+    control(&mut app, move |vfx| vfx.stop(instance));
+    app.update();
+    assert!(!spawner(&app, sparks).active, "a stop ends held emission");
+    assert!(control(&mut app, move |vfx| vfx.restart(instance)));
+    app.update();
+    app.update();
+    assert!(!spawner(&app, sparks).active, "a restart waits for the next start trigger");
+    control(&mut app, move |vfx| vfx.trigger(instance, "swing_start"));
+    app.update();
+    assert!(spawner(&app, sparks).active, "and plays on it");
+}
