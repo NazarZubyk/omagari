@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, lights, ribbons, meshes, order, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, lights, distortion, ribbons, meshes, order, recipes, design, game.
 
 ## Workflow
 
@@ -18,7 +18,7 @@ The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSph
 
 ## Format
 
-A project has a list of **assets** (textures, and meshes for mesh particles, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"); a `Shape` layer draws a simple 3D shape (sphere, ring, arc, ...) with the same shader (section "shapes"); a `Trail` layer draws a ribbon between two moving sockets, e.g. a sword swing's arc (section "trails"); an `Afterimage` layer leaves fading copies of the target's meshes (section "afterimages"); a `Light` layer is a point light that lights the floor and the model around it (section "lights"). All layers play at the same point, the target (the origin in the editor); Y is up.
+A project has a list of **assets** (textures, and meshes for mesh particles, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"); a `Shape` layer draws a simple 3D shape (sphere, ring, arc, ...) with the same shader (section "shapes"); a `Trail` layer draws a ribbon between two moving sockets, e.g. a sword swing's arc (section "trails"); an `Afterimage` layer leaves fading copies of the target's meshes (section "afterimages"); a `Light` layer is a point light that lights the floor and the model around it (section "lights"); a `Distortion` layer bends what is behind it, e.g. heat haze or a shockwave ripple (section "distortion"). All layers play at the same point, the target (the origin in the editor); Y is up.
 
 ```ron
 (
@@ -77,7 +77,7 @@ Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` 
 | `sort_bias` | `0.0` (default, not written) / metres | Draw order among see-through things at a similar distance: positive = drawn later, on top (section "order"). |
 | `effect` | struct | Capacity, spawner, blending, modifiers. |
 
-The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces"; so do `Shape` layers (shield bubbles, ground rings, shockwaves, slash arcs): section "shapes"; `Trail` layers (sword trails, comet tails): section "trails"; `Afterimage` layers (sword shadows, dash echoes): section "afterimages"; `Light` layers (weapon glows, hit flashes, torches): section "lights".
+The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces"; so do `Shape` layers (shield bubbles, ground rings, shockwaves, slash arcs): section "shapes"; `Trail` layers (sword trails, comet tails): section "trails"; `Afterimage` layers (sword shadows, dash echoes): section "afterimages"; `Light` layers (weapon glows, hit flashes, torches): section "lights"; `Distortion` layers (heat haze, ripples, aura shimmer): section "distortion".
 
 **Simulation space** matters as soon as the target moves (a running character, a swung weapon):
 - `Local`: particles move with the target. Use it for anything that should stay on the character: auras, shields, orbiting sparks, status effects. It is the default.
@@ -626,6 +626,56 @@ Light((
 - **Checks**: intensity below 0, range ≤ 0, a negative radius, unknown triggers and parameters (a Color parameter only for `color`) are errors; a light that never shines, a peak under 200 lm (too dim to see) or over 1 000 000 lm (blinding), ranges over 25 m (costly), a radius larger than the range, flicker outside 0..1 or with speed 0 or above 40 /s, `shadows: true`, an `OnTrigger` light without a duration, age keys past the duration and more than three lights in a package warn.
 
 The editor's 💡 Light layer (➕ ADD) has presets "weapon glow" (blue, growing with the first number parameter), "hit flash" (warm, 0.25 s on the first trigger) and "torch flicker" (orange, flickering), every value with tooltips and units, and draws the lights in the viewport (a star at the light, a circle at its range; the selected layer's range sphere). While a project has a light layer, the editor's floor is lit (FLOOR, CAPSULE and MODEL stages; the dark room shows light best), and the model is lit as in the game. Recipes "Weapon glow growing with a parameter" and "Hit flash light".
+
+## Distortion
+
+A **distortion layer** bends what is behind it: heat haze around a hot blade, the ripple of a shockwave, the air shimmering around a body. It draws a volume that shows the picture behind it moved by scrolling noise (and, with `refraction`, by its own shape like a lens). Distortion is not simulated: `analyze_project` describes the volume, how far the picture moves (in pixels of a 1080 px tall view) at every parameter's min / middle / max and over its age.
+
+```ron
+Distortion((
+    name: "haze",                                   // unique among all layers
+    attach: Segment(from: "blade_base", to: "blade_tip"),   // Target | Socket("name") | Segment(from: "a", to: "b")
+    source: Shape(shape: Capsule(radius: 0.12)),    // Shape(shape, follow, transform) | Surface(targets, offset)
+    scale: Const((1.0, 1.0, 1.0)),                  // shape sources: Const, a curve over a parameter, or Age([...])
+    strength: Param("heat", [(0.0, 0.0), (1.0, 0.01)]),     // largest shift, FRACTION OF THE VIEW HEIGHT
+    noise: (texture: (asset: "noise"), mapping: Triplanar, scale: 1.2, scroll: (0.0, 0.7), contrast: 1.0, weight: 1.0),
+    noise_b: Some((texture: (asset: "noise"), scale: 3.0, scroll: (0.15, 1.1), weight: 0.35)),  // optional second noise
+    edge: Soft,                                     // Soft (strongest in the middle) | Rim (a band inside the outline)
+    edge_softness: 0.7,                             // 0..1
+    refraction: 0.0,                                // 0..1: share of the shift along the surface's screen direction (a lens)
+    tint: Const((1.08, 1.0, 0.92, 0.35)),           // rgb multiplied into what is behind, alpha = amount; Param("c", []) reads a Color parameter
+    play: Loop,                                     // Loop | OnStart | OnTrigger("name") | While("param", t) | Between(start: "a", stop: "b")
+    duration: None,                                 // seconds: a one-shot for OnStart / OnTrigger (a ripple)
+    fade: (in: 0.2, out: 0.4),
+    visible: None,
+    sort_bias: 0.0,                                 // only where two distortion volumes overlap
+))
+```
+
+**What bends.** Distortion uses Bevy's screen-space transmission: a copy of the screen taken after the **opaque** things are drawn. So it bends the floor, walls, the character's and weapon's models (and opaque particles); **transparent particles and Omagari's see-through layers (surfaces, shapes, trails, afterimages) are drawn after it and are not bent** — they stay sharp, also where they are behind the distortion (the check notes it when the package has such layers). Particles cannot be distortion sources: put a shape around them. On a flat, single-coloured background nothing visibly bends; in the editor the room's grid is painted into the walls while a project has a distortion layer, and the MODEL / CAPSULE / FLOOR stages show it best.
+
+**Units.** `strength` is the largest shift as a fraction of the view's height, the same on the game's orthographic camera and on the orbit camera:
+
+| Look | strength | on a 1080 px tall view |
+| :-- | :-- | :-- |
+| faint heat shimmer | 0.003–0.006 | 3–6 px |
+| heat haze (a hot blade, a fire) | 0.006–0.012 | 6–13 px |
+| strong ripple (a shockwave, at its start) | 0.02–0.03 | 20–30 px |
+| tearing (avoid) | above 0.05 | over 50 px |
+
+The noise moves the picture by about a third of the strength on average; edges fade (`edge`). Smooth, low-scale noise (1–3 per metre) reads as heat; fine noise (5+) as crinkled glass.
+
+- **source `Shape`**: any shape of the shapes section (`Sphere`, `Capsule`, `Cylinder`, …) placed like a shape layer (`follow`, `transform: (offset, rotation_deg)`, `scale`). With `attach: Segment(...)` a **`Capsule` spans the two sockets** (its `length` is ignored, its radius kept): heat along a blade. Other shapes sit at the segment's middle. Flat shapes (ring, quad, arc) vanish edge-on (warning); use a sphere or capsule.
+- **source `Surface`**: `Surface(targets: AllMeshes, offset: 0.04)` — copies of the target's own meshes (skinned with the body, like a surface layer's shells) pushed `offset` metres out: the air around the body shimmers. `attach` is not used. Use `edge: Rim` so the shimmer sits along the outline.
+- **edge**: `Soft` = strongest where the surface faces the camera (the middle of a sphere, along a capsule's axis), nothing at the outline: no visible edge. `Rim` = a band peaking `edge_softness` in from the outline, fading toward the outline and the middle: a ring on a sphere.
+- **refraction**: 0 = shimmer from the noise only (haze); 0.6–1 = the shift follows the surface's direction on screen like a lens: a clean bulging ring for a shockwave (`Sphere` + `edge: Rim`). Works without a noise texture.
+- **noise**: a texture slot (asset + channel) like the surface noise (section "surfaces"); `scale` repeats per metre (Triplanar, in the shape's space or the body's rest pose) or per UV square; `scroll` squares per second (`(0, 0.7)` rises like heat). Use a Noise texture (Repeat wrap); the built-in `omagari://textures/noise.png` is right. Without a noise texture and without refraction nothing moves (warning).
+- **play** works like a shape's: `OnTrigger("slam")` + `duration` is a one-shot ripple (with `trigger_at` at the hit point), `Between` from one trigger to another, `While` while a parameter is high, `Loop` while the effect runs. `scale` and `strength` as curves over `Age` make a ripple grow and fade.
+- **Cost**: Bevy copies the screen once per frame and camera while any distortion (or other transmissive material) is drawn, and draws the volume once. A layer whose strength × fade × visible is 0 is hidden: **no draw, no copy, no cost** — bind `strength` to a parameter and set it to 0 when the effect is calm.
+- **Camera**: the game's camera needs Bevy's screen-space transmission: every `Camera3d` has `ScreenSpaceTransmission { steps: 1, .. }` by default (keep `steps` above 0); `omagari::distortion_camera()` adds it explicitly with `Hdr`. Orthographic and perspective cameras both work.
+- **Checks**: dimensions ≤ 0, a negative strength, unknown triggers, parameters and noise assets are errors; a strength that is always 0, under 0.001 (invisible) or above 0.05 (tears), no noise and no refraction, a noise texture with Clamp wrap, a noise B without a texture, noise scale ≤ 0, weights / softness / refraction outside 0..1, a surface offset inside the model or far from it, a flat shape, an `OnTrigger` layer without a duration and age keys past the duration warn; transparent layers in the same package (not bent) are a note.
+
+The editor's 🌊 Distortion layer (➕ ADD) has presets "heat haze around a blade" (a capsule between the first two sockets, stronger with the first number parameter), "shockwave ripple" (a sphere lens growing from 0.3 to 3 m over 0.6 s on the first trigger) and "aura shimmer" (the air around the body), every value with tooltips. Recipes "Blade heat haze" and "Shockwave ripple".
 
 ## Ribbons
 
@@ -1846,6 +1896,64 @@ A cool blue light at the blade that is dark at `charge` 0, a faint glow at 0.2 (
 
 A warm white flash of 150 000 lm that drops quickly and is gone after 0.25 s, each time the game fires `hit` — at the contact point with `vfx.trigger_at(instance, "hit", TriggerArgs::at(contact))`, else at the target. Add it to a hit burst package (recipe "Hit burst at the contact point") so the sparks light up the floor and the target.
 
+### Blade heat haze (distortion: capsule between two sockets, strength from a parameter)
+
+```ron
+(
+    version: 2,
+    parameters: [(name: "heat", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.2)],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    sockets: [
+        (name: "blade_base", node: None, offset: (0.35, 0.1, -0.3)),
+        (name: "blade_tip", node: None, offset: (0.35, 1.0, -0.3)),
+    ],
+    layers: [
+        Distortion((
+            name: "haze",
+            attach: Segment(from: "blade_base", to: "blade_tip"),
+            source: Shape(shape: Capsule(radius: 0.12)),
+            strength: Param("heat", [(0.0, 0.0), (1.0, 0.01)]),
+            noise: (texture: (asset: "noise"), scale: 1.2, scroll: (0.0, 0.7)),
+            noise_b: Some((texture: (asset: "noise"), scale: 3.0, scroll: (0.15, 1.1), weight: 0.35)),
+            edge_softness: 0.7,
+            tint: Const((1.08, 1.0, 0.92, 0.35)),
+            fade: (in: 0.2, out: 0.4),
+        )),
+    ],
+    preview: Some((stage: Capsule, params: [("heat", Float(1.0))])),
+)
+```
+
+Rising heat haze in a 24 cm thick capsule from the blade's base to its tip: nothing at `heat` 0 (the layer is not drawn and costs nothing), a shimmer of up to ~11 px on a 1080 px view at 1, slightly warm. The game sets `heat` (smoothed over 0.2 s), e.g. from a weapon's charge or a fire enchantment. Put the package on the weapon (or the hand) and move the sockets onto the blade (a weapon node, or offsets from the hand bone: on the Y Bot `mixamorig:RightHand` (0.08, 0.06, 0.02) → (0.95, 0.06, 0.02)). It bends the floor, walls and models behind the blade, not particles; add a glow (surface / shape / light) for the blade itself.
+
+### Shockwave ripple (distortion: a sphere lens growing over its age, played by a trigger)
+
+```ron
+(
+    version: 2,
+    triggers: [(name: "slam")],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    layers: [
+        Distortion((
+            name: "ripple",
+            source: Shape(shape: Sphere(radius: 1.0), follow: Position),
+            scale: Age([(0.0, (0.3, 0.3, 0.3)), (0.6, (3.0, 3.0, 3.0))]),
+            strength: Age([(0.0, 0.03), (0.6, 0.0)]),
+            noise: (texture: (asset: "noise"), scale: 1.5, scroll: (0.0, 0.0)),
+            edge: Rim,
+            edge_softness: 0.35,
+            refraction: 0.75,
+            play: OnTrigger("slam"),
+            duration: Some(0.6),
+            fade: (in: 0.0, out: 0.1),
+        )),
+    ],
+    preview: Some((stage: Capsule, auto_triggers: [("slam", 1.5)])),
+)
+```
+
+Each time the game fires `slam` a ring of bent air grows from 0.6 m to 6 m across in 0.6 s, bulging like a lens at the start (~32 px on a 1080 px view) and flattening out as it grows; at the hit point with `vfx.trigger_at(instance, "slam", TriggerArgs::at(point))`. Pair it with the "Shockwave" shape recipe (a glowing ring on the ground) and a hit flash light for a full impact.
+
 ### Afterimages (fading copies of the target's meshes)
 
 ```ron
@@ -2151,6 +2259,11 @@ Pick the stage that matches how the game uses the effect. The PREVIEW tab's targ
 | the light is too weak / too strong on the floor | `intensity` (lumens; lux at 1 m ≈ lm / 12.6); the editor's sun is ~4600 lux |
 | the light reaches too far / cuts off hard | `range` (metres); a larger range fades out more gently |
 | the light should flicker like fire | `flicker: (amount: 0.3, speed: 7.0)` |
+| heat haze around a blade / a fire | a distortion layer (section "distortion"): `Capsule` on a `Segment`, `strength` 0.006–0.012 over a parameter |
+| a shockwave should bend the air | a distortion `Sphere` with `edge: Rim`, `refraction: 0.75`, `scale` and `strength` over `Age`, `OnTrigger` + `duration` |
+| the haze is invisible | something opaque and detailed must be behind it (it bends only opaque things); raise `strength`; lower noise `scale` for broader waves |
+| the haze looks like crinkled glass | lower noise `scale` (1–3 per metre), `contrast` 1, a weaker `noise_b` |
+| particles behind the haze are not bent | expected: distortion bends only opaque things; transparent layers draw over it |
 
 ## Game
 
@@ -2183,3 +2296,5 @@ Light layers are Bevy `PointLight`s placed every frame at their attach point; th
 Surface layers draw on the meshes under the instance's target that belong to its own model (a weapon's glTF scene in the hand is skipped; mark other separate parts with `VfxSeparateModel`); spawn the package on the character's root entity. Shape layers need nothing from the game (the meshes are generated); a trigger's `trigger_at` position places an `OnTrigger` shape. The effect shader is embedded in the library: the game adds no shader files.
 
 Built-in textures need nothing; other textures must exist at their path under the game's `assets/` folder (`import_asset` puts them there). JPG textures need Bevy's `jpeg` feature in the game. The game camera needs `Hdr` and `Bloom` for colors above 1.0 to glow. The game can also load `*.omagari.ron` projects directly.
+
+Distortion layers need Bevy's screen-space transmission on the game camera: every `Camera3d` has `ScreenSpaceTransmission { steps: 1, .. }` by default (do not set `steps: 0`); `commands.spawn((Camera3d::default(), omagari::distortion_camera(), ...))` adds it explicitly with `Hdr` (do not add `Hdr` twice in one bundle). They bend only opaque things (the game's floor, walls, models); a distortion whose strength is 0 costs nothing.

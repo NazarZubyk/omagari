@@ -2437,6 +2437,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
     super::shape_check::check_shape_layers(&mut d, project, model_nodes.as_ref());
     super::trail_check::check_trail_layers(&mut d, project, model_nodes.as_ref(), assets_root);
     super::light_check::check_light_layers(&mut d, project, model_nodes.as_ref());
+    super::distortion_check::check_distortion_layers(&mut d, project, model_nodes.as_ref(), assets_root);
 
     match package_string(project) {
         Ok(text) => match ProjectV2::from_ron_str_with_warnings(&text) {
@@ -3733,6 +3734,7 @@ fn parameters_report(project: &ProjectV2, n_samples: usize, sets: &[(String, Par
                         LayerDef::Particles(p) => Some((p.name.as_str(), &p.play)),
                         LayerDef::Shape(s) => Some((s.name.as_str(), &s.play)),
                         LayerDef::Light(s) => Some((s.name.as_str(), &s.play)),
+                        LayerDef::Distortion(s) => Some((s.name.as_str(), &s.play)),
                         _ => None,
                     })
                     .filter_map(|(n, p)| match p {
@@ -3795,6 +3797,7 @@ fn parameters_report(project: &ProjectV2, n_samples: usize, sets: &[(String, Par
     super::shape_check::shape_sets_report(project, sets, only_effect, out);
     super::trail_check::emitter_sets_report(project, sets, only_effect, out);
     super::light_check::light_sets_report(project, sets, only_effect, out);
+    super::distortion_check::distortion_sets_report(project, sets, only_effect, out);
     for (effect, rows) in effects.iter().zip(rows.iter()) {
         if only_effect.is_some_and(|o| o != effect.name) {
             continue;
@@ -4044,6 +4047,11 @@ pub fn analyze_project_with_sets(
             super::light_check::describe_light_layer(project, index, layer, &mut out);
         }
     }
+    for (index, layer) in project.distortion_layers() {
+        if only_effect.is_none_or(|o| o == layer.name) {
+            super::distortion_check::describe_distortion_layer(project, index, layer, &mut out);
+        }
+    }
 
     if only_effect.is_none() && effects.is_empty() {
         let _ = writeln!(out, "\n## Whole project\n  no particle layers");
@@ -4054,6 +4062,9 @@ pub fn analyze_project_with_sets(
             let _ = writeln!(out, "  {}", text);
         }
         if let Some(text) = super::light_check::lights_lifecycle_text(project) {
+            let _ = writeln!(out, "  {}", text);
+        }
+        if let Some(text) = super::distortion_check::distortions_lifecycle_text(project) {
             let _ = writeln!(out, "  {}", text);
         }
     } else if only_effect.is_none() {
@@ -4092,6 +4103,9 @@ pub fn analyze_project_with_sets(
             let _ = writeln!(out, "  {}", text);
         }
         if let Some(text) = super::light_check::lights_lifecycle_text(project) {
+            let _ = writeln!(out, "  {}", text);
+        }
+        if let Some(text) = super::distortion_check::distortions_lifecycle_text(project) {
             let _ = writeln!(out, "  {}", text);
         }
     }
@@ -4198,7 +4212,7 @@ mod tests {
             assert!(report.contains("## Whole project"), "{}", report);
             checked += 1;
         }
-        assert!(checked >= 28, "only {} recipes found", checked);
+        assert!(checked >= 30, "only {} recipes found", checked);
     }
 
     fn has(list: &[String], needle: &str) -> bool {
