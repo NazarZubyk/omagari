@@ -317,6 +317,8 @@ pub enum MaterialOn {
     Body,
     /// A shape layer's mesh.
     Shape,
+    /// A trail's ribbon (u = age along it, v = from → to).
+    Trail,
 }
 
 fn mapping_text(mapping: NoiseMappingDef, scale: f32, on: MaterialOn) -> String {
@@ -333,6 +335,14 @@ fn mapping_text(mapping: NoiseMappingDef, scale: f32, on: MaterialOn) -> String 
             "by the shape's UVs (u around / along, v up / across), {} repeats per UV square (sticks to the shape as it grows)",
             fmt_num(scale)
         ),
+        (NoiseMappingDef::Triplanar, MaterialOn::Trail) => format!(
+            "triplanar in world space, {} repeats per metre (the trail moves through a still pattern)",
+            fmt_num(scale)
+        ),
+        (NoiseMappingDef::Uv, MaterialOn::Trail) => format!(
+            "by the trail's UVs (u along its age, 0 newest → 1 oldest; v from → to), {} repeats per UV square (a scroll in u runs along the trail)",
+            fmt_num(scale)
+        ),
     }
 }
 
@@ -345,7 +355,7 @@ fn noise_text(project: &ProjectV2, def: &NoiseDef, v: &NoiseValues, on: Material
             (NoiseMappingDef::Triplanar, MaterialOn::Body) if v.scale > 0.0 => {
                 format!(" ≈ {} m/s on the body", fmt_num(speed / v.scale))
             }
-            (NoiseMappingDef::Triplanar, MaterialOn::Shape) if v.scale > 0.0 => {
+            (NoiseMappingDef::Triplanar, MaterialOn::Shape | MaterialOn::Trail) if v.scale > 0.0 => {
                 format!(" ≈ {} m/s", fmt_num(speed / v.scale))
             }
             _ => String::new(),
@@ -404,6 +414,7 @@ pub fn describe_material(project: &ProjectV2, m: &EffectMaterialDef, v: &EffectV
         let what = match on {
             MaterialOn::Body => "the model",
             MaterialOn::Shape => "the shape",
+            MaterialOn::Trail => "the trail",
         };
         let ends = if axis.is_uv() { "0..1 of the texture coordinate" } else { "0 = low end, 1 = high end" };
         let _ = writeln!(
