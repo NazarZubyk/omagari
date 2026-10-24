@@ -594,7 +594,7 @@ fn tool_list() -> Value {
                     },
                     "model": {
                         "type": "string",
-                        "description": "A glTF model (.glb/.gltf) of the game assets folder to play it on (sets the model stage), e.g. \"anim/tpose.glb\". list_assets lists the models, describe_model their nodes and clips."
+                        "description": "A glTF model (.glb/.gltf) of the game assets folder to play it on (sets the model stage), e.g. \"characters/hero.glb\". list_assets lists the models, describe_model their nodes and clips."
                     },
                     "animation": {
                         "type": "string",
@@ -602,7 +602,7 @@ fn tool_list() -> Value {
                     },
                     "animation_file": {
                         "type": "string",
-                        "description": "Another glTF file the clip comes from, with the same skeleton (node names), e.g. \"anim/run.glb\"; \"\" = the model's file."
+                        "description": "Another glTF file the clip comes from, with the same skeleton (node names), e.g. \"characters/run.glb\"; \"\" = the model's file."
                     },
                     "attach_to": {
                         "type": "string",
@@ -622,7 +622,7 @@ fn tool_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "The model, relative to the game assets folder (e.g. \"anim/tpose.glb\") or absolute." },
+                    "path": { "type": "string", "description": "The model, relative to the game assets folder (e.g. \"characters/hero.glb\") or absolute." },
                     "max_nodes": { "type": "integer", "description": "Nodes listed in the hierarchy (default 300)." }
                 },
                 "required": ["path"]
