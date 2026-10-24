@@ -535,7 +535,7 @@ mod tests {
         assert_eq!((a.name.as_str(), b.name.as_str()), ("surface", "surface2"));
         assert_eq!(assets.len(), 1);
         assert_eq!(texture_path(&assets[0]), "omagari://textures/noise.png");
-        let AssetKind::Texture(t) = &assets[0].kind;
+        let t = assets[0].kind.as_texture().unwrap();
         assert_eq!(t.purpose, TexturePurpose::Noise);
         assert_eq!(a.material.noise_a.as_ref().unwrap().texture.asset, "noise");
     }

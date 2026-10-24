@@ -62,6 +62,44 @@ pub struct ModelPrimitive {
     /// The primitive entity's `Name`: `<mesh>.<material>`.
     pub entity_name: String,
     pub material: Option<String>,
+    /// Vertex count (the `POSITION` accessor's count).
+    pub vertices: usize,
+    /// Has `NORMAL` (Bevy computes flat normals for triangle lists without).
+    pub has_normals: bool,
+    /// Has `TEXCOORD_0`.
+    pub has_uvs: bool,
+    /// Joints and weights (a skinned primitive).
+    pub skinned: bool,
+    /// Triangles (not points or lines).
+    pub triangles: bool,
+    /// Bounds `(min, max)` in the mesh's own space (the `POSITION` accessor's
+    /// min / max).
+    pub bounds: (Vec3, Vec3),
+}
+
+impl ModelPrimitive {
+    /// The largest side of its bounds (m).
+    pub fn size(&self) -> f32 {
+        (self.bounds.1 - self.bounds.0).max_element().max(0.0)
+    }
+
+    /// `24 vertices, 0.20 m` plus what mesh particles cannot use.
+    pub fn mesh_text(&self) -> String {
+        let mut out = format!("{} vertices, {:.2} m", self.vertices, self.size());
+        if !self.has_uvs {
+            out += ", no UVs";
+        }
+        if !self.has_normals {
+            out += ", no normals";
+        }
+        if self.skinned {
+            out += ", skinned";
+        }
+        if !self.triangles {
+            out += ", not triangles";
+        }
+        out
+    }
 }
 
 /// One animation clip.
@@ -142,6 +180,19 @@ impl ModelInfo {
         Ok(info)
     }
 
+    /// Reads a whole `.glb` (or `.gltf` JSON) file's bytes (tests).
+    #[cfg(test)]
+    pub fn from_glb_bytes(bytes: &[u8]) -> Result<ModelInfo, String> {
+        if bytes.len() >= 20 && &bytes[0..4] == b"glTF" {
+            let length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+            if &bytes[16..20] != b"JSON" || bytes.len() < 20 + length {
+                return Err("the first GLB chunk is not JSON".into());
+            }
+            return ModelInfo::from_json(&bytes[20..20 + length]);
+        }
+        ModelInfo::from_json(bytes)
+    }
+
     /// Parses glTF JSON.
     pub fn from_json(json: &[u8]) -> Result<ModelInfo, String> {
         let root = gltf::json::Root::from_slice(json).map_err(|e| format!("not glTF: {}", e))?;
@@ -161,12 +212,20 @@ impl ModelInfo {
                     .map(|p| {
                         let material = p.material().name().map(str::to_string);
                         let mesh_name = mesh.name().unwrap_or("Mesh");
+                        let b = p.bounding_box();
+                        let has = |s: gltf::Semantic| p.get(&s).is_some();
                         ModelPrimitive {
                             entity_name: match &material {
                                 Some(m) => format!("{}.{}", mesh_name, m),
                                 None => mesh_name.to_string(),
                             },
                             material,
+                            vertices: p.get(&gltf::Semantic::Positions).map(|a| a.count()).unwrap_or(0),
+                            has_normals: has(gltf::Semantic::Normals),
+                            has_uvs: has(gltf::Semantic::TexCoords(0)),
+                            skinned: has(gltf::Semantic::Joints(0)),
+                            triangles: p.mode() == gltf::mesh::Mode::Triangles,
+                            bounds: (Vec3::from(b.min), Vec3::from(b.max)),
                         }
                     })
                     .collect(),
@@ -333,6 +392,21 @@ impl ModelInfo {
             || self.meshes.iter().any(|m| m.name == name || m.primitives.iter().any(|p| p.entity_name == name))
     }
 
+    /// The primitive `primitive` of mesh `mesh` (the indices of a mesh
+    /// asset), with the mesh.
+    pub fn primitive(&self, mesh: usize, primitive: usize) -> Option<(&ModelMesh, &ModelPrimitive)> {
+        let m = self.meshes.get(mesh)?;
+        m.primitives.get(primitive).map(|p| (m, p))
+    }
+
+    /// Every mesh primitive: (mesh index, primitive index, mesh, primitive).
+    pub fn primitives(&self) -> impl Iterator<Item = (usize, usize, &ModelMesh, &ModelPrimitive)> {
+        self.meshes
+            .iter()
+            .enumerate()
+            .flat_map(|(mi, m)| m.primitives.iter().enumerate().map(move |(pi, p)| (mi, pi, m, p)))
+    }
+
     /// A one-line summary.
     pub fn summary(&self) -> String {
         let bones = self.nodes.iter().filter(|n| n.bone).count();
@@ -382,10 +456,15 @@ impl ModelInfo {
             }
         }
         if !self.meshes.is_empty() {
-            out += "Meshes (entity name = mesh.material; surface layer targets):\n";
-            for m in self.meshes.iter() {
+            out += "Meshes (entity name = mesh.material: surface layer targets; MeshI/PrimitiveJ: a mesh asset for mesh particles, import_asset(path, mesh: I, primitive: J)):\n";
+            for (mi, m) in self.meshes.iter().enumerate() {
                 let skinned = self.nodes.iter().any(|n| n.mesh.is_some_and(|i| self.meshes.get(i) == Some(m)) && n.skinned);
-                let prims: Vec<String> = m.primitives.iter().map(|p| format!("\"{}\"", p.entity_name)).collect();
+                let prims: Vec<String> = m
+                    .primitives
+                    .iter()
+                    .enumerate()
+                    .map(|(pi, p)| format!("\"{}\" (Mesh{}/Primitive{}, {})", p.entity_name, mi, pi, p.mesh_text()))
+                    .collect();
                 out += &format!("- {}{}: {}\n", m.name, if skinned { " (skinned)" } else { "" }, prims.join(", "));
             }
         }
@@ -446,6 +525,27 @@ pub fn scan_models(game_root: &Path, limit: usize) -> Vec<(String, u64)> {
 pub mod tests {
     use super::*;
     use bevy::math::Quat;
+
+    /// The generated `.glb` of the mesh-asset tests (`Rock` with UVs and
+    /// normals, `Bare` with positions only).
+    #[path = "../../../tests/fixtures/glb.rs"]
+    pub mod glb;
+
+    /// Meshes and primitives of a model: vertex counts, UVs, normals, sizes.
+    #[test]
+    fn mesh_primitives_are_listed_with_their_contents() {
+        let info = ModelInfo::from_glb_bytes(&glb::rock_glb()).unwrap();
+        let prims: Vec<(usize, usize, &str, usize, bool, bool)> =
+            info.primitives().map(|(m, p, mesh, prim)| (m, p, mesh.name.as_str(), prim.vertices, prim.has_uvs, prim.has_normals)).collect();
+        assert_eq!(prims, vec![(0, 0, "Rock", 24, true, true), (1, 0, "Bare", 3, false, false)]);
+        let (_, rock) = info.primitive(0, 0).unwrap();
+        assert!((rock.size() - 0.4).abs() < 1e-5, "{}", rock.size());
+        assert_eq!(rock.mesh_text(), "24 vertices, 0.40 m");
+        assert_eq!(info.primitive(1, 0).unwrap().1.mesh_text(), "3 vertices, 0.30 m, no UVs, no normals");
+        assert!(info.primitive(0, 1).is_none() && info.primitive(2, 0).is_none());
+        let text = info.describe(10);
+        assert!(text.contains("\"Rock\" (Mesh0/Primitive0, 24 vertices, 0.40 m)"), "{}", text);
+    }
 
     /// Writes a small glTF test model (`.gltf` + `.bin`):
     /// `Armature` > `Hips` [bone] > `Spine` [bone] > `RightHand` [bone] >

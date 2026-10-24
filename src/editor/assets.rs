@@ -22,7 +22,7 @@ use bevy_egui::egui::{self, RichText};
 use bevy_egui::{EguiTextureHandle, EguiUserTextures};
 use image::RgbaImage;
 use omagari::format::{
-    builtin_texture_path, AssetKind, ChannelDef, ProjectV2, TextureColorSpace, TextureFilter, TexturePurpose,
+    builtin_texture_path, AssetKind, ChannelDef, MeshAssetDef, ProjectV2, TextureColorSpace, TextureFilter, TexturePurpose,
     TextureWrap, BUILTIN_NOISE_TEXTURE, PARTICLE_TEXTURES,
 };
 
@@ -31,6 +31,7 @@ use super::hints;
 use super::problems::{badge, subject_box, ACCENT};
 use super::session::{EditorSession, RightTab};
 use crate::asset_library::{self as library, DecodedPreview, IMPORT_DIR, TEXTURE_EXTENSIONS};
+use crate::model_info::ModelInfo;
 use crate::settings::GameAssets;
 
 /// Largest side of the decoded preview (the large view).
@@ -75,8 +76,10 @@ impl ImportDialog {
         let result = slot.clone();
         std::thread::spawn(move || {
             let mut dialog = rfd::AsyncFileDialog::new()
-                .set_title("Import textures")
-                .add_filter("Textures (PNG, JPG, KTX2)", &TEXTURE_EXTENSIONS);
+                .set_title("Import textures or models")
+                .add_filter("Textures and models (PNG, JPG, KTX2, GLB, glTF)", &[&TEXTURE_EXTENSIONS[..], &crate::model_info::MODEL_EXTENSIONS[..]].concat())
+                .add_filter("Textures (PNG, JPG, KTX2)", &TEXTURE_EXTENSIONS)
+                .add_filter("Models (GLB, glTF)", &crate::model_info::MODEL_EXTENSIONS);
             if let Some(dir) = start_dir.filter(|d| d.is_dir()) {
                 dialog = dialog.set_directory(dir);
             }
@@ -402,7 +405,7 @@ pub fn assets_tab(
     previews: &mut TexturePreviews,
     game_assets: &GameAssets,
 ) {
-    ui.label("The textures of this project. Layers pick one by its id.");
+    ui.label("The textures and meshes of this project. Layers pick one by its id.");
     ui.horizontal_wrapped(|ui| {
         let busy = session.import_dialog.is_open();
         if ui
@@ -438,12 +441,13 @@ pub fn assets_tab(
             ui.label(RichText::new("file dialog open…").weak());
         }
     });
-    ui.label(RichText::new("…or drop PNG / JPG files onto the window.").weak());
+    ui.label(RichText::new("…or drop PNG / JPG textures or GLB / glTF models (meshes for mesh particles) onto the window.").weak());
     ui.label(
         RichText::new(format!(
-            "Game assets folder: {} (imports outside it are copied to {}/)",
+            "Game assets folder: {} (imports outside it are copied to {}/, models to {}/)",
             game_assets.assets_root().display(),
-            IMPORT_DIR
+            IMPORT_DIR,
+            library::MODEL_IMPORT_DIR
         ))
         .weak()
         .small(),
@@ -451,21 +455,21 @@ pub fn assets_tab(
     ui.separator();
 
     if project.assets.is_empty() {
-        ui.label(RichText::new("No assets yet: import a texture, add a built-in, or pick one on a layer.").weak());
+        ui.label(RichText::new("No assets yet: import a texture or a model, add a built-in, or pick one on a layer.").weak());
     }
     if session.selected_asset.as_ref().is_some_and(|id| project.asset(id).is_none()) {
         session.selected_asset = None;
     }
 
-    let rows: Vec<(String, String, TexturePurpose)> = project
+    let rows: Vec<(String, String, String, bool)> = project
         .assets
         .iter()
-        .map(|a| {
-            let AssetKind::Texture(t) = &a.kind;
-            (a.id.clone(), t.path.clone(), t.purpose)
+        .map(|a| match &a.kind {
+            AssetKind::Texture(t) => (a.id.clone(), t.path.clone(), t.purpose.name().to_string(), false),
+            AssetKind::Mesh(m) => (a.id.clone(), m.path.clone(), format!("Mesh {}", m.label()), true),
         })
         .collect();
-    for (id, path, purpose) in rows.iter() {
+    for (id, path, kind_text, is_mesh) in rows.iter() {
         let selected = session.selected_asset.as_deref() == Some(id.as_str());
         let users = project.asset_users(id);
         let subject = format!("asset \"{}\"", id);
@@ -477,7 +481,11 @@ pub fn assets_tab(
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    thumbnail(ui, previews, path, 44.0);
+                    if *is_mesh {
+                        mesh_icon(ui, 44.0);
+                    } else {
+                        thumbnail(ui, previews, path, 44.0);
+                    }
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(id).strong());
@@ -492,13 +500,13 @@ pub fn assets_tab(
                             1 => format!("used by \"{}\"", users[0]),
                             n => format!("used by {} layers", n),
                         };
-                        ui.label(RichText::new(format!("{} · {}", purpose.name(), used)).small());
+                        ui.label(RichText::new(format!("{} · {}", kind_text, used)).small());
                     });
                 });
             })
             .response
             .interact(egui::Sense::click())
-            .on_hover_text("Click to see and edit this texture");
+            .on_hover_text(if *is_mesh { "Click to see and edit this mesh" } else { "Click to see and edit this texture" });
         if response.clicked() {
             session.actions.push(Action::SelectAsset(id.clone()));
         }
@@ -506,7 +514,7 @@ pub fn assets_tab(
 
     if let Some(id) = session.selected_asset.clone() {
         ui.separator();
-        asset_details(ui, project, session, previews, &id);
+        asset_details(ui, project, session, previews, game_assets, &id);
     }
 }
 
@@ -515,6 +523,7 @@ fn asset_details(
     project: &mut ProjectV2,
     session: &mut EditorSession,
     previews: &mut TexturePreviews,
+    game_assets: &GameAssets,
     id: &str,
 ) {
     let users = project.asset_users(id);
@@ -525,7 +534,13 @@ fn asset_details(
     let Some(asset) = project.assets.iter_mut().find(|a| a.id == id) else {
         return;
     };
-    let AssetKind::Texture(texture) = &mut asset.kind;
+    let texture = match &mut asset.kind {
+        AssetKind::Texture(texture) => texture,
+        AssetKind::Mesh(mesh) => {
+            mesh_details(ui, mesh, session, game_assets, id, &users, &user_layers);
+            return;
+        }
+    };
     let path = texture.path.clone();
 
     ui.label(RichText::new(format!("🖼 {}", id)).color(ACCENT).strong());
@@ -731,6 +746,139 @@ fn asset_details(
         }
     });
 
+    if let Some(to) = rename {
+        session.actions.push(Action::RenameAsset { from: id.to_string(), to });
+    }
+}
+
+/// The placeholder thumbnail of a mesh asset.
+fn mesh_icon(ui: &mut egui::Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, egui::Color32::from_gray(32));
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "🔶",
+        egui::FontId::proportional(size * 0.55),
+        egui::Color32::from_rgb(170, 200, 230),
+    );
+}
+
+/// The id row with RENAME (a typed draft committed on Enter or the button).
+fn rename_row(ui: &mut egui::Ui, session: &mut EditorSession, id: &str, hint: &str) -> Option<String> {
+    let mut rename = None;
+    ui.horizontal(|ui| {
+        let draft = match &mut session.rename_draft {
+            Some((asset, text)) if asset == id => text,
+            slot => {
+                *slot = Some((id.to_string(), id.to_string()));
+                &mut slot.as_mut().unwrap().1
+            }
+        };
+        let response = ui.add(egui::TextEdit::singleline(draft).desired_width(140.0)).on_hover_text(hint);
+        let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let changed = draft.trim() != id && !draft.trim().is_empty();
+        if (ui.add_enabled(changed, egui::Button::new("RENAME")).on_hover_text(hint).clicked() || enter) && changed {
+            rename = Some(draft.trim().to_string());
+        }
+    });
+    rename
+}
+
+/// The details of a mesh asset: id, file, which mesh of the file (picked
+/// from the model's meshes), what it is, users, delete.
+fn mesh_details(
+    ui: &mut egui::Ui,
+    mesh: &mut MeshAssetDef,
+    session: &mut EditorSession,
+    game_assets: &GameAssets,
+    id: &str,
+    users: &[String],
+    user_layers: &[(String, usize)],
+) {
+    ui.label(RichText::new(format!("🔶 {}", id)).color(ACCENT).strong());
+    subject_box(ui, session, &format!("asset \"{}\"", id));
+    let info = ModelInfo::cached(&game_assets.assets_root().join(&mesh.path));
+    let grid_id = ui.make_persistent_id(("mesh asset settings", id));
+    let mut rename = None;
+    egui::Grid::new(grid_id).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        ui.label("Id").on_hover_text(hints::MESH_ASSET_ID);
+        rename = rename_row(ui, session, id, hints::MESH_ASSET_ID);
+        ui.end_row();
+
+        ui.label("File").on_hover_text(hints::MESH_ASSET_FILE);
+        ui.add(egui::Label::new(RichText::new(&mesh.path).small()).wrap()).on_hover_text(hints::MESH_ASSET_FILE);
+        ui.end_row();
+
+        ui.label("Mesh").on_hover_text(hints::MESH_ASSET_MESH);
+        match &info {
+            Ok(info) => {
+                let current = info
+                    .primitive(mesh.mesh as usize, mesh.primitive as usize)
+                    .map(|(m, p)| format!("{} ({})", m.name, p.entity_name))
+                    .unwrap_or_else(|| format!("{} (not in the file)", mesh.label()));
+                egui::ComboBox::from_id_salt(grid_id.with("mesh"))
+                    .selected_text(current)
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for (mi, pi, m, p) in info.primitives() {
+                            let selected = (mesh.mesh as usize, mesh.primitive as usize) == (mi, pi);
+                            if ui
+                                .selectable_label(selected, format!("{} ({}) · Mesh{}/Primitive{}", m.name, p.entity_name, mi, pi))
+                                .on_hover_text(p.mesh_text())
+                                .clicked()
+                            {
+                                mesh.mesh = mi as u32;
+                                mesh.primitive = pi as u32;
+                                mesh.name = Some(m.name.clone());
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(hints::MESH_ASSET_MESH);
+            }
+            Err(e) => {
+                ui.label(RichText::new(format!("{} — {}", mesh.label(), e)).small().weak());
+            }
+        }
+        ui.end_row();
+
+        if let Ok(info) = &info {
+            if let Some((_, p)) = info.primitive(mesh.mesh as usize, mesh.primitive as usize) {
+                ui.label("Contents").on_hover_text("What the mesh has, read from the file");
+                ui.label(RichText::new(p.mesh_text()).small());
+                ui.end_row();
+            }
+        }
+
+        ui.label("Used by").on_hover_text("The particle layers that draw this mesh");
+        ui.horizontal_wrapped(|ui| {
+            if users.is_empty() {
+                ui.label(RichText::new("no layer").weak());
+            }
+            for (user, index) in user_layers.iter() {
+                if ui.small_button(user).on_hover_text("Open this layer").clicked() {
+                    session.actions.push(Action::SelectLayer(*index));
+                }
+            }
+        });
+        ui.end_row();
+    });
+    ui.add_space(4.0);
+    let response = ui
+        .add_enabled(users.is_empty(), egui::Button::new("🗑 DELETE"))
+        .on_hover_text("Remove this mesh from the project (the file stays on disk)");
+    let response = if users.is_empty() {
+        response
+    } else {
+        response.on_disabled_hover_text(format!(
+            "Used by {}; pick another mesh on those layers first",
+            users.iter().map(|u| format!("\"{}\"", u)).collect::<Vec<_>>().join(", ")
+        ))
+    };
+    if response.clicked() {
+        session.actions.push(Action::DeleteAsset(id.to_string()));
+    }
     if let Some(to) = rename {
         session.actions.push(Action::RenameAsset { from: id.to_string(), to });
     }

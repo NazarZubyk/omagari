@@ -85,7 +85,10 @@ pub fn attribute(name: &str) -> &'static str {
 
 // --- assets ------------------------------------------------------------------
 
-pub const ASSET_IMPORT: &str = "Pick PNG or JPG files. Files outside the game assets folder are copied into its vfx/textures/; files already inside it are used where they are.";
+pub const ASSET_IMPORT: &str = "Pick PNG or JPG textures, or GLB / glTF models (a mesh of the model becomes a mesh asset for mesh particles). Files outside the game assets folder are copied into its vfx/textures/ (models: vfx/models/, .glb only); files already inside it are used where they are.";
+pub const MESH_ASSET_ID: &str = "The name particle layers use to pick this mesh (Mesh: Asset). Renaming updates every layer that uses it.";
+pub const MESH_ASSET_FILE: &str = "The glTF model the mesh comes from, relative to the game's assets/ folder. The game loads the mesh from it, so the file must ship with the game.";
+pub const MESH_ASSET_MESH: &str = "Which mesh of the file the particles draw (a mesh with several materials has one part per material). It needs texture coordinates (UVs) for bevy_hanabi to draw it; particles are not lit, so they show one colour per particle.";
 pub const ASSET_ID: &str = "The name layers use to pick this texture. Renaming updates every layer that uses it.";
 pub const ASSET_PATH: &str = "Where the file is, relative to the game's assets/ folder (omagari://textures/… = built into Omagari, nothing to copy).";
 pub const ASSET_PURPOSE: &str = "What the texture is for. It picks the defaults of the settings below.";
@@ -189,7 +192,10 @@ pub const SHAPE_SPIN: &str = "Turning speed in degrees per second around the axi
 pub const SHAPE_PLAY: &str = "When the shape shows. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires the trigger (the age starts over; with a payload position it plays there); While = while a parameter is at or above a threshold; Between = from a start trigger until a stop trigger.";
 pub const SHAPE_DURATION: &str = "Seconds an OnStart / OnTrigger shape plays (it fades in and out inside this time and is gone after it). For Loop / While shapes the age starts over every Duration seconds, so age curves repeat. Off = plays until the effect stops.";
 pub const SHAPE_FADE: &str = "One-shots fade in over In after they start and out over Out before they end. Other shapes fade in when they start and out when they stop (While: when the parameter drops). Every shape fades out over Out when the game stops the effect.";
-pub const SHAPE_SORT: &str = "Draw order among see-through things at a similar distance (metres added to its distance): positive = drawn later, on top of particles and skin effects; negative = earlier.";
+pub const PARTICLE_PRESETS: &str = "Ready-made looks from the guide's tested recipes: ribbons (GPU particle streaks: magic streaks, a swirl, a streak behind the emitter) and mesh particles (debris, shards). The layer keeps its name and attach; a preset may add a second layer under it.";
+pub const PARTICLE_MESH: &str = "What each particle draws: the default flat quad, a built-in 3D shape (1 m across at size 1, so the particle size is its size in metres), or a mesh asset (a mesh of a glTF model imported in the ASSETS tab). Mesh particles are unlit: one flat colour per particle (vary the colour per particle); use Opaque for solid debris or Add for glowing shards.";
+pub const PARTICLE_SORT: &str = "Draw order among see-through things at a similar distance (metres added to the emitter's distance from the camera): positive = drawn later, over other effects; negative = earlier, under them. The whole layer moves at once (particles inside it are not re-sorted). No effect with Opaque / Mask blending.";
+pub const SHAPE_SORT: &str ="Draw order among see-through things at a similar distance (metres added to its distance): positive = drawn later, on top of particles and skin effects; negative = earlier.";
 pub const MASK: &str = "A mask texture: where it is dark the layer is transparent.";
 
 // --- trail and afterimage layers ---------------------------------------------------
