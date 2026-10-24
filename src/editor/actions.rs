@@ -14,6 +14,7 @@ use omagari::runtime::resolve_asset_path_in;
 use super::assets::{select_asset, TexturePreviews};
 use super::effect::new_particles_layer;
 use super::shape::new_shape_layer;
+use super::light::new_light_layer;
 use super::trail::{new_afterimage_layer, new_trail_layer};
 use super::surface::new_surface_layer;
 use super::helpers::ui_text;
@@ -55,6 +56,8 @@ pub enum Action {
     AddTrailLayer,
     /// Adds an afterimage layer.
     AddAfterimageLayer,
+    /// ➕ ADD → Light layer.
+    AddLightLayer,
     SelectLayer(usize),
     DuplicateLayer(usize),
     DeleteLayer(usize),
@@ -324,6 +327,14 @@ impl ActionContext<'_> {
                 let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
                 let layer = new_afterimage_layer(&mut self.project.triggers, &names);
                 self.project.layers.push(LayerDef::Afterimage(layer));
+                self.session.select(self.project.layers.len() - 1);
+            }
+            Action::AddLightLayer => {
+                let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
+                let param = self.project.parameters.iter().find(|p| p.kind() == omagari::format::ParamKind::Float).cloned();
+                let project = &mut *self.project;
+                let layer = new_light_layer(&mut project.triggers, &project.sockets, &names, param.as_ref());
+                project.layers.push(LayerDef::Light(layer));
                 self.session.select(self.project.layers.len() - 1);
             }
             Action::SelectLayer(index) => {

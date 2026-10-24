@@ -350,12 +350,43 @@ fn ui_for_texture(ui: &mut egui::Ui, texture: &mut Option<String>, assets: &mut 
 }
 
 fn play_label(play: &PlayDef) -> &'static str {
-    match play {
-        PlayDef::Loop => "Loop",
-        PlayDef::OnStart => "OnStart",
-        PlayDef::OnTrigger(_) => "OnTrigger",
-        PlayDef::While(..) => "While",
+    play.kind_name()
+}
+
+/// A trigger picker (the project's triggers), with a warning for unknown
+/// names.
+fn trigger_picker(ui: &mut egui::Ui, trigger: &mut String, app: &AppContext, id: egui::Id, hint: &str) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if trigger.is_empty() { "(pick)".to_string() } else { trigger.clone() })
+        .show_ui(ui, |ui| {
+            if app.trigger_names.is_empty() {
+                ui.label(egui::RichText::new("No triggers: add one in the TRIGGERS tab").weak());
+            }
+            for name in app.trigger_names.iter() {
+                ui.selectable_value(trigger, name.clone(), name);
+            }
+        })
+        .response
+        .on_hover_text(hint);
+    if !app.trigger_names.contains(trigger) {
+        ui.colored_label(egui::Color32::from_hex("#FF8866").unwrap(), "⚠")
+            .on_hover_text("No trigger has this name (TRIGGERS tab)");
     }
+}
+
+/// Start and stop triggers for a new `Between`: `swing_start` /
+/// `swing_end` when the project has them, else its first two triggers.
+fn between_defaults(app: &AppContext) -> PlayDef {
+    let find = |name: &str, index: usize| {
+        app.trigger_names
+            .iter()
+            .find(|t| t.as_str() == name)
+            .or(app.trigger_names.get(index))
+            .or(app.trigger_names.first())
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
+    };
+    PlayDef::Between { start: find("swing_start", 0), stop: find("swing_end", 1) }
 }
 
 /// The play mode: combo, plus the trigger or the parameter and threshold.
@@ -389,32 +420,32 @@ pub(crate) fn ui_for_play(ui: &mut egui::Ui, play: &mut PlayDef, app: &AppContex
                     param.map(|p| p.middle()).unwrap_or(0.5),
                 );
             }
+            let between = matches!(play, PlayDef::Between { .. });
+            if ui
+                .selectable_label(between, "Between")
+                .on_hover_text("Plays from a start trigger until a stop trigger (e.g. swing_start / swing_end fired by the game's attack): sparks or light only during a swing. The same trigger twice = on / off")
+                .clicked()
+                && !between
+            {
+                *play = between_defaults(app);
+            }
         })
         .response
         .on_hover_text(hints::PLAY);
     match play {
         PlayDef::OnTrigger(trigger) => {
-            egui::ComboBox::from_id_salt(id.with("trigger"))
-                .selected_text(if trigger.is_empty() { "(pick)".to_string() } else { trigger.clone() })
-                .show_ui(ui, |ui| {
-                    if app.trigger_names.is_empty() {
-                        ui.label(egui::RichText::new("No triggers: add one in the TRIGGERS tab").weak());
-                    }
-                    for name in app.trigger_names.iter() {
-                        ui.selectable_value(trigger, name.clone(), name);
-                    }
-                })
-                .response
-                .on_hover_text("The trigger that makes this layer burst");
-            if !app.trigger_names.contains(trigger) {
-                ui.colored_label(egui::Color32::from_hex("#FF8866").unwrap(), "⚠")
-                    .on_hover_text("No trigger has this name (TRIGGERS tab)");
-            }
+            trigger_picker(ui, trigger, app, id.with("trigger"), "The trigger that makes this layer burst");
         }
         PlayDef::While(param, threshold) => {
             float_param_picker(ui, param, &app.params, id.with("while"));
             ui.label("≥").on_hover_text("Emits while the parameter is at or above this value");
             *threshold = ui_for_f32_ex(ui, *threshold, -1.0e6, 1.0e6, 0.01);
+        }
+        PlayDef::Between { start, stop } => {
+            ui.label("from").on_hover_text("The trigger that switches the layer on");
+            trigger_picker(ui, start, app, id.with("between start"), "The trigger that switches the layer on");
+            ui.label("to").on_hover_text("The trigger that switches it off (the same one = toggle)");
+            trigger_picker(ui, stop, app, id.with("between stop"), "The trigger that switches the layer off");
         }
         PlayDef::Loop | PlayDef::OnStart => {}
     }
@@ -623,7 +654,7 @@ pub fn draw_particles_layer(
             let mismatch = match layer.play {
                 PlayDef::Loop => cycles != 0,
                 PlayDef::OnStart | PlayDef::OnTrigger(_) => cycles == 0,
-                PlayDef::While(..) => false,
+                PlayDef::While(..) | PlayDef::Between { .. } => false,
             };
             if mismatch {
                 ui.colored_label(egui::Color32::from_hex("#FFCC66").unwrap(), "⚠").on_hover_text(

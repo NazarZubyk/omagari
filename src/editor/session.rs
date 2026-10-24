@@ -106,6 +106,8 @@ pub struct EditorSession {
     pub focus_camera: bool,
     /// Draw the samples of trail layers (debug, not saved).
     pub show_trail_samples: bool,
+    /// Draw the preview's lights (position and range) in the viewport.
+    pub show_lights: bool,
     /// Asset shown in the ASSETS tab's details.
     pub selected_asset: Option<String>,
     /// Channel the large asset preview shows; `None` = RGB.
@@ -158,6 +160,7 @@ impl Default for EditorSession {
             problems_open: false,
             focus_camera: false,
             show_trail_samples: false,
+            show_lights: true,
             selected_asset: None,
             asset_view: None,
             rename_draft: None,

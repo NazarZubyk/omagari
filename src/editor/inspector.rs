@@ -8,6 +8,7 @@ use omagari::format::{LayerDef, ProjectV2};
 use super::assets::{assets_tab, TexturePreviews};
 use super::camera::PreviewCamera;
 use super::effect::draw_particles_layer;
+use super::light::draw_light_layer;
 use super::shape::draw_shape_layer;
 use super::surface::draw_surface_layer;
 use super::trail::{draw_afterimage_layer, draw_trail_layer, EmitterContext};
@@ -177,6 +178,18 @@ fn layer_tab(
                 show_samples: &mut session.show_trail_samples,
             };
             draw_afterimage_layer(layer, &mut ctx, app, ui, index as u64);
+        }
+        LayerDef::Light(layer) => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("💡 LIGHT LAYER").color(ACCENT).strong()).on_hover_text(hints::LIGHT);
+                if !session.view.shows(&name) {
+                    ui.label(RichText::new("(hidden in the preview)").weak());
+                }
+            });
+            ui.label(RichText::new(hints::LIGHT).weak().small());
+            subject_box(ui, session, &name);
+            ui.add_space(4.0);
+            draw_light_layer(layer, triggers, parameters, app, &mut session.show_lights, ui, index as u64);
         }
     }
 }

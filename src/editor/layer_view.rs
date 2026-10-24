@@ -62,7 +62,7 @@ impl LayerView {
     /// The project the preview builds: particle layers that don't show get an
     /// alpha mask nothing passes, so they still simulate and spawn children;
     /// surface layers that don't show lose their shells, shapes, trails and
-    /// afterimages become fully transparent.
+    /// afterimages become fully transparent, lights dark.
     pub fn apply(&self, project: &ProjectV2) -> ProjectV2 {
         let mut project = project.clone();
         for layer in project.layers.iter_mut() {
@@ -84,6 +84,9 @@ impl LayerView {
                 LayerDef::Trail(t) if !shows => hide_material(&mut t.material),
                 LayerDef::Afterimage(a) if !shows => hide_material(&mut a.material),
                 LayerDef::Trail(_) | LayerDef::Afterimage(_) => {}
+                // A hidden light is dark.
+                LayerDef::Light(l) if !shows => l.intensity = omagari::format::Binding::Const(0.0),
+                LayerDef::Light(_) => {}
             }
         }
         project

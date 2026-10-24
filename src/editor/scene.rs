@@ -192,6 +192,33 @@ pub fn sync_stage(project: Res<ProjectV2>, mut stage: ResMut<Stage>) {
     stage.set_if_neq(Stage::of(&project));
 }
 
+/// Whether the room's floor is lit (shaded by lights) instead of a flat
+/// unlit colour: on while the project has light layers, so their light shows
+/// on the floor. The lit floor's colour is scaled so the editor's sun gives
+/// about the same look as the unlit one ([`lit_floor_factor`]).
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LitFloor(pub bool);
+
+/// Keeps [`LitFloor`] on "the project has a light layer".
+pub fn sync_lit_floor(project: Res<ProjectV2>, mut lit: ResMut<LitFloor>) {
+    if project.is_changed() {
+        lit.set_if_neq(LitFloor(project.light_layers().next().is_some()));
+    }
+}
+
+/// The editor's sun: illuminance (lux) and where it shines from.
+const SUN_ILLUMINANCE: f32 = 6000.0;
+const SUN_POSITION: Vec3 = Vec3::new(3.0, 6.0, 4.0);
+
+/// The base colour factor of the lit floor: under the sun (Lambert: E × cos
+/// θ / π, × Bevy's default exposure 1 / (1.2 × 2^9.7)) it then looks like the
+/// unlit floor.
+pub fn lit_floor_factor() -> f32 {
+    let exposure = 1.0 / (1.2 * 2f32.powf(9.7));
+    let sun = SUN_ILLUMINANCE * SUN_POSITION.normalize().y / std::f32::consts::PI * exposure;
+    1.0 / sun.max(1e-3)
+}
+
 /// The lowest point of the rock mesh, where the floor goes in the OBJECT stage.
 #[derive(Resource)]
 pub struct RockBottom(f32);
@@ -251,13 +278,14 @@ pub fn spawn_scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut
         Transform::default(),
         Visibility::Hidden,
     ));
-    // Only the rock is lit; the room and the particles are unlit.
+    // Only the rock (and the floor while the project has light layers) is
+    // lit; the room and the particles are unlit.
     commands.spawn((
         DirectionalLight {
-            illuminance: 6000.0,
+            illuminance: SUN_ILLUMINANCE,
             ..default()
         },
-        Transform::from_xyz(3.0, 6.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_translation(SUN_POSITION).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
 
@@ -291,6 +319,7 @@ pub fn apply_scene(
     backdrop: Res<Backdrop>,
     stage: Res<Stage>,
     floor: Res<StageFloor>,
+    lit_floor: Res<LitFloor>,
     rock_bottom: Res<RockBottom>,
     mut clear_color: ResMut<ClearColor>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -306,7 +335,17 @@ pub fn apply_scene(
             **room_visibility = Visibility::Inherited;
             for (face, material) in faces.iter() {
                 if let Some(mut material) = materials.get_mut(&material.0) {
-                    material.base_color = colors[face.shade];
+                    // Shade 0 is the floor.
+                    let lit = face.shade == 0 && lit_floor.0;
+                    material.unlit = !lit;
+                    material.perceptual_roughness = 0.9;
+                    material.base_color = if lit {
+                        let c = colors[face.shade].to_linear();
+                        let k = lit_floor_factor();
+                        Color::linear_rgb(c.red * k, c.green * k, c.blue * k)
+                    } else {
+                        colors[face.shade]
+                    };
                 }
             }
         }
