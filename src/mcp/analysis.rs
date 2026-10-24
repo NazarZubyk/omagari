@@ -2147,8 +2147,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
                 d.error(&label, format!("node \"{}\" is not a node {}; the socket would sit at the target root", node, model.place));
             }
         }
-        let used = layers.iter().any(|l| l.attach.socket_names().contains(&socket.name.as_str()))
-            || project.shape_layers().any(|(_, l)| l.attach.socket_names().contains(&socket.name.as_str()));
+        let used = project.layers.iter().any(|l| l.socket_names().contains(&socket.name.as_str()));
         if !used {
             d.warn(&label, "not used by any layer");
         }
@@ -2411,6 +2410,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
 
     super::surface_check::check_surface_layers(&mut d, project, assets_root);
     super::shape_check::check_shape_layers(&mut d, project, model_nodes.as_ref());
+    super::trail_check::check_trail_layers(&mut d, project, model_nodes.as_ref(), assets_root);
 
     match package_string(project) {
         Ok(text) => match ProjectV2::from_ron_str_with_warnings(&text) {
@@ -3518,12 +3518,45 @@ fn parameters_report(project: &ProjectV2, n_samples: usize, sets: &[(String, Par
             .iter()
             .map(|p| format!("{} jumps to {} and returns over {}s", p.param, fmt_num(p.to), fmt_num(p.decay)))
             .collect();
-        let layers = project.trigger_users(&t.name);
+        let emitters: Vec<(&str, &EmitDef)> = project
+            .trail_layers()
+            .map(|(_, l)| (l.name.as_str(), &l.emit))
+            .chain(project.afterimage_layers().map(|(_, l)| (l.name.as_str(), &l.emit)))
+            .collect();
+        let switched = |start: bool| -> Vec<&str> {
+            emitters
+                .iter()
+                .filter(|(_, e)| match e {
+                    EmitDef::Trigger { start: a, stop: b } => (if start { a } else { b }) == &t.name && a != b,
+                    _ => false,
+                })
+                .map(|(n, _)| *n)
+                .collect()
+        };
+        let toggled: Vec<&str> = emitters
+            .iter()
+            .filter(|(_, e)| matches!(e, EmitDef::Trigger { start, stop } if start == stop && start == &t.name))
+            .map(|(n, _)| *n)
+            .collect();
+        let mut what = Vec::new();
+        let bursts: Vec<String> = project
+            .trigger_users(&t.name)
+            .into_iter()
+            .filter(|n| !emitters.iter().any(|(e, _)| e == n))
+            .collect();
+        if !bursts.is_empty() {
+            what.push(format!("bursts {}", bursts.join(", ")));
+        }
+        for (verb, names) in [("starts", switched(true)), ("stops", switched(false)), ("toggles", toggled)] {
+            if !names.is_empty() {
+                what.push(format!("{} {}", verb, names.join(", ")));
+            }
+        }
         let _ = writeln!(
             out,
             "  trigger \"{}\": {}{}",
             t.name,
-            if layers.is_empty() { "no layer bursts".to_string() } else { format!("bursts {}", layers.join(", ")) },
+            if what.is_empty() { "no layer bursts".to_string() } else { what.join("; ") },
             if pulses.is_empty() { String::new() } else { format!("; pulses: {}", pulses.join("; ")) }
         );
     }
@@ -3545,6 +3578,7 @@ fn parameters_report(project: &ProjectV2, n_samples: usize, sets: &[(String, Par
     }
     super::surface_check::surface_sets_report(project, sets, only_effect, out);
     super::shape_check::shape_sets_report(project, sets, only_effect, out);
+    super::trail_check::emitter_sets_report(project, sets, only_effect, out);
     for (effect, rows) in effects.iter().zip(rows.iter()) {
         if only_effect.is_some_and(|o| o != effect.name) {
             continue;
@@ -3771,10 +3805,23 @@ pub fn analyze_project_with_sets(
             super::shape_check::describe_shape_layer(project, index, layer, &mut out);
         }
     }
+    for (index, layer) in project.trail_layers() {
+        if only_effect.is_none_or(|o| o == layer.name) {
+            super::trail_check::describe_trail_layer(project, index, layer, &mut out);
+        }
+    }
+    for (index, layer) in project.afterimage_layers() {
+        if only_effect.is_none_or(|o| o == layer.name) {
+            super::trail_check::describe_afterimage_layer(project, index, layer, &mut out);
+        }
+    }
 
     if only_effect.is_none() && effects.is_empty() {
         let _ = writeln!(out, "\n## Whole project\n  no particle layers");
         if let Some(text) = super::shape_check::shapes_lifecycle_text(project) {
+            let _ = writeln!(out, "  {}", text);
+        }
+        if let Some(text) = super::trail_check::emitters_lifecycle_text(project) {
             let _ = writeln!(out, "  {}", text);
         }
     } else if only_effect.is_none() {
@@ -3809,6 +3856,9 @@ pub fn analyze_project_with_sets(
             "bigger than the default editor view (±2 units around the origin); the user must zoom out"
         };
         let _ = writeln!(out, "  farthest particle {} units from the origin: {}", fmt_num(overall_extent), fits);
+        if let Some(text) = super::trail_check::emitters_lifecycle_text(project) {
+            let _ = writeln!(out, "  {}", text);
+        }
     }
     let default_sets;
     let sets = match sets {
@@ -3908,7 +3958,7 @@ mod tests {
             assert!(report.contains("## Whole project"), "{}", report);
             checked += 1;
         }
-        assert!(checked >= 22, "only {} recipes found", checked);
+        assert!(checked >= 25, "only {} recipes found", checked);
     }
 
     fn has(list: &[String], needle: &str) -> bool {

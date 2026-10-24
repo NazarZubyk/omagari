@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, recipes, design, game.
 
 ## Workflow
 
@@ -18,7 +18,7 @@ The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSph
 
 ## Format
 
-A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"); a `Shape` layer draws a simple 3D shape (sphere, ring, arc, ...) with the same shader (section "shapes"). All layers play at the same point, the target (the origin in the editor); Y is up.
+A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"); a `Shape` layer draws a simple 3D shape (sphere, ring, arc, ...) with the same shader (section "shapes"); a `Trail` layer draws a ribbon between two moving sockets, e.g. a sword swing's arc (section "trails"); an `Afterimage` layer leaves fading copies of the target's meshes (section "afterimages"). All layers play at the same point, the target (the origin in the editor); Y is up.
 
 ```ron
 (
@@ -75,7 +75,7 @@ Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` 
 | `texture` | `None` / `Some("asset id")` | The texture the `ParticleTexture` render modifier samples. |
 | `effect` | struct | Capacity, spawner, blending, modifiers. |
 
-The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces"; so do `Shape` layers (shield bubbles, ground rings, shockwaves, slash arcs): section "shapes".
+The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces"; so do `Shape` layers (shield bubbles, ground rings, shockwaves, slash arcs): section "shapes"; `Trail` layers (sword trails, comet tails): section "trails"; `Afterimage` layers (sword shadows, dash echoes): section "afterimages".
 
 **Simulation space** matters as soon as the target moves (a running character, a swung weapon):
 - `Local`: particles move with the target. Use it for anything that should stay on the character: auras, shields, orbiting sparks, status effects. It is the default.
@@ -519,6 +519,65 @@ Every shape is centred on its attach point (the cylinder and capsule from -heigh
 - **Checks**: sizes ≤ 0 and an inner ring radius ≥ the outer are errors; shapes over ~20 m across (size × scale) warn; `OnTrigger` with an unknown trigger is an error; age curves with keys past the duration (never reached), fades longer than the one-shot, and a trigger shape without a duration warn; socket names are checked like other layers.
 
 The editor's 🔷 Shape layer (➕ ADD) has every value with tooltips and preset buttons ("shield bubble", "ground ring", "shockwave", "slash arc", "glow column"). Preview on the `capsule` stage, or on `model` with the game's character running (`motion`); fire triggers in the TRIGGERS tab (or `preview_in_editor(..., trigger: "slam")`). Recipes "Shield bubble", "Ground ring", "Shockwave" and "Slash arc".
+
+## Trails
+
+A **trail layer** draws a ribbon between two moving points — a blade's base and tip — that stays in the world behind them and fades: the glowing arc of a sword swing, a comet tail behind a running character. Every frame both sockets are sampled (after the animation); samples older than `length` seconds are dropped (the end is cut exactly at `length`, so the tail slides away instead of popping); the points are smoothed with Catmull-Rom curves (`subdivisions` segments between two samples, so a fast swing stays round) and drawn as a two-sided ribbon with Omagari's effect material (section "surfaces"). Trails are not simulated: `analyze_project` describes their time length, width, fade, emission and look.
+
+```ron
+Trail((
+    name: "slash",                       // unique among all layers
+    from: "blade_base",                  // socket (package socket or node name): the v = 0 edge
+    to: "blade_tip",                     // the v = 1 edge
+    length: 0.22,                        // seconds a sample stays (a swing: 0.15–0.4)
+    subdivisions: 6,                     // curve segments between samples (1 = straight; 4–8 for fast swings)
+    min_sample_distance: 0.01,           // metres an end moves before a new sample (the newest point always follows)
+    emit: Trigger(start: "swing_start", stop: "swing_end"),   // Always | Trigger(start: "a", stop: "b") | While("param", threshold)
+    width_over_u: [(0.0, 1.0), (1.0, 0.6)],   // (u, fraction of the from → to width), shrinking toward `to`; [] = full
+    fade_over_u: [(0.0, 1.0), (1.0, 0.0)],    // (u, opacity factor); [] = no fade along it
+    fade: (in: 0.0, out: 0.0),           // lifecycle fade (the trail also ages out after a stop)
+    visible: None,
+    sort_bias: 0.0,
+    material: ( /* EffectMaterialDef, section "surfaces" */ ),
+))
+```
+
+- **UVs**: `u` = the point's age / `length` (0 at the blade, 1 at the oldest end), `v` = 0 at `from` → 1 at `to`. So `fill: Some((axis: U, ...))` cuts along the trail, `axis: V` softens its edges (`from: 0, to: 1, softness: 0.25`), and `Uv` noise with a scroll in x (`scroll: (-2.0, 0.0)`) streams streaks along it. `Triplanar` noise is in world space (the trail moves through a still pattern). A fill along X / Y / Z warns (use U or V).
+- **emit**: `Always` while the effect runs; `Trigger(start, stop)` from the start trigger to the stop trigger — the game fires them from its attack state (`vfx.trigger(weapon_fx, "swing_start")` when the swing begins, `"swing_end"` when it ends; the same trigger twice toggles); `While("param", t)` while a number parameter is ≥ t. When emission stops, the rest ages out over `length`; nothing is drawn between swings. `Age` curves in the material read the seconds since emission last started. A stop of the effect ends emission; the instance waits for the trail to age out.
+- **Sockets**: on the weapon (a separate model with its own effects): package sockets with offsets from the weapon's root (`node: None`) or a weapon node, so the base and tip need no change to the weapon file; or on the hand bone of the character (`node: Some("mixamorig:RightHand")`) when there is no weapon model. In the editor they show as dots joined by a line and can be dragged; `width` = their distance.
+- **Size**: the trail is in world space; socket offsets scale with the size fit. Its length in metres is the blade's speed × `length` (a tip at ~10 m/s and 0.22 s ≈ a 2.2 m arc).
+- **Cost**: at most 200 samples and 256 smoothed points (two vertices each, both sides); the subdivisions drop when a long trail needs more.
+- **Checks**: unknown sockets (with a preview model: errors), `from` = `to` (no width), `length` ≤ 0 and unknown emit triggers / parameters are errors; very long trails, more than 16 subdivisions, unsorted or out-of-range curve keys, a fill along an axis warn.
+
+The editor's 〰 Trail layer (➕ ADD) has presets "sword trail" (Trigger swing_start / swing_end; adds the triggers and two blade sockets when missing) and "energy trail" (Always), socket pickers with the preview model's nodes, a **show samples** debug toggle, and **Swing preview**: fire the start / stop triggers at two clip times of the preview animation (`preview.animation_triggers`), e.g. the start and end of the slash in a sword clip. On the MODEL stage, PREVIEW → **In place** (default on) removes the clip's horizontal root motion so the character stays on the target. Recipes "Sword trail" and "Energy trail on a moving target".
+
+## Afterimages
+
+An **afterimage layer** leaves fading copies ("ghosts") of the target's own meshes along their path: sword shadows along a swing, echoes of a dashing character. While it emits, every `interval` seconds it copies the meshes where they are — skinned meshes in their current pose (the copy gets frozen joints) — and each copy fades over `lifetime` with Omagari's effect material.
+
+```ron
+Afterimage((
+    name: "ghosts",
+    source: TargetModel,                 // TargetModel | Meshes(["Sword", "Blade.Metal"]) (mesh or mesh entity names)
+    interval: 0.04,                      // seconds between copies (at most one per frame)
+    lifetime: 0.25,                      // seconds each copy stays
+    max_ghosts: 8,                       // most copies at once; the oldest goes first
+    emit: Trigger(start: "swing_start", stop: "swing_end"),   // as for trails
+    fade_over_life: [(0.0, 0.8), (1.0, 0.0)],   // (fraction of the lifetime, opacity factor)
+    fade: (in: 0.0, out: 0.0),
+    visible: None,
+    sort_bias: 0.0,
+    material: ( /* EffectMaterialDef; Age curves read the copy's age in seconds */ ),
+))
+```
+
+- **Copies on screen** ≈ `lifetime / interval` (capped by `max_ghosts`; the check warns when the cap cuts copies before they fade). 4–6 copies read as a swing's shadows.
+- **What is copied**: the meshes of the instance target's own model (the own-model rule, as for surface layers): a sword is copied when the package is on the sword; a weapon held in the hand is not part of the body. `Meshes([...])` picks some; with a preview model the names are checked. Copies are separate entities in the world: they stay where they were left. The model and its materials are never changed.
+- **Look**: `blend: Add` with a rim gives bright energy copies; `Blend` with a dark colour gives shadow copies. Patterns stick to the copy (triplanar in its rest pose).
+- **Cost**: one draw per mesh per copy; a skinned copy also keeps a frozen copy of each joint (Mixamo: ~65 small entities per copy).
+- **Checks**: `interval` / `lifetime` ≤ 0 and unknown emit triggers / parameters are errors; an interval shorter than a frame, a lifetime shorter than the interval, a cap that cuts copies, an empty mesh list and age keys past the lifetime warn.
+
+The editor's 👥 Afterimage layer (➕ ADD) has presets "afterimages" (blue copies during a swing) and "shadow dash" (dark copies while the effect runs), the same Swing preview as trails, and the mesh picker. Recipe "Afterimages".
 
 ## Recipes
 
@@ -1522,7 +1581,105 @@ Each `vfx.trigger(instance, "slam")` sends a bright cyan ring along the ground f
 )
 ```
 
-A white-hot crescent 1 m in front of the chest, tilted 25°, pointed at both ends: on each `swing` trigger it sweeps across from the left end in 0.15 s (fill `to` over the age), its tail follows from 0.1 s (fill `from`) and it is gone at 0.35 s, with streaky noise running along it. Mirror it with `rotation_deg: (0.0, 180.0, 25.0)` for a swing the other way. For a trail that follows a real blade, wait for trail layers.
+A white-hot crescent 1 m in front of the chest, tilted 25°, pointed at both ends: on each `swing` trigger it sweeps across from the left end in 0.15 s (fill `to` over the age), its tail follows from 0.1 s (fill `from`) and it is gone at 0.35 s, with streaky noise running along it. Mirror it with `rotation_deg: (0.0, 180.0, 25.0)` for a swing the other way. For an arc that follows the real blade through the animation, use a trail layer (section "trails", recipe "Sword trail").
+
+### Sword trail (trail between two blade sockets, started and stopped by triggers)
+
+```ron
+(
+    version: 2,
+    triggers: [(name: "swing_start"), (name: "swing_end")],
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    sockets: [
+        (name: "blade_base", node: None, offset: (0.3, 0.2, -0.3)),
+        (name: "blade_tip", node: None, offset: (0.3, 1.1, -0.6)),
+    ],
+    layers: [
+        Trail((
+            name: "slash",
+            from: "blade_base",
+            to: "blade_tip",
+            length: 0.22,
+            subdivisions: 6,
+            min_sample_distance: 0.01,
+            emit: Trigger(start: "swing_start", stop: "swing_end"),
+            width_over_u: [(0.0, 1.0), (1.0, 0.6)],
+            fade_over_u: [(0.0, 1.0), (0.2, 0.85), (1.0, 0.0)],
+            material: (
+                blend: Add,
+                color: Const((2.4, 2.0, 1.5, 1.0)),
+                emissive: Const(1.2),
+                noise_a: Some((texture: (asset: "noise"), mapping: Uv, scale: Const(2.0), scroll: Const((-2.0, 0.0)), strength: Const(0.4), contrast: Const(1.5))),
+                fill: Some((axis: V, from: Const(0.0), to: Const(1.0), softness: Const(0.25))),
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule, motion: Some(Circle(radius: 3.0, speed: 3.6)))),
+)
+```
+
+A white-hot arc behind the blade from `swing_start` to `swing_end`: 0.22 s long (≈ 2 m at a 10 m/s tip), 0.95 m wide at the blade and 60% at its end, fading out along it, soft at both edges, with streaks running toward the tail. Put the package on the weapon entity and move the two sockets onto the blade (offsets from the weapon's root, or a weapon node); in the game fire `swing_start` / `swing_end` from the attack state. In the editor fire them in the TRIGGERS tab while the capsule runs, or on the MODEL stage with a sword clip set the Swing preview's clip times (the sockets then go on `mixamorig:RightHand` or the weapon).
+
+### Energy trail on a moving target (trail, always on)
+
+```ron
+(
+    version: 2,
+    assets: [(id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise)))],
+    sockets: [
+        (name: "tail_low", node: None, offset: (0.0, -0.35, 0.1)),
+        (name: "tail_high", node: None, offset: (0.0, 0.35, 0.1)),
+    ],
+    layers: [
+        Trail((
+            name: "comet",
+            from: "tail_low",
+            to: "tail_high",
+            length: 0.5,
+            subdivisions: 4,
+            min_sample_distance: 0.02,
+            emit: Always,
+            width_over_u: [(0.0, 1.0), (1.0, 0.1)],
+            fade_over_u: [(0.0, 0.9), (1.0, 0.0)],
+            material: (
+                blend: Add,
+                color: Const((0.4, 1.2, 2.5, 0.9)),
+                noise_a: Some((texture: (asset: "noise"), mapping: Uv, scale: Const(1.5), scroll: Const((-1.5, 0.0)), strength: Const(0.6), contrast: Const(2.0))),
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule, motion: Some(Circle(radius: 3.0, speed: 3.6)))),
+)
+```
+
+A cyan ribbon 0.7 m tall behind the character's middle that always follows it for 0.5 s (≈ 1.8 m at a run), tapering to a point and fading, with flowing noise: a speed or power-up streak. On a still target there is no trail (it has no length); it grows with the speed.
+
+### Afterimages (fading copies of the target's meshes)
+
+```ron
+(
+    version: 2,
+    layers: [
+        Afterimage((
+            name: "echoes",
+            source: TargetModel,
+            interval: 0.06,
+            lifetime: 0.3,
+            max_ghosts: 6,
+            emit: Always,
+            fade_over_life: [(0.0, 0.7), (1.0, 0.0)],
+            material: (
+                blend: Add,
+                color: Const((0.3, 0.6, 1.6, 0.5)),
+                rim: Some((color: Const((0.6, 1.0, 2.5, 1.0)), power: Const(2.0), intensity: Const(1.5))),
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule, motion: Some(Circle(radius: 3.0, speed: 3.6)))),
+)
+```
+
+Blue glowing copies of the target's meshes every 0.06 s, each fading from 70% to nothing over 0.3 s: 5 echoes on screen behind a moving character (here the capsule; in the game the model the package is on, skinned characters in their pose). For a sword's shadows put it on the weapon with `emit: Trigger(start: "swing_start", stop: "swing_end")`, `interval: 0.04`, `lifetime: 0.25`.
 
 ## Design
 
@@ -1586,6 +1743,13 @@ Pick the stage that matches how the game uses the effect. The PREVIEW tab's targ
 | the ground ring tilts or bobs with the body | `follow: PositionYaw`, attach to the target root (not a bone), offset about −0.88 m in Y |
 | the shockwave is too fast / too big | its `duration` and the last key of its `scale: Age([...])` |
 | the slash sweeps too slowly / lingers | the age keys of `fill.to` / `fill.from` and `duration` |
+| a glowing arc should follow the sword | a trail layer (section "trails") between blade base and tip sockets, emitted by swing triggers |
+| the trail is too long / too short | `length` (seconds); its metres are the blade speed × length |
+| the trail is angular on fast swings | more `subdivisions` (6–8), smaller `min_sample_distance` |
+| the trail ends abruptly | `fade_over_u` down to 0 at u = 1, `width_over_u` thinning toward the end |
+| the trail shows between swings | `emit: Trigger(start, stop)` and fire the stop trigger when the swing ends |
+| sword shadows / echoes along the swing | an afterimage layer (section "afterimages"); 4–6 copies: `lifetime / interval` |
+| the copies pop out instead of fading | raise `max_ghosts` to lifetime / interval, fade_over_life to 0 at 1 |
 
 ## Game
 
@@ -1610,6 +1774,8 @@ vfx.trigger_at(instance, "hit", TriggerArgs::at(contact).with_direction(normal))
 Tell the user which parameter and trigger names (and value ranges) the game must use; the game maps its own rules to them. Unknown names are ignored with one warning. Parameter values survive hot reloads.
 
 One-shot packages (every root layer `OnStart` with a finite `cycle_count`) finish and clean up by themselves; looping ones run until `stop`. Despawning the target removes its instances (and sends `VfxFinished`). Sockets with a `node` need that node name in the target's hierarchy (section "attach"). Editing the package file while the game runs updates running instances (hot reload, when the game enables Bevy's file watcher).
+
+Weapons are separate models with their own effects: spawn the weapon's package on the weapon entity and fire its swing triggers from the attack state — `vfx.trigger(weapon_fx, "swing_start")` when the swing begins and `vfx.trigger(weapon_fx, "swing_end")` when it ends (any names the package declares). Trails sample the blade sockets every frame and stay in the world; afterimages copy the weapon's meshes (put an afterimage package on the character for body copies). A stop ends emission and waits for the trail to age out / the copies to fade.
 
 Surface layers draw on the meshes under the instance's target that belong to its own model (a weapon's glTF scene in the hand is skipped; mark other separate parts with `VfxSeparateModel`); spawn the package on the character's root entity. Shape layers need nothing from the game (the meshes are generated); a trigger's `trigger_at` position places an `OnTrigger` shape. The effect shader is embedded in the library: the game adds no shader files.
 
