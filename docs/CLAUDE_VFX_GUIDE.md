@@ -11,7 +11,7 @@ Fetch one section at a time with `guide(section: "...")`: workflow, format, laye
 3. **Save with `write_project(name, ron)`.** It refuses to save on errors and returns the analysis. Fix every ERROR. Read every WARNING; most are real problems.
 4. **Tune with `analyze_project(name)` until the numbers match the intent.** Check: spawn pattern, peak count vs capacity, lifetime, motion extents (is it the right size? does it go up/down/outward?), size in world units, colors and the alpha window, simulation space. Use `effect: "<layer name>"` to describe a single layer and save tokens.
 5. **For small changes, edit the saved file directly** (`saved_effects/<name>.omagari.ron`) with your file-edit tool, then call `check_project(name)` or `analyze_project(name)`. This is far cheaper than resending the whole RON.
-6. **Show it to the user with `preview_in_editor(name, stage, motion)`**, with stage `air`, `floor`, `object`, `capsule` or `model` (see sections "design" and "model"; effects on characters belong on `model`, e.g. `model: "anim/tpose.glb", animation: "mixamo.com", animation_file: "anim/run.glb"`) and, for effects on moving characters, a `motion` such as `{"type": "circle", "radius": 3.0, "speed": 3.6}`. Ask what they see and what to change, in words ("too fast", "too dim", "should spread wider"). Section "design" maps common feedback to parameters. This replaces any unsaved edits the user had open in the editor, so say so if they were editing.
+6. **Show it to the user with `preview_in_editor(name, stage, motion)`**, with stage `air`, `floor`, `object`, `capsule` or `model` (see sections "design" and "model"; effects on characters belong on `model`, e.g. `model: "characters/hero.glb", animation: "mixamo.com", animation_file: "characters/run.glb"`) and, for effects on moving characters, a `motion` such as `{"type": "circle", "radius": 3.0, "speed": 3.6}`. Ask what they see and what to change, in words ("too fast", "too dim", "should spread wider"). Section "design" maps common feedback to parameters. This replaces any unsaved edits the user had open in the editor, so say so if they were editing.
 7. **Export with `export_project(name, copy_to?)`** when the user is happy. It writes `<name>.vfx.ron` into the game assets folder's `vfx/` (or `exported_effects/` when none is configured). Section "game" says how the game plays it.
 
 The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSphere is approximate, the target stands still). Trust it for scale, timing, counts and colors, not for exact looks.
@@ -100,7 +100,7 @@ sockets: [
 ],
 ```
 
-Socket names and nodes come from the game's model: `describe_model("anim/tpose.glb")` lists a model's node names (bones like `mixamorig:RightHand`), or ask the user (e.g. the weapon entity's name). With a preview model in the project (section "model"), `check_project` checks every socket node and attach name against the nodes below the preview target in that model and reports the missing ones as ERRORS; without one, names that are not package sockets are NOTES (they must exist as nodes in the game's model) and the editor shows such sockets at the target's origin. Package sockets with `node: None` work everywhere. In the editor the sockets show as dots with labels on the model (segments as lines); the user drags them or types offsets, so a weapon's base and tip need no change to the weapon file. Give a child layer the same `attach` as its parent (the check warns otherwise).
+Socket names and nodes come from the game's model: `describe_model("characters/hero.glb")` lists a model's node names (bones like `mixamorig:RightHand`), or ask the user (e.g. the weapon entity's name). With a preview model in the project (section "model"), `check_project` checks every socket node and attach name against the nodes below the preview target in that model and reports the missing ones as ERRORS; without one, names that are not package sockets are NOTES (they must exist as nodes in the game's model) and the editor shows such sockets at the target's origin. Package sockets with `node: None` work everywhere. In the editor the sockets show as dots with labels on the model (segments as lines); the user drags them or types offsets, so a weapon's base and tip need no change to the weapon file. Give a child layer the same `attach` as its parent (the check warns otherwise).
 
 **Size fit** (`fit`, per project):
 - `None` (default): the effect keeps its authored size, even on a scaled target.
@@ -119,10 +119,10 @@ The editor previews effects on the game's own models: the project's `preview` bl
 preview: Some((
     stage: Model,                         // Air | Floor | Object | Capsule | Model
     camera: Game,
-    model: Some("anim/tpose.glb"),        // glTF in the game assets folder
+    model: Some("characters/hero.glb"),   // glTF in the game assets folder
     root_height: 0.9,                     // the target (game entity root) is 0.9 m above the model's feet
     animation: Some("mixamo.com"),        // clip name in the file
-    animation_file: Some("anim/run.glb"), // clip from another file with the same skeleton (None = the model's file)
+    animation_file: Some("characters/run.glb"), // clip from another file with the same skeleton (None = the model's file)
     animation_speed: 1.0,
     animation_triggers: [("swing", 0.3)], // fire "swing" at 0.3 s of every loop
     attach_to: None,                      // node the instance is attached to (None = the model's root)
@@ -137,7 +137,7 @@ preview: Some((
 - **Attach.** The instance is spawned on the target root, or on `attach_to` (a node of the body, or of the weapon with `target: Weapon`), like the game's `spawn_vfx(&package, entity)`. Sockets are found below it.
 - **Weapon.** A second model held by a node of the body, with a local offset (metres, ignoring the bone's scale) and rotation (degrees). It is a separate model: the own-model rule keeps body effects (fit height, surface layers) off it. Put a weapon effect on it with `target: Weapon`, or give its sockets offsets from the hand bone without a weapon file.
 - **Checks.** With a model, `check_project` reports socket nodes, attach names, `attach_to` and the weapon node that the model does not have as errors, a clip the file does not have as an error, and a missing model file as a warning (the editor then shows the capsule).
-- `preview_in_editor(name, stage: "model", model: "anim/tpose.glb", animation: "mixamo.com", animation_file: "anim/run.glb", attach_to: "", root_height: 0.9)` shows it. In the editor's TRIGGERS tab, "at random point" fires at a point on the model's mesh bounds and "fire at clip time" sets `animation_triggers`.
+- `preview_in_editor(name, stage: "model", model: "characters/hero.glb", animation: "mixamo.com", animation_file: "characters/run.glb", attach_to: "", root_height: 0.9)` shows it. In the editor's TRIGGERS tab, "at random point" fires at a point on the model's mesh bounds and "fire at clip time" sets `animation_triggers`.
 
 ## Parameters
 
@@ -474,7 +474,7 @@ Surface((
 - **blend**: `Blend` for colour skins and frost; `Add` for glows and energy. A `Blend` layer that covers with opacity ≥ 0.95 hides the model under it (the check warns): keep the colour's alpha around 0.4–0.8 or add noise.
 - **fade** in when the instance starts, out when the game stops it; a `restart` during the fade out fades back in. Surface layers loop: a package with one does not finish by itself.
 
-The editor's 🎨 Surface layer (➕ ADD) has every value with tooltips, a texture picker with the channel, a target picker from the preview model and a shell list (presets "skin" and "thick glow"). Preview surface layers on the `capsule` stage, or on `model` with the game's character (`preview_in_editor(name, stage: "model", model: "anim/tpose.glb", animation: "mixamo.com", animation_file: "anim/run.glb", root_height: 0.9)`). Recipes "Status skin", "Energy shell" and "Frost from the feet up" show the common uses.
+The editor's 🎨 Surface layer (➕ ADD) has every value with tooltips, a texture picker with the channel, a target picker from the preview model and a shell list (presets "skin" and "thick glow"). Preview surface layers on the `capsule` stage, or on `model` with the game's character (`preview_in_editor(name, stage: "model", model: "characters/hero.glb", animation: "mixamo.com", animation_file: "characters/run.glb", root_height: 0.9)`). Recipes "Status skin", "Energy shell" and "Frost from the feet up" show the common uses.
 
 Every material value can also be a curve over the layer's age (`Age([...])`, section "parameters"); a surface layer's age runs from the effect's start.
 
@@ -708,7 +708,7 @@ mesh: Some(Asset("rock")),   // a Mesh asset of the project (below)
 - **Blending**: use `alpha_mode: Opaque` (solid debris; written to the depth buffer) or `Mask`, or `Add` for glowing shards. A see-through `Blend` draws a mesh's far side over its near side (bevy_hanabi does not sort triangles): the check warns.
 - **Turning**: `Orient((mode: AlongVelocity))` points the mesh's X axis along its flight (shards tumble as gravity bends their path); without Orient a mesh keeps the layer's axes (fine for meshes, unlike quads); the axis attributes (`axis_x`, `axis_y`, `axis_z`) set any orientation.
 - **Cost**: every particle draws the whole mesh: vertices × capacity per frame (the check warns above 1 000 000, and about meshes over 2 000 vertices). Shrinking pieces before they die: an update `SetAttribute` of `size` from a stored size (`f32_0`) times `Saturate((lifetime − age) × 6)` (recipe "Debris burst"); `Opaque` particles cannot fade.
-- In the **game camera** (16 m tall view) pieces under 5 cm vanish: use sizes of 6–15 cm.
+- In the **GAME camera** (16 m tall view by default) pieces under 5 cm vanish: use sizes of 6–15 cm.
 
 The editor's particle inspector has a **Mesh** row (built-in shapes and the project's mesh assets) and presets "Mesh: debris burst" and "Mesh: glowing shards"; the ASSETS tab imports models (button or drag & drop) and picks the mesh of the file. Recipes "Debris burst" and "Glowing shards from a mesh asset".
 
@@ -2195,7 +2195,7 @@ Sixteen copies of the mesh "Rock" of `vfx/models/debris.glb` (0.4 m in the file 
 - `capsule`: a 0.7 × 1.8 m capsule (a character) whose centre is the spawn point, standing on the floor 0.9 below.
 - `model`: the game's model from the project's preview block (section "model"), e.g. a Mixamo character running with a clip of another file; the capsule without one.
 
-Pick the stage that matches how the game uses the effect. The PREVIEW tab's target motion (or `preview_in_editor(..., motion: {"type": "circle", "radius": 3.0, "speed": 3.6})`, also `back_and_forth` with `distance`, or `none`) moves the target, so the user sees whether layers stay on a running character (`Local`) or trail behind (`Global`); the setting is saved in the project's `preview` block. The BG button (or the PREVIEW tab) switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow. STOP stops the effect the way the game does: no new particles, live ones finish. To judge how big an effect reads in the game, ask the user to switch CAMERA to GAME (the game's orthographic isometric view, 16 m visible height).
+Pick the stage that matches how the game uses the effect. The PREVIEW tab's target motion (or `preview_in_editor(..., motion: {"type": "circle", "radius": 3.0, "speed": 3.6})`, also `back_and_forth` with `distance`, or `none`) moves the target, so the user sees whether layers stay on a running character (`Local`) or trail behind (`Global`); the setting is saved in the project's `preview` block. The BG button (or the PREVIEW tab) switches between a light room, a dark room and black; HDR glow stands out less on the light room, so suggest dark or black when judging glow. STOP stops the effect the way the game does: no new particles, live ones finish. To judge how big an effect reads in the game, ask the user to switch CAMERA to GAME (the game's camera as set in ⚙ SETTINGS; by default an orthographic isometric view, 16 m visible height).
 
 **Typical values** (1 unit = 1 m):
 
