@@ -22,6 +22,7 @@ use crate::controller::Folder;
 use crate::settings::GameAssets;
 
 pub mod analysis;
+pub mod distortion_check;
 pub mod light_check;
 pub mod particle_check;
 pub mod shape_check;
@@ -452,7 +453,7 @@ fn tool_list() -> Value {
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "One section to keep the reply short: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, lights, ribbons, meshes, order, recipes, design, game. Omit for the whole guide."
+                        "description": "One section to keep the reply short: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, lights, distortion, ribbons, meshes, order, recipes, design, game. Omit for the whole guide."
                     }
                 }
             }
@@ -1703,7 +1704,7 @@ mod tests {
 
     #[test]
     fn guide_sections_are_listed() {
-        for section in ["workflow", "format", "layers", "attach", "model", "textures", "assets", "surfaces", "shapes", "trails", "afterimages", "lights", "ribbons", "meshes", "order", "recipes", "game"] {
+        for section in ["workflow", "format", "layers", "attach", "model", "textures", "assets", "surfaces", "shapes", "trails", "afterimages", "lights", "distortion", "ribbons", "meshes", "order", "recipes", "game"] {
             assert!(!guide_section(Some(section)).starts_with("No section"), "{}", section);
         }
     }

@@ -309,7 +309,7 @@ pub(crate) fn check_attach_sockets(
     }
 }
 
-fn follow_text(follow: FollowDef) -> &'static str {
+pub(crate) fn follow_text(follow: FollowDef) -> &'static str {
     match follow {
         FollowDef::Full => "Full — moves, turns and tilts with its attach point",
         FollowDef::Position => "Position — moves with its attach point, keeps its own orientation (world axes)",
