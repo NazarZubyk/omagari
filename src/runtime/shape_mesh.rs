@@ -10,7 +10,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::format::{arc_half_width, arc_point, ShapeDef};
+use crate::format::{arc_half_width, arc_point, ParticleShapeDef, ShapeDef};
 
 /// Segments around round shapes.
 pub const SEGMENTS: u32 = 48;
@@ -135,68 +135,103 @@ impl Builder {
     }
 }
 
+/// How finely round shapes are divided.
+#[derive(Clone, Copy, Debug)]
+struct Detail {
+    segments: u32,
+    sphere_rings: u32,
+    capsule_rings: u32,
+    torus_tube: u32,
+    ring_segments: u32,
+}
+
+/// Shape layers: smooth.
+const SHAPE_DETAIL: Detail = Detail {
+    segments: SEGMENTS,
+    sphere_rings: SPHERE_RINGS,
+    capsule_rings: CAPSULE_CAP_RINGS,
+    torus_tube: TORUS_TUBE_SEGMENTS,
+    ring_segments: RING_SEGMENTS,
+};
+
+/// Mesh particles: every particle draws the whole mesh, so few vertices.
+pub const PARTICLE_SEGMENTS: u32 = 12;
+pub const PARTICLE_SPHERE_RINGS: u32 = 8;
+const PARTICLE_DETAIL: Detail = Detail {
+    segments: PARTICLE_SEGMENTS,
+    sphere_rings: PARTICLE_SPHERE_RINGS,
+    capsule_rings: 4,
+    torus_tube: 8,
+    ring_segments: 16,
+};
+
 /// The mesh of a shape (dimensions below 0 are treated as 0).
 pub fn shape_mesh(shape: &ShapeDef) -> Mesh {
+    shape_mesh_with(shape, SHAPE_DETAIL)
+}
+
+fn shape_mesh_with(shape: &ShapeDef, detail: Detail) -> Mesh {
+    let Detail { segments, sphere_rings, capsule_rings, torus_tube, ring_segments } = detail;
     let mut b = Builder::default();
     let pos = |x: f32| x.max(0.0);
     match *shape {
         ShapeDef::Sphere { radius } => {
             let r = pos(radius);
-            let profile: Vec<_> = (0..=SPHERE_RINGS)
+            let profile: Vec<_> = (0..=sphere_rings)
                 .map(|j| {
-                    let v = j as f32 / SPHERE_RINGS as f32;
+                    let v = j as f32 / sphere_rings as f32;
                     let phi = v * PI - PI * 0.5;
                     let (s, c) = phi.sin_cos();
                     (r * c, r * s, Vec2::new(c, s), v)
                 })
                 .collect();
-            b.revolve(SEGMENTS, &profile);
+            b.revolve(segments, &profile);
         }
         ShapeDef::Capsule { radius, length } => {
             let (r, half) = (pos(radius), pos(length) * 0.5);
             let total = (2.0 * (half + r)).max(1e-6);
             let mut profile = Vec::new();
             for (centre, from, to) in [(-half, -PI * 0.5, 0.0), (half, 0.0, PI * 0.5)] {
-                for j in 0..=CAPSULE_CAP_RINGS {
-                    let phi = from + (to - from) * j as f32 / CAPSULE_CAP_RINGS as f32;
+                for j in 0..=capsule_rings {
+                    let phi = from + (to - from) * j as f32 / capsule_rings as f32;
                     let (s, c) = phi.sin_cos();
                     let y = centre + r * s;
                     profile.push((r * c, y, Vec2::new(c, s), (y + half + r) / total));
                 }
             }
-            b.revolve(SEGMENTS, &profile);
+            b.revolve(segments, &profile);
         }
         ShapeDef::Cylinder { radius, height, open_ends } => {
             let (r, h) = (pos(radius), pos(height) * 0.5);
-            b.revolve(SEGMENTS, &[(r, -h, Vec2::X, 0.0), (r, h, Vec2::X, 1.0)]);
+            b.revolve(segments, &[(r, -h, Vec2::X, 0.0), (r, h, Vec2::X, 1.0)]);
             if open_ends {
                 b.add_back_faces(0);
             } else {
-                b.disc(SEGMENTS, r, h, 1.0);
-                b.disc(SEGMENTS, r, -h, -1.0);
+                b.disc(segments, r, h, 1.0);
+                b.disc(segments, r, -h, -1.0);
             }
         }
         ShapeDef::Cone { radius, height } => {
             let (r, h) = (pos(radius), pos(height));
             let n = Vec2::new(h, r).normalize_or(Vec2::X);
-            b.revolve(SEGMENTS, &[(r, -h * 0.5, n, 0.0), (0.0, h * 0.5, n, 1.0)]);
-            b.disc(SEGMENTS, r, -h * 0.5, -1.0);
+            b.revolve(segments, &[(r, -h * 0.5, n, 0.0), (0.0, h * 0.5, n, 1.0)]);
+            b.disc(segments, r, -h * 0.5, -1.0);
         }
         ShapeDef::Torus { major, minor } => {
             let (big, small) = (pos(major), pos(minor));
-            let profile: Vec<_> = (0..=TORUS_TUBE_SEGMENTS)
+            let profile: Vec<_> = (0..=torus_tube)
                 .map(|j| {
-                    let v = j as f32 / TORUS_TUBE_SEGMENTS as f32;
+                    let v = j as f32 / torus_tube as f32;
                     let (s, c) = (v * TAU - PI).sin_cos();
                     (big + small * c, small * s, Vec2::new(c, s), v)
                 })
                 .collect();
-            b.revolve(SEGMENTS, &profile);
+            b.revolve(segments, &profile);
         }
         ShapeDef::Ring { inner, outer } => {
             let (a, o) = (pos(inner.min(outer)), pos(outer.max(inner)));
-            b.grid(RING_SEGMENTS, 1, |i, j| {
-                let u = i as f32 / RING_SEGMENTS as f32;
+            b.grid(ring_segments, 1, |i, j| {
+                let u = i as f32 / ring_segments as f32;
                 let (s, c) = (u * TAU).sin_cos();
                 let r = if j == 0 { a } else { o };
                 (Vec3::new(c * r, 0.0, -s * r), Vec3::Y, Vec2::new(u, j as f32))
@@ -229,6 +264,82 @@ pub fn shape_mesh(shape: &ShapeDef) -> Mesh {
 /// The vertex count of a shape's mesh (for tests and the docs).
 pub fn shape_vertex_count(shape: &ShapeDef) -> usize {
     shape_mesh(shape).count_vertices()
+}
+
+impl Builder {
+    /// A flat polygon (convex, corners in order) with one normal and UVs
+    /// from `uvs`.
+    fn face(&mut self, corners: &[Vec3], uvs: &[Vec2]) {
+        let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]).normalize_or(Vec3::Y);
+        let first = self.positions.len() as u32;
+        for (p, uv) in corners.iter().zip(uvs) {
+            self.vertex(*p, normal, *uv);
+        }
+        for i in 1..corners.len() as u32 - 1 {
+            self.triangle(first, first + i, first + i + 1);
+        }
+    }
+}
+
+/// The mesh of a built-in particle shape: low-poly, centred, fitting a 1 m
+/// box (the particle's size scales it, like bevy_hanabi's 1 m quad), with
+/// normals and UVs (bevy_hanabi needs positions, UVs and normals).
+pub fn particle_shape_mesh(shape: ParticleShapeDef) -> Mesh {
+    let shape_def = |s: ShapeDef| shape_mesh_with(&s, PARTICLE_DETAIL);
+    match shape {
+        ParticleShapeDef::Sphere => shape_def(ShapeDef::Sphere { radius: 0.5 }),
+        ParticleShapeDef::Cone => shape_def(ShapeDef::Cone { radius: 0.5, height: 1.0 }),
+        ParticleShapeDef::Cylinder => shape_def(ShapeDef::Cylinder { radius: 0.5, height: 1.0, open_ends: false }),
+        ParticleShapeDef::Torus => shape_def(ShapeDef::Torus { major: 0.35, minor: 0.15 }),
+        ParticleShapeDef::Cube => {
+            let mut b = Builder::default();
+            let uvs = [Vec2::new(0.0, 1.0), Vec2::new(1.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(0.0, 0.0)];
+            for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+                for sign in [1.0f32, -1.0] {
+                    let n = axis * sign;
+                    // Two directions across the face.
+                    let u = if axis == Vec3::Y { Vec3::X } else { Vec3::Y.cross(n) };
+                    let v = n.cross(u);
+                    let c = n * 0.5;
+                    let corners = [c - u * 0.5 - v * 0.5, c + u * 0.5 - v * 0.5, c + u * 0.5 + v * 0.5, c - u * 0.5 + v * 0.5];
+                    b.face(&corners, &uvs);
+                }
+            }
+            b.build()
+        }
+        ParticleShapeDef::Shard => {
+            // An octahedron 0.5 × 1 × 0.3 m: tips up and down.
+            let mut b = Builder::default();
+            let (x, y, z) = (0.25, 0.5, 0.15);
+            let ring = [Vec3::new(x, 0.0, 0.0), Vec3::new(0.0, 0.0, -z), Vec3::new(-x, 0.0, 0.0), Vec3::new(0.0, 0.0, z)];
+            for tip in [Vec3::Y * y, Vec3::NEG_Y * y] {
+                for i in 0..4 {
+                    let (a, c) = (ring[i], ring[(i + 1) % 4]);
+                    let uvs = [Vec2::new(0.5, if tip.y > 0.0 { 0.0 } else { 1.0 }), Vec2::new(0.0, 0.5), Vec2::new(1.0, 0.5)];
+                    // Wound by the builder to face outward (the normal is
+                    // from the corners, so order them outward first).
+                    let outward = (a + c + tip) / 3.0;
+                    let n = (a - tip).cross(c - tip);
+                    let corners = if n.dot(outward) >= 0.0 { [tip, a, c] } else { [tip, c, a] };
+                    b.face(&corners, &uvs);
+                }
+            }
+            b.build()
+        }
+        ParticleShapeDef::Quad => {
+            let mut b = Builder::default();
+            b.face(
+                &[Vec3::new(-0.5, -0.5, 0.0), Vec3::new(0.5, -0.5, 0.0), Vec3::new(0.5, 0.5, 0.0), Vec3::new(-0.5, 0.5, 0.0)],
+                &[Vec2::new(0.0, 1.0), Vec2::new(1.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(0.0, 0.0)],
+            );
+            b.build()
+        }
+    }
+}
+
+/// The vertex count of a built-in particle mesh.
+pub fn particle_shape_vertex_count(shape: ParticleShapeDef) -> usize {
+    particle_shape_mesh(shape).count_vertices()
 }
 
 #[cfg(test)]
@@ -344,6 +455,44 @@ mod tests {
                 assert!((p.length() - if uv.y == 0.0 { 0.8 } else { 1.2 }).abs() < 1e-5);
             }
         }
+    }
+
+    /// Built-in particle meshes: positions, UVs and normals (what
+    /// bevy_hanabi's pipeline needs), unit normals, outward triangles, a 1 m
+    /// box, few vertices.
+    #[test]
+    fn particle_meshes_fit_a_metre_and_are_low_poly() {
+        for shape in ParticleShapeDef::ALL {
+            let mesh = particle_shape_mesh(shape);
+            let positions = attr3(&mesh, Mesh::ATTRIBUTE_POSITION);
+            let normals = attr3(&mesh, Mesh::ATTRIBUTE_NORMAL);
+            assert_eq!(uvs(&mesh).len(), positions.len(), "{:?}", shape);
+            assert!(positions.len() <= 200, "{:?}: {} vertices", shape, positions.len());
+            assert_eq!(particle_shape_vertex_count(shape), positions.len());
+            let (lo, hi) = positions.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
+            assert!(lo.min_element() >= -0.5 - 1e-5 && hi.max_element() <= 0.5 + 1e-5, "{:?}: {} {}", shape, lo, hi);
+            assert!((hi - lo).max_element() > 0.99, "{:?} is 1 m across: {} {}", shape, lo, hi);
+            for n in normals.iter() {
+                assert!((n.length() - 1.0).abs() < 1e-4, "{:?}: normal {}", shape, n);
+            }
+            for t in indices(&mesh).chunks(3) {
+                let (a, b, c) = (positions[t[0] as usize], positions[t[1] as usize], positions[t[2] as usize]);
+                let face = (b - a).cross(c - a);
+                if face.length() < 1e-7 {
+                    continue;
+                }
+                assert!(face.dot(normals[t[0] as usize]) > 0.0, "{:?}: triangle {:?} faces away", shape, t);
+                if !matches!(shape, ParticleShapeDef::Quad | ParticleShapeDef::Torus) {
+                    assert!(face.dot(a + b + c) > -1e-6, "{:?}: triangle {:?} faces inward", shape, t);
+                }
+            }
+        }
+        assert_eq!(particle_shape_vertex_count(ParticleShapeDef::Cube), 24);
+        assert_eq!(particle_shape_vertex_count(ParticleShapeDef::Shard), 24);
+        assert_eq!(
+            particle_shape_vertex_count(ParticleShapeDef::Sphere),
+            (PARTICLE_SEGMENTS as usize + 1) * (PARTICLE_SPHERE_RINGS as usize + 1)
+        );
     }
 
     #[test]

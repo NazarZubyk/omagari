@@ -1,8 +1,8 @@
 //! The VFX runtime: [`VfxPackage`] assets, instances attached to entities
 //! (sockets, segments, size fit), parameters and triggers, surface, shape,
 //! trail and afterimage layers with Omagari's effect material, light layers
-//! (point lights under a global cap, [`VfxSettings`]), and built-in
-//! textures. Added by [`crate::OmagariPlugin`].
+//! (point lights under a global cap, [`VfxSettings`]), mesh particles and
+//! the draw order of particle layers, and built-in textures. Added by [`crate::OmagariPlugin`].
 
 mod afterimage;
 mod attach;
@@ -12,9 +12,11 @@ mod instance;
 mod light;
 mod package;
 mod params;
+mod particle_mesh;
 mod render_fix;
 mod shape;
 mod shape_mesh;
+mod sorting;
 mod surface;
 mod trail;
 mod triggers;
@@ -26,8 +28,10 @@ pub use effect_material::*;
 pub use instance::*;
 pub use light::*;
 pub use package::*;
+pub use particle_mesh::{effect_mesh, ParticleMeshes};
 pub use shape::*;
 pub use shape_mesh::*;
+pub use sorting::{apply_bias, ParticleSortBias};
 pub use surface::*;
 pub use trail::*;
 pub use params::{
@@ -51,10 +55,12 @@ pub(crate) fn build(app: &mut App) {
     builtin::register_builtin_textures(app);
     effect_material::build(app);
     render_fix::build(app);
+    sorting::build(app);
     app.init_asset::<VfxPackage>()
         .init_asset_loader::<VfxPackageLoader>()
         .init_resource::<VfxWarnOnce>()
         .init_resource::<ShapeMeshCache>()
+        .init_resource::<ParticleMeshes>()
         .init_resource::<VfxSettings>()
         .add_message::<VfxFinished>()
         .add_observer(instance::on_instance_removed)
@@ -65,6 +71,7 @@ pub(crate) fn build(app: &mut App) {
             Update,
             (
                 instance::reload_instances,
+                particle_mesh::fix_particle_meshes,
                 instance::start_instances,
                 attach::resolve_sockets,
                 attach::apply_fit,

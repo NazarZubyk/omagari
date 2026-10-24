@@ -10,8 +10,8 @@ use bevy_hanabi::prelude::*;
 
 use super::builtin::{resolve_asset_path, resolve_asset_path_in};
 use crate::format::{
-    param_property_name, AfterimageLayerDef, AttachDef, Binding, EffectMaterialDef, EmitDef, LightLayerDef, ParamKind,
-    PlayDef, ProjectV2, ShapeLayerDef, TimedPlay, SimulationSpaceDef, SurfaceLayerDef, TextureAssetDef, TrailLayerDef, TextureColorSpace, TextureFilter, TextureSlotDef, TextureWrap,
+    param_property_name, AfterimageLayerDef, AttachDef, Binding, EffectMaterialDef, EmitDef, LightLayerDef, MeshAssetDef,
+    ParamKind, ParticleMeshDef, ParticleShapeDef, PlayDef, ProjectV2, ShapeLayerDef, TimedPlay, SimulationSpaceDef, SurfaceLayerDef, TextureAssetDef, TrailLayerDef, TextureColorSpace, TextureFilter, TextureSlotDef, TextureWrap,
     VisibleRangeDef,
 };
 
@@ -128,6 +128,19 @@ pub struct PreparedParticleLayer {
     /// Spawn rate binding (particles per second).
     pub rate: Option<Binding<f32>>,
     pub visible: Option<VisibleRangeDef>,
+    /// What each particle draws instead of bevy_hanabi's quad.
+    pub mesh: Option<PreparedMesh>,
+    /// Added to the layer's transparent sort distance (m).
+    pub sort_bias: f32,
+}
+
+/// The mesh of a mesh-particle layer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PreparedMesh {
+    /// A built-in shape, made when the layer spawns ([`ParticleMeshes`]).
+    Shape(ParticleShapeDef),
+    /// A mesh asset of the package, loaded with it.
+    Loaded(Handle<Mesh>),
 }
 
 /// Where [`VfxPackage::build`] puts the effects and textures it creates.
@@ -136,11 +149,20 @@ pub trait PackageAssets {
     fn add_effect(&mut self, label: String, effect: EffectAsset) -> Handle<EffectAsset>;
     /// Starts loading a texture.
     fn load_texture(&mut self, texture: &TextureAssetDef) -> Handle<Image>;
+    /// Starts loading a mesh asset (one primitive of a glTF file); `None`
+    /// when this builder loads no meshes (the layer then draws quads).
+    fn load_mesh(&mut self, _mesh: &MeshAssetDef) -> Option<Handle<Mesh>> {
+        None
+    }
 }
 
 impl PackageAssets for LoadContext<'_> {
     fn add_effect(&mut self, label: String, effect: EffectAsset) -> Handle<EffectAsset> {
         self.add_labeled_asset(label, effect)
+    }
+
+    fn load_mesh(&mut self, mesh: &MeshAssetDef) -> Option<Handle<Mesh>> {
+        Some(self.load(resolve_asset_path(&mesh.asset_path())))
     }
 
     fn load_texture(&mut self, texture: &TextureAssetDef) -> Handle<Image> {
@@ -168,6 +190,10 @@ impl PackageAssets for (&mut Assets<EffectAsset>, &AssetServer) {
 
     fn load_texture(&mut self, texture: &TextureAssetDef) -> Handle<Image> {
         InMemoryPackageAssets::new(self.0, self.1).load_texture(texture)
+    }
+
+    fn load_mesh(&mut self, mesh: &MeshAssetDef) -> Option<Handle<Mesh>> {
+        InMemoryPackageAssets::new(self.0, self.1).load_mesh(mesh)
     }
 }
 
@@ -200,6 +226,10 @@ impl<'a> InMemoryPackageAssets<'a> {
 impl PackageAssets for InMemoryPackageAssets<'_> {
     fn add_effect(&mut self, _label: String, effect: EffectAsset) -> Handle<EffectAsset> {
         self.effects.add(effect)
+    }
+
+    fn load_mesh(&mut self, mesh: &MeshAssetDef) -> Option<Handle<Mesh>> {
+        Some(self.server.load(resolve_asset_path_in(&mesh.asset_path(), self.source)))
     }
 
     fn load_texture(&mut self, texture: &TextureAssetDef) -> Handle<Image> {
@@ -303,6 +333,7 @@ impl VfxPackage {
         warnings: &mut Vec<String>,
     ) -> Self {
         let mut textures: Vec<(String, Handle<Image>)> = Vec::new();
+        let mut meshes: Vec<(String, Handle<Mesh>)> = Vec::new();
         let mut particle_layers = Vec::new();
         let mut lifetimes = Vec::new();
         // When each layer's spawner has emitted its last particle (one-shot
@@ -364,6 +395,33 @@ impl VfxPackage {
                 Some(handle)
             });
 
+            let mesh = match &layer.mesh {
+                None => None,
+                Some(ParticleMeshDef::Shape(shape)) => Some(PreparedMesh::Shape(*shape)),
+                Some(ParticleMeshDef::Asset(id)) => match project.mesh(id) {
+                    None => {
+                        warnings.push(format!("[{}] mesh \"{}\" is not a mesh in the assets list; it draws quads", layer.name, id));
+                        None
+                    }
+                    Some(def) => {
+                        if let Some((_, handle)) = meshes.iter().find(|(m, _)| m == id) {
+                            Some(PreparedMesh::Loaded(handle.clone()))
+                        } else {
+                            match assets.load_mesh(def) {
+                                Some(handle) => {
+                                    meshes.push((id.clone(), handle.clone()));
+                                    Some(PreparedMesh::Loaded(handle))
+                                }
+                                None => {
+                                    warnings.push(format!("[{}] mesh \"{}\" cannot be loaded here; it draws quads", layer.name, id));
+                                    None
+                                }
+                            }
+                        }
+                    }
+                },
+            };
+
             let parent = layer.parent.as_ref().and_then(|parent| {
                 let index = layer_names.iter().position(|n| n == parent);
                 if index.is_none() {
@@ -405,6 +463,8 @@ impl VfxPackage {
                 play: layer.play.clone(),
                 rate: layer.rate.clone(),
                 visible: layer.visible.clone(),
+                mesh,
+                sort_bias: layer.sort_bias,
             });
             emit_ends.push(match layer.play {
                 PlayDef::OnStart => layer.effect.emit_duration(),
@@ -547,6 +607,14 @@ impl VfxPackage {
             .chain(self.shape_layers.iter().flat_map(|l| l.textures.iter().flatten()))
             .chain(self.trail_layers.iter().flat_map(|l| l.textures.iter().flatten()))
             .chain(self.afterimage_layers.iter().flat_map(|l| l.textures.iter().flatten()))
+    }
+
+    /// Every mesh asset the particle layers load.
+    pub fn meshes(&self) -> impl Iterator<Item = &Handle<Mesh>> {
+        self.particle_layers.iter().filter_map(|l| match &l.mesh {
+            Some(PreparedMesh::Loaded(handle)) => Some(handle),
+            _ => None,
+        })
     }
 
     /// Every surface, shape, trail and afterimage material with the textures of its slots

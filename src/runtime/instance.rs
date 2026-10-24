@@ -32,6 +32,8 @@ use super::shape::{spawn_shape_layer, ShapeLayerState};
 use super::trail::{spawn_trail_layer, TrailLayerState};
 use super::surface::{SurfaceLayerState, VfxSurfaceLayer};
 use super::triggers::TriggerArgs;
+use super::particle_mesh::{effect_mesh, ParticleMeshes};
+use super::sorting::ParticleSortBias;
 use crate::format::{AttachDef, ParamValue};
 
 /// Sent once when an instance ends, right before the instance entity is
@@ -592,7 +594,7 @@ impl VfxControl<'_, '_> {
 
 /// Whether a texture can be used: loaded, failed (used without), or not
 /// managed by the asset server (added directly).
-fn texture_settled(server: &AssetServer, texture: &Handle<Image>) -> bool {
+fn texture_settled<A: Asset>(server: &AssetServer, texture: &Handle<A>) -> bool {
     match server.get_load_state(texture.id()) {
         None | Some(LoadState::Loaded) | Some(LoadState::Failed(_)) => true,
         Some(LoadState::NotLoaded) | Some(LoadState::Loading) => false,
@@ -611,6 +613,8 @@ pub(crate) fn start_instances(
     trails: Query<(&Name, &TrailLayerState)>,
     afterimages: Query<(&Name, &AfterimageLayerState)>,
     lights: Query<(&Name, &LightLayerState)>,
+    mut particle_meshes: ResMut<ParticleMeshes>,
+    mut meshes: Option<ResMut<Assets<Mesh>>>,
 ) {
     for (entity, mut instance) in instances.iter_mut() {
         let rebuilding = instance.rebuild && instance.state() == VfxState::Running;
@@ -638,7 +642,9 @@ pub(crate) fn start_instances(
             }
             Some(_) => continue,
         }
-        if !package.textures().all(|t| texture_settled(&asset_server, t)) {
+        if !package.textures().all(|t| texture_settled(&asset_server, t))
+            || !package.meshes().all(|m| texture_settled(&asset_server, m))
+        {
             continue;
         }
 
@@ -666,6 +672,12 @@ pub(crate) fn start_instances(
             }
             if !layer.properties.is_empty() {
                 e.insert(EffectProperties::default());
+            }
+            if let Some(mesh) = effect_mesh(layer.mesh.as_ref(), &mut particle_meshes, meshes.as_deref_mut()) {
+                e.insert(mesh);
+            }
+            if layer.sort_bias != 0.0 {
+                e.insert(ParticleSortBias(layer.sort_bias));
             }
             if layer.attach != AttachDef::Target {
                 e.insert(SocketAttach::new(&layer.attach, &package.project));
