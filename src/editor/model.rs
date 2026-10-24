@@ -242,6 +242,19 @@ pub fn body_kind(preview: Option<&PreviewDef>, game_assets: &GameAssets) -> (Opt
     }
 }
 
+/// A short status-line note when the MODEL stage cannot show its model (the
+/// file is not in the game assets folder, e.g. a demo opened without the
+/// game it was made for, or it does not load): the capsule stands in, and
+/// sockets on the model's nodes sit at the target. `None` when there is
+/// nothing to say.
+pub fn missing_model_note(preview: Option<&PreviewDef>, game_assets: &GameAssets) -> Option<String> {
+    let (_, problem) = body_kind(preview, game_assets);
+    problem?;
+    let path = preview?.model.as_deref()?;
+    let why = if game_assets.assets_root().join(path).is_file() { "does not load" } else { "not found" };
+    Some(format!("preview model {} {}, showing the capsule (PREVIEW tab)", path, why))
+}
+
 /// The body's transform under the target: a model `root_height` below it and
 /// turned half a turn (glTF models face +Z, Bevy's forward is −Z), the
 /// capsule centred on it.
@@ -1023,6 +1036,32 @@ mod tests {
         assert_eq!(floor_depth(&model, 0.9), 0.9);
         assert_eq!(body_transform(&BodyKind::Capsule, 0.9), Transform::default());
         assert_eq!(floor_depth(&BodyKind::Capsule, 0.0), 0.9, "half the capsule");
+    }
+
+    /// A demo opened without the game it was made for: the MODEL stage
+    /// shows the capsule and the status line says why.
+    #[test]
+    fn missing_preview_model_falls_back_to_the_capsule() {
+        let dir = std::env::temp_dir().join(format!("omagari_missing_model_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let game_assets = GameAssets::resolve(Some(dir.to_string_lossy().to_string()), None, &Default::default());
+        let preview = PreviewDef {
+            stage: PreviewStage::Model,
+            model: Some("anim/hero.glb".into()),
+            ..Default::default()
+        };
+        let (kind, problem) = body_kind(Some(&preview), &game_assets);
+        assert_eq!(kind, Some(BodyKind::Capsule));
+        assert!(problem.is_some_and(|p| p.contains("showing the capsule")));
+        let note = missing_model_note(Some(&preview), &game_assets).unwrap();
+        assert!(note.contains("anim/hero.glb not found, showing the capsule"), "{}", note);
+        // Nothing to say without a model, or on another stage.
+        let capsule = PreviewDef { stage: PreviewStage::Capsule, ..preview.clone() };
+        assert_eq!(missing_model_note(Some(&capsule), &game_assets), None);
+        let no_model = PreviewDef { model: None, ..preview };
+        assert_eq!(missing_model_note(Some(&no_model), &game_assets), None);
+        assert_eq!(missing_model_note(None, &game_assets), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

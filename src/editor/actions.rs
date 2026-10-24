@@ -247,9 +247,11 @@ impl ActionContext<'_> {
             Action::Open(name) => match load_project_with_unknown_fields(&name) {
                 Ok((project, unknown)) => {
                     self.replace_project(project, Some(name.clone()), true);
-                    match unknown.first() {
-                        None => self.status(format!("Opened {}", name)),
-                        Some(first) => self.status(format!(
+                    let model_note = super::model::missing_model_note(self.project.preview.as_ref(), self.game_assets);
+                    match (unknown.first(), model_note) {
+                        (None, None) => self.status(format!("Opened {}", name)),
+                        (None, Some(note)) => self.status(format!("Opened {}; {}", name, note)),
+                        (Some(first), _) => self.status(format!(
                             "Opened {}; {} unknown field(s) ignored (saving drops them): {}",
                             name,
                             unknown.len(),
@@ -612,7 +614,10 @@ impl ActionContext<'_> {
                 if let Some(trigger) = request.trigger {
                     self.preview.push(PreviewCommand::Fire { name: trigger, random_point: false });
                 }
-                self.status(format!("Previewing {} (requested by Claude)", filename));
+                match super::model::missing_model_note(self.project.preview.as_ref(), self.game_assets) {
+                    None => self.status(format!("Previewing {} (requested by Claude)", filename)),
+                    Some(note) => self.status(format!("Previewing {} (requested by Claude); {}", filename, note)),
+                }
             }
             Err(e) => {
                 warn!("preview request for {}: {}", filename, e);
