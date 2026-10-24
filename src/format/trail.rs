@@ -127,7 +127,7 @@ impl EmitDef {
     pub fn as_play(&self) -> PlayDef {
         match self {
             EmitDef::Always => PlayDef::Loop,
-            EmitDef::Trigger { start, .. } => PlayDef::OnTrigger(start.clone()),
+            EmitDef::Trigger { start, stop } => PlayDef::Between { start: start.clone(), stop: stop.clone() },
             EmitDef::While(p, t) => PlayDef::While(p.clone(), *t),
         }
     }

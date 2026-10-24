@@ -26,7 +26,7 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::project::{AttachDef, Binding, PlayDef, VisibleRangeDef};
+use super::project::{AttachDef, Binding, PlayDef, TimedPlay, VisibleRangeDef};
 use super::surface::{EffectMaterialDef, FadeDef};
 
 /// Shapes above this size (metres, largest extent at scale 1 × the largest
@@ -361,7 +361,8 @@ pub struct ShapeLayerDef {
     pub rotation_speed: Binding<f32>,
     pub rotation_axis: Vec3,
     /// `Loop` (always), `OnStart` (once), `OnTrigger("name")` (each time the
-    /// trigger fires; restarts the age), `While("param", threshold)`.
+    /// trigger fires; restarts the age), `While("param", threshold)`,
+    /// `Between(start, stop)` (from one trigger to the other).
     pub play: PlayDef,
     /// One-shot length in seconds for `OnStart` / `OnTrigger` (the shape is
     /// gone after it); for `Loop` / `While` the age starts over every
@@ -400,37 +401,42 @@ impl Default for ShapeLayerDef {
     }
 }
 
+impl TimedPlay for ShapeLayerDef {
+    fn play_def(&self) -> &PlayDef {
+        &self.play
+    }
+
+    fn duration_secs(&self) -> Option<f32> {
+        self.duration
+    }
+
+    fn fade_def(&self) -> FadeDef {
+        self.fade
+    }
+}
+
 impl ShapeLayerDef {
     /// Whether the shape plays once per start / trigger for `duration`
     /// seconds (`OnStart` / `OnTrigger` with a duration).
     pub fn is_one_shot(&self) -> bool {
-        self.duration.is_some() && matches!(self.play, PlayDef::OnStart | PlayDef::OnTrigger(_))
+        TimedPlay::is_one_shot(self)
     }
 
     /// The one-shot length (`duration`, at least 0), for one-shot shapes.
     pub fn one_shot_duration(&self) -> Option<f32> {
-        self.duration.filter(|_| self.is_one_shot()).map(|d| d.max(0.0))
+        TimedPlay::one_shot_duration(self)
     }
 
     /// The age bindings see: the age, wrapped by `duration` for `Loop` /
-    /// `While` shapes (the animation repeats).
+    /// `While` / `Between` shapes (the animation repeats).
     pub fn binding_age(&self, age: f32) -> f32 {
-        match self.duration {
-            Some(d) if d > 0.0 && !self.is_one_shot() => age.rem_euclid(d),
-            _ => age,
-        }
+        TimedPlay::binding_age(self, age)
     }
 
     /// Opacity of a one-shot at `age`: up over `fade.in`, down over
     /// `fade.out` before `duration`, 0 after it. 1 for other shapes.
     pub fn envelope(&self, age: f32) -> f32 {
-        let Some(d) = self.one_shot_duration() else { return 1.0 };
-        if age < 0.0 || age >= d {
-            return 0.0;
-        }
-        let up = if self.fade.fade_in > 0.0 { (age / self.fade.fade_in).clamp(0.0, 1.0) } else { 1.0 };
-        let down = if self.fade.fade_out > 0.0 { ((d - age) / self.fade.fade_out).clamp(0.0, 1.0) } else { 1.0 };
-        up * down
+        TimedPlay::envelope(self, age)
     }
 
     /// Every binding that reads a parameter: material values, `scale`,
@@ -480,11 +486,7 @@ impl ShapeLayerDef {
                 visible.param = to.to_string();
             }
         }
-        if let PlayDef::While(name, _) = &mut self.play {
-            if name == from {
-                *name = to.to_string();
-            }
-        }
+        self.play.rename_param(from, to);
     }
 
     /// The age keys of every `Age` binding: `(value name, largest key age)`.

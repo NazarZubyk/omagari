@@ -20,6 +20,7 @@ use crate::{ExportedEffect, ExportedProject};
 pub mod coverage;
 mod expr;
 pub mod hanabi_serde;
+mod light;
 mod migrate;
 mod modifiers;
 mod particles;
@@ -30,6 +31,7 @@ mod trail;
 
 pub use expr::*;
 pub use hanabi_serde::{CpuValueDef, CpuVecDef, SpawnerDef, SpawnerPreset};
+pub use light::*;
 pub use migrate::*;
 pub use modifiers::*;
 pub use particles::*;
