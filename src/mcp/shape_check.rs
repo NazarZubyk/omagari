@@ -130,7 +130,7 @@ pub fn check_shape_layers(d: &mut Diagnostics, project: &ProjectV2, model: Optio
         }
 
         // Attach.
-        check_shape_attach(d, project, layer, model);
+        check_attach_sockets(d, project, name, &layer.attach, model, "the shape");
 
         // Play, duration and age.
         match &layer.play {
@@ -150,6 +150,7 @@ pub fn check_shape_layers(d: &mut Diagnostics, project: &ProjectV2, model: Optio
                 Some(ParamKind::Color) => d.error(name, format!("play While reads \"{}\", a Color parameter; it needs a Float one", param)),
                 Some(ParamKind::Float) => {}
             },
+            PlayDef::Between { .. } => check_between(d, project, name, &layer.play),
             PlayDef::OnStart if layer.duration.is_none() => d.note(
                 name,
                 "OnStart without a duration plays like Loop (until the effect stops); set duration for a one-shot",
@@ -186,7 +187,7 @@ pub fn check_shape_layers(d: &mut Diagnostics, project: &ProjectV2, model: Optio
                     }
                 }
             }
-        } else if matches!(layer.play, PlayDef::Loop | PlayDef::While(..)) && !layer.age_bindings().is_empty() {
+        } else if matches!(layer.play, PlayDef::Loop | PlayDef::While(..) | PlayDef::Between { .. }) && !layer.age_bindings().is_empty() {
             d.note(
                 name,
                 "curves over age run once from the start and then hold their last key; give the shape a duration to repeat them",
@@ -231,9 +232,22 @@ pub fn check_shape_layers(d: &mut Diagnostics, project: &ProjectV2, model: Optio
     }
 }
 
-/// Keys of one of the shape's own curves: present, sorted, and the
+/// The two triggers of a `play: Between`: both declared, not empty.
+pub(crate) fn check_between(d: &mut Diagnostics, project: &ProjectV2, name: &str, play: &PlayDef) {
+    let PlayDef::Between { start, stop } = play else { return };
+    if start.is_empty() || stop.is_empty() {
+        d.error(name, "play Between needs a start and a stop trigger");
+    }
+    for trigger in play.triggers().into_iter().filter(|t| !t.is_empty()) {
+        if project.trigger(trigger).is_none() {
+            d.error(name, format!("plays on trigger \"{}\", which is not a trigger of this package", trigger));
+        }
+    }
+}
+
+/// Keys of one of a layer's own curves: present, sorted, and the
 /// parameter it reads.
-fn check_keys(d: &mut Diagnostics, name: &str, what: &str, keys: Option<Vec<f32>>, param: Option<&str>, project: &ProjectV2) {
+pub(crate) fn check_keys(d: &mut Diagnostics, name: &str, what: &str, keys: Option<Vec<f32>>, param: Option<&str>, project: &ProjectV2) {
     let Some(xs) = keys else { return };
     if let Some(param) = param {
         match project.param(param).map(|p| p.kind()) {
@@ -254,9 +268,17 @@ fn check_keys(d: &mut Diagnostics, name: &str, what: &str, keys: Option<Vec<f32>
     }
 }
 
-fn check_shape_attach(d: &mut Diagnostics, project: &ProjectV2, layer: &ShapeLayerDef, model: Option<&PreviewModelNodes>) {
-    let name = layer.name.as_str();
-    for socket in layer.attach.socket_names() {
+/// The sockets of a shape's or light's `attach` (`what` = "the shape"):
+/// package sockets, else node names checked against the preview model.
+pub(crate) fn check_attach_sockets(
+    d: &mut Diagnostics,
+    project: &ProjectV2,
+    name: &str,
+    attach: &AttachDef,
+    model: Option<&PreviewModelNodes>,
+    what: &str,
+) {
+    for socket in attach.socket_names() {
         if socket.is_empty() {
             d.error(name, "attach names an empty socket");
         } else if project.socket(socket).is_some() {
@@ -264,7 +286,7 @@ fn check_shape_attach(d: &mut Diagnostics, project: &ProjectV2, layer: &ShapeLay
             if !model.names.iter().any(|n| n == socket) {
                 d.error(
                     name,
-                    format!("\"{}\" is neither a package socket nor a node {}; the shape would sit at the target root", socket, model.place),
+                    format!("\"{}\" is neither a package socket nor a node {}; {} would sit at the target root", socket, model.place, what),
                 );
             }
         } else {
@@ -272,16 +294,17 @@ fn check_shape_attach(d: &mut Diagnostics, project: &ProjectV2, layer: &ShapeLay
             d.note(
                 name,
                 format!(
-                    "\"{}\" is not a package socket, so it must be a node name in the target's model{}; until it is found the shape sits at the target root",
+                    "\"{}\" is not a package socket, so it must be a node name in the target's model{}; until it is found {} sits at the target root",
                     socket,
-                    if has_model { "" } else { " (no preview model to check against)" }
+                    if has_model { "" } else { " (no preview model to check against)" },
+                    what
                 ),
             );
         }
     }
-    if let AttachDef::Segment { from, to } = &layer.attach {
+    if let AttachDef::Segment { from, to } = attach {
         if from == to {
-            d.warn(name, format!("segment from \"{}\" to itself has no length (the shape is not turned along it)", from));
+            d.warn(name, format!("segment from \"{}\" to itself has no length (its middle is that socket)", from));
         }
     }
 }
@@ -294,7 +317,7 @@ fn follow_text(follow: FollowDef) -> &'static str {
     }
 }
 
-fn attach_words(project: &ProjectV2, attach: &AttachDef) -> String {
+pub(crate) fn attach_words(project: &ProjectV2, attach: &AttachDef) -> String {
     let socket = |name: &str| match project.socket(name) {
         Some(s) => match &s.node {
             Some(node) => format!("socket \"{}\" (node \"{}\" + offset {:?})", name, node, s.offset.to_array()),
@@ -342,6 +365,13 @@ fn play_text(project: &ProjectV2, layer: &ShapeLayerDef) -> String {
             fades,
             layer.duration.map(|d| format!(", and every {} s", fmt_num(d))).unwrap_or_default()
         ),
+        (PlayDef::Between { .. }, _) => format!(
+            "{}: shows {} ({}; the age starts over each time it switches on{})",
+            between_words(&layer.play),
+            between_when(project, &layer.play),
+            fades,
+            layer.duration.map(|d| format!(", and every {} s", fmt_num(d))).unwrap_or_default()
+        ),
         (PlayDef::Loop | PlayDef::OnStart, _) => format!(
             "{}: shows while the effect runs ({} with the effect{})",
             if layer.play == PlayDef::Loop { "Loop" } else { "OnStart (no duration)" },
@@ -351,7 +381,35 @@ fn play_text(project: &ProjectV2, layer: &ShapeLayerDef) -> String {
     }
 }
 
-fn binding_words<T: Copy>(b: &Binding<T>, value: impl Fn(T) -> String, unit: &str) -> String {
+/// `Between(start: "a", stop: "b")`.
+pub(crate) fn between_words(play: &PlayDef) -> String {
+    match play {
+        PlayDef::Between { start, stop } => format!("Between(start: \"{}\", stop: \"{}\")", start, stop),
+        other => other.kind_name().to_string(),
+    }
+}
+
+/// When a `Between` layer is on, in words (unknown triggers marked).
+pub(crate) fn between_when(project: &ProjectV2, play: &PlayDef) -> String {
+    let mark = |t: &str| if project.trigger(t).is_some() { String::new() } else { " (NOT a trigger of this package)".to_string() };
+    match play {
+        PlayDef::Between { start, stop } if start == stop => format!(
+            "from one \"{}\"{} to the next (each one switches it on or off)",
+            start,
+            mark(start)
+        ),
+        PlayDef::Between { start, stop } => format!(
+            "from the moment the game fires \"{}\"{} until it fires \"{}\"{}",
+            start,
+            mark(start),
+            stop,
+            mark(stop)
+        ),
+        _ => String::new(),
+    }
+}
+
+pub(crate) fn binding_words<T: Copy>(b: &Binding<T>, value: impl Fn(T) -> String, unit: &str) -> String {
     match b {
         Binding::Const(v) => format!("{}{}", value(*v), unit),
         Binding::Param(p, keys) => {
