@@ -377,7 +377,7 @@ fn unit_curve_ui(ui: &mut egui::Ui, keys: &mut Vec<(f32, f32)>, x_label: &str, m
             ui.horizontal(|ui| {
                 ui.label(x_label);
                 *x = ui_for_f32_ex(ui, *x, 0.0, 1.0, 0.01);
-                ui.label("→");
+                ui.label("➡");
                 *v = ui_for_f32_ex(ui, *v, 0.0, max, 0.01);
                 if ui.small_button("❌").on_hover_text("Remove this key").clicked() {
                     remove = Some(i);
@@ -465,7 +465,7 @@ pub fn draw_trail_layer(layer: &mut TrailLayerDef, ctx: &mut EmitterContext, app
         ui.label("To").on_hover_text(hints::TRAIL_SOCKETS);
         ui.horizontal(|ui| {
             socket_picker(ui, &mut layer.to, ctx.sockets, ctx.model, id.with("to"));
-            if ui.small_button("⇄").on_hover_text("Swap From and To").clicked() {
+            if ui.small_button("swap").on_hover_text("Swap From and To").clicked() {
                 std::mem::swap(&mut layer.from, &mut layer.to);
             }
         });

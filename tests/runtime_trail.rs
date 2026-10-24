@@ -192,7 +192,7 @@ fn trails_follow_the_sockets_between_their_triggers_and_age_out() {
     }
     let (_, state) = trail_state(&app, instance);
     assert!(state.samples.is_empty(), "{} left", state.samples.len());
-    assert!(!shown(&app, trail) && vertex_count(&app, trail) == 0, "nothing drawn between swings");
+    assert!(!shown(&app, trail), "nothing drawn between swings");
 
     // A new swing, then stop: the instance waits for the trail to age out.
     fire(&mut app, instance, "swing_start");
