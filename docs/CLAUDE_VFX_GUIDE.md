@@ -2,7 +2,7 @@
 
 You build bevy_hanabi particle effects as Omagari projects (`*.omagari.ron`, format v2) through the `omagari` MCP server. **You never see the effect.** You work from numbers: `analyze_project` simulates the effect on the CPU and describes it in text, and the user watches it in the editor (`preview_in_editor`) and tells you what to change.
 
-Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, recipes, design, game.
+Fetch one section at a time with `guide(section: "...")`: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, lights, recipes, design, game.
 
 ## Workflow
 
@@ -18,7 +18,7 @@ The analysis is an approximation (60 updates/s, CPU random numbers, ConformToSph
 
 ## Format
 
-A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"); a `Shape` layer draws a simple 3D shape (sphere, ring, arc, ...) with the same shader (section "shapes"); a `Trail` layer draws a ribbon between two moving sockets, e.g. a sword swing's arc (section "trails"); an `Afterimage` layer leaves fading copies of the target's meshes (section "afterimages"). All layers play at the same point, the target (the origin in the editor); Y is up.
+A project has a list of **assets** (textures, referenced by id) and a list of **layers**. Each `Particles` layer is one bevy_hanabi effect; a `Surface` layer draws Omagari's effect shader over the target's model (section "surfaces"); a `Shape` layer draws a simple 3D shape (sphere, ring, arc, ...) with the same shader (section "shapes"); a `Trail` layer draws a ribbon between two moving sockets, e.g. a sword swing's arc (section "trails"); an `Afterimage` layer leaves fading copies of the target's meshes (section "afterimages"); a `Light` layer is a point light that lights the floor and the model around it (section "lights"). All layers play at the same point, the target (the origin in the editor); Y is up.
 
 ```ron
 (
@@ -31,7 +31,7 @@ A project has a list of **assets** (textures, referenced by id) and a list of **
             name: "sparks",              // unique; children refer to parents by name
             parent: None,                // or Some("rocket"); see section "hierarchy"
             simulation_space: Local,     // Local | Global; see section "layers"
-            play: OnStart,               // Loop | OnStart | OnTrigger("name") | While("param", 0.5); must match the spawner
+            play: OnStart,               // Loop | OnStart | OnTrigger("name") | While("param", 0.5) | Between(start: "a", stop: "b"); must match the spawner
             texture: Some("spark1"),     // asset id; see section "textures"
             effect: (
                 capacity: 512,           // max particles alive at once; keep it near the peak count
@@ -69,13 +69,13 @@ Projects can also hold `sockets` and `fit` (section "attach"), and `parameters` 
 | `parent` | `None` / `Some("name")` | Spawned by the parent's spawn events (section "hierarchy"). |
 | `attach` | `Target` / `Socket("name")` / `Segment(from: "a", to: "b")` | Where the layer sits: the target's origin (default), a socket it follows, or a line between two sockets. Section "attach". |
 | `simulation_space` | `Local` / `Global` | See below. |
-| `play` | `Loop` / `OnStart` / `OnTrigger("name")` / `While("param", threshold)` | `Loop` = the spawner repeats (`cycle_count: 0`); `OnStart` = one-shot (`cycle_count` ≥ 1); `OnTrigger` = the spawner plays each time the game fires the trigger (usually a burst, `cycle_count: 1`), not at the start; `While` = emits while a number parameter is ≥ threshold. The check warns when play and spawner disagree. |
+| `play` | `Loop` / `OnStart` / `OnTrigger("name")` / `While("param", threshold)` / `Between(start: "a", stop: "b")` | `Loop` = the spawner repeats (`cycle_count: 0`); `OnStart` = one-shot (`cycle_count` ≥ 1); `OnTrigger` = the spawner plays each time the game fires the trigger (usually a burst, `cycle_count: 1`), not at the start; `While` = emits while a number parameter is ≥ threshold; `Between` = emits from the moment the game fires `start` until it fires `stop` (held emission, e.g. sparks along a blade during a swing; a looping spawner, `cycle_count: 0`). The check warns when play and spawner disagree. |
 | `rate` | `None` / `Some(Const(20.0))` / `Some(Param("intensity", [(0.0, 5.0), (1.0, 40.0)]))` | Particles per second as a steady stream, replacing the spawner's `count` while it plays; a constant or a curve over a parameter (section "parameters"). Use it with a looping spawner. |
 | `visible` | `None` / `Some((param: "intensity", from: 0.6, to: 1.0, fade: 0.1))` | The layer spawns only while the parameter is in `[from, to]`, fading out over `fade` outside (section "parameters"). |
 | `texture` | `None` / `Some("asset id")` | The texture the `ParticleTexture` render modifier samples. |
 | `effect` | struct | Capacity, spawner, blending, modifiers. |
 
-The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces"; so do `Shape` layers (shield bubbles, ground rings, shockwaves, slash arcs): section "shapes"; `Trail` layers (sword trails, comet tails): section "trails"; `Afterimage` layers (sword shadows, dash echoes): section "afterimages".
+The table is for `Particles` layers. `Surface` layers (a shader over the target's model: glowing skins, shells with volume) have their own fields: section "surfaces"; so do `Shape` layers (shield bubbles, ground rings, shockwaves, slash arcs): section "shapes"; `Trail` layers (sword trails, comet tails): section "trails"; `Afterimage` layers (sword shadows, dash echoes): section "afterimages"; `Light` layers (weapon glows, hit flashes, torches): section "lights".
 
 **Simulation space** matters as soon as the target moves (a running character, a swung weapon):
 - `Local`: particles move with the target. Use it for anything that should stay on the character: auras, shields, orbiting sparks, status effects. It is the default.
@@ -174,10 +174,11 @@ triggers: [
 A trigger does two things:
 - **Layers with `play: OnTrigger("hit")` burst**: their spawner restarts from its first cycle. Give them a one-shot spawner (`cycle_count: 1`, `spawn_duration: 0.0` for an instant burst); a looping spawner would never stop after the first trigger (the check warns). They do not play when the effect starts, and restarting the effect does not replay them. A trigger fired while the effect is still loading waits for it.
 - **Pulses**: the parameter jumps to `to` and returns to its current value linearly over `decay` seconds, on number parameters only. Use a dedicated `flash` parameter (default 0, smoothing 0) and read it where the flash should show (size, colour, rate).
+- **Layers with `play: Between(start: "swing_start", stop: "swing_end")` are held on** from the start trigger until the stop trigger: a particle layer emits (its spawner restarts at each start; give it a looping spawner, `cycle_count: 0`), a shape shows, a light shines. The same name twice (`Between(start: "t", stop: "t")`) toggles on and off. This is the trail's `emit: Trigger(start, stop)` for every other layer: "sparks along the blade during a swing" needs no parameter (recipe "Sword sparks during a swing"). A stop of the effect lets go; a restart waits for the next start. A `Between` particle layer gets the start trigger's payload (`trigger_pos` / `trigger_dir` / `trigger_strength`).
 
 **Payload.** `trigger_at` carries a world position, a direction and a strength (default: none, none, 1). Before an OnTrigger layer bursts, they are written into `Property("trigger_pos")` (vec3), `Property("trigger_dir")` (vec3, unit length) and `Property("trigger_strength")` (f32), in the layer's simulation space; without a position the layer's own origin is used, without a direction +Y. Spawn at the contact point with `SetAttribute((attr: "position", attr_expr: Property("trigger_pos")))` and fly along the direction with `Operator(Multiply(Property("trigger_dir"), ...))`. Use `simulation_space: Global` so the burst stays where it hit. Recipe "Hit burst at the contact point".
 
-`check_project` reports OnTrigger layers whose trigger does not exist, pulses on unknown or colour parameters, and notes triggers that do nothing. `analyze_project` simulates an OnTrigger layer as if its trigger fired once at t = 0. `preview_in_editor(name, trigger: "hit")` fires a trigger for the user; the editor's TRIGGERS tab has a FIRE button, "at random point" (a payload on the preview model's or capsule's bounds, near the target without one), auto-fire every N seconds (saved in the project's preview block as `auto_triggers: [("tick", 1.0)]`) and fire at a clip time of the preview animation (`animation_triggers: [("swing", 0.3)]`, section "model").
+`check_project` reports OnTrigger / Between layers whose triggers do not exist, pulses on unknown or colour parameters, and notes triggers that do nothing. `analyze_project` simulates an OnTrigger layer as if its trigger fired once at t = 0, and a Between layer as held on from t = 0; its "Parameters and triggers" section says which layers each trigger bursts, starts, stops or toggles. `preview_in_editor(name, trigger: "hit")` fires a trigger for the user; the editor's TRIGGERS tab has a FIRE button, "at random point" (a payload on the preview model's or capsule's bounds, near the target without one), auto-fire every N seconds (saved in the project's preview block as `auto_triggers: [("tick", 1.0)]`) and fire at a clip time of the preview animation (`animation_triggers: [("swing", 0.3)]`, section "model").
 
 ## Spawner
 
@@ -578,6 +579,49 @@ Afterimage((
 - **Checks**: `interval` / `lifetime` ≤ 0 and unknown emit triggers / parameters are errors; an interval shorter than a frame, a lifetime shorter than the interval, a cap that cuts copies, an empty mesh list and age keys past the lifetime warn.
 
 The editor's 👥 Afterimage layer (➕ ADD) has presets "afterimages" (blue copies during a swing) and "shadow dash" (dark copies while the effect runs), the same Swing preview as trails, and the mesh picker. Recipe "Afterimages".
+
+## Lights
+
+A **light layer** is a point light (Bevy's `PointLight`) at the attach point: it lights the floor, the character and everything around it — a weapon glow that lights the floor more as a parameter rises, a flash of light on a hit, light only during a swing, a flickering torch. Lights are not simulated: `analyze_project` describes their brightness in lumens and in lux at 1 m at every parameter's min / middle / max and over their age.
+
+```ron
+Light((
+    name: "glow",                        // unique among all layers
+    attach: Socket("blade_mid"),         // Target | Socket("name") | Segment(from: "a", to: "b") (the middle)
+    offset: (0.0, 0.0, 0.0),             // metres in the attach point's space (× the size fit)
+    color: Const((0.45, 0.7, 1.0, 1.0)), // linear RGB(A), alpha unused; Param("tint", []) reads a Color parameter
+    intensity: Param("charge", [(0.0, 0.0), (1.0, 40000.0)]),   // lumens: Const, a curve over a parameter, or Age([...])
+    range: Const(4.0),                   // metres: nothing farther is lit (it fades smoothly to 0 there)
+    radius: 0.05,                        // metres: size of the glowing source (softer highlights only)
+    flicker: (amount: 0.1, speed: 6.0),  // smooth random ±10% of the intensity, ~6 changes per second, per copy
+    play: Loop,                          // Loop | OnStart | OnTrigger("name") | While("param", t) | Between(start: "a", stop: "b")
+    duration: None,                      // seconds: a one-shot for OnStart / OnTrigger (a flash)
+    fade: (in: 0.2, out: 0.4),
+    visible: None,                       // a parameter range, like other layers
+    shadows: false,                      // costly; leave off
+))
+```
+
+**Units.** `intensity` is Bevy's `PointLight` intensity: luminous power in **lumens** (a 60 W bulb ≈ 800 lm). The light at distance d is about `lumens / (4π d²)` lux; the editor's sun puts ~4600 lux on the floor, so a light shows on a lit floor from ~500 lux (≈ 6 000 lm at 1 m) and dominates it from ~5 000 lux.
+
+| Light | Intensity (lm) | Range (m) |
+| :-- | :-- | :-- |
+| soft glow (a charged weapon, an aura) | 3 000–20 000 | 2–4 |
+| strong glow (full charge, a fire spell) | 20 000–60 000 | 3–6 |
+| hit flash (0.1–0.3 s) | 50 000–200 000 | 4–8 |
+| torch / campfire | 10 000–30 000, flicker 0.2–0.4 at 5–8 /s | 4–8 |
+
+- **attach**: the target root, a socket (it follows the bone; e.g. the blade's middle) or the middle of a segment. `offset` is in the attach point's space. An `OnTrigger` light fired with `trigger_at` shines at the payload position (a flash at the contact point).
+- **play** works like a shape's (section "shapes"): `OnTrigger` + `duration` is a one-shot **flash** — each trigger plays it from age 0 (`intensity: Age([(0.0, 150000.0), (0.25, 0.0)])` fades it out), a trigger during it starts it over; without a duration it stays on after the first trigger (warning). `Between(start, stop)` shines from one trigger to the other (light only during a swing); `While("param", t)` while a parameter is high; `Loop` while the effect runs. `OnStart` + `duration` is a one-shot: a package whose layers are all one-shots finishes by itself.
+- **Bindings**: `color`, `intensity` and `range` are constants, curves over a number parameter (a glow that grows with `charge`), or curves over the age; a colour may follow a Color parameter directly (`Param("tint", [])`). Keep the colour's brightest channel at about 1: brightness comes from `intensity`.
+- **flicker**: smooth noise on the intensity between `1 − amount` and `1 + amount`, about `speed` changes per second, different for each copy of the effect (a seed per instance).
+- **fade**: in when it starts, out when it stops; when the game stops the effect it fades out over `fade.out` (the effect waits). A flash fades inside its duration.
+- **Size fit**: range and radius scale with the fit, the intensity with fit² (a scaled-up copy lights its surroundings the same way).
+- **Global cap**: the game shows at most `VfxSettings::max_lights` Omagari lights at once (default 8, every effect together); the weakest (then the oldest) go dark — a light pushed out while it shines fades out over `light_cap_fade` (0.25 s) — so keep one to three lights per effect (the check warns above three).
+- **shadows**: `true` renders six shadow maps for the light every frame (per copy of the effect): a warning; effect lights rarely need them.
+- **Checks**: intensity below 0, range ≤ 0, a negative radius, unknown triggers and parameters (a Color parameter only for `color`) are errors; a light that never shines, a peak under 200 lm (too dim to see) or over 1 000 000 lm (blinding), ranges over 25 m (costly), a radius larger than the range, flicker outside 0..1 or with speed 0 or above 40 /s, `shadows: true`, an `OnTrigger` light without a duration, age keys past the duration and more than three lights in a package warn.
+
+The editor's 💡 Light layer (➕ ADD) has presets "weapon glow" (blue, growing with the first number parameter), "hit flash" (warm, 0.25 s on the first trigger) and "torch flicker" (orange, flickering), every value with tooltips and units, and draws the lights in the viewport (a star at the light, a circle at its range; the selected layer's range sphere). While a project has a light layer, the editor's floor is lit (FLOOR, CAPSULE and MODEL stages; the dark room shows light best), and the model is lit as in the game. Recipes "Weapon glow growing with a parameter" and "Hit flash light".
 
 ## Recipes
 
@@ -1654,6 +1698,106 @@ A white-hot arc behind the blade from `swing_start` to `swing_end`: 0.22 s long 
 
 A cyan ribbon 0.7 m tall behind the character's middle that always follows it for 0.5 s (≈ 1.8 m at a run), tapering to a point and fading, with flowing noise: a speed or power-up streak. On a still target there is no trail (it has no length); it grows with the speed.
 
+### Sword sparks during a swing (segment + held emission between two triggers)
+
+```ron
+(
+    version: 2,
+    triggers: [(name: "swing_start"), (name: "swing_end")],
+    assets: [(id: "spark1", kind: Texture((path: "omagari://textures/spark1.png")))],
+    sockets: [
+        (name: "blade_base", node: None, offset: (0.3, 0.2, -0.3)),
+        (name: "blade_tip", node: None, offset: (0.3, 1.1, -0.6)),
+    ],
+    layers: [
+        Particles((
+            name: "swing_sparks",
+            attach: Segment(from: "blade_base", to: "blade_tip"),
+            simulation_space: Global,
+            play: Between(start: "swing_start", stop: "swing_end"),
+            texture: Some("spark1"),
+            effect: (
+                capacity: 128,
+                spawner: (count: Single(150.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((attr: "age", attr_expr: Float(0.0))),
+                    SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.2), Float(0.45))))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.03))),
+                    SetAttribute((attr: "position", attr_expr: Operator(Mix(Property("segment_a"), Property("segment_b"), RandFloat)))),
+                    SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Float(1.5))))),
+                ],
+                update_modifiers: [
+                    AccelModifier((accel: Vec3((0.0, -6.0, 0.0)))),
+                    LinearDragModifier((drag_expr: Float(2.0))),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (g: [(0.0, (6.0, 3.5, 1.2, 1.0)), (1.0, (2.0, 0.6, 0.1, 0.0))]),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((sample_mapping: ModulateOpacityFromR)),
+                    Orient((mode: AlongVelocity)),
+                ],
+            ),
+        )),
+    ],
+    preview: Some((stage: Capsule, camera: Game)),
+)
+```
+
+Hot sparks shed along the whole blade (a random point between its base and tip each) from the moment the game fires `swing_start` until it fires `swing_end`, ~150 per second, falling and fading over 0.2–0.45 s; nothing between swings and no parameter to drive. `Global`: the sparks stay where the blade left them, so a fast swing leaves a streak of them. In the editor fire the two triggers in the TRIGGERS tab, or on the MODEL stage with a sword clip set `animation_triggers: [("swing_start", 0.78), ("swing_end", 1.08)]` (a trail layer's Swing preview does it) and move the sockets onto the hand bone or the weapon. Add a trail with `emit: Trigger(start: "swing_start", stop: "swing_end")` for the arc and a light with `play: Between(start: "swing_start", stop: "swing_end")` for a glow during the swing.
+
+### Weapon glow growing with a parameter (light)
+
+```ron
+(
+    version: 2,
+    parameters: [(name: "charge", default: Float(0.0), min: 0.0, max: 1.0, smoothing: 0.3)],
+    sockets: [(name: "blade_mid", node: None, offset: (0.3, 0.6, -0.4))],
+    layers: [
+        Light((
+            name: "glow",
+            attach: Socket("blade_mid"),
+            color: Const((0.45, 0.7, 1.0, 1.0)),
+            intensity: Param("charge", [(0.0, 0.0), (0.2, 4000.0), (1.0, 40000.0)]),
+            range: Param("charge", [(0.0, 2.0), (1.0, 4.5)]),
+            radius: 0.05,
+            flicker: (amount: 0.08, speed: 5.0),
+            fade: (in: 0.2, out: 0.4),
+        )),
+    ],
+    preview: Some((stage: Capsule, params: [("charge", Float(0.8))])),
+)
+```
+
+A cool blue light at the blade that is dark at `charge` 0, a faint glow at 0.2 (4 000 lm) and lights the floor and the character strongly at 1 (40 000 lm ≈ 3 200 lux at 1 m, reaching 4.5 m), with a faint shimmer; the game sets `charge` (smoothed over 0.3 s). Put the package on the weapon and the socket on the blade (a weapon node or an offset from the hand bone). Pair it with a surface or shape glow on the blade itself; the light is what makes the floor glow. Preview on the dark room (BG) to judge it.
+
+### Hit flash light (light, one-shot per trigger)
+
+```ron
+(
+    version: 2,
+    triggers: [(name: "hit")],
+    layers: [
+        Light((
+            name: "flash",
+            play: OnTrigger("hit"),
+            duration: Some(0.25),
+            fade: (in: 0.0, out: 0.05),
+            color: Const((1.0, 0.85, 0.6, 1.0)),
+            intensity: Age([(0.0, 150000.0), (0.05, 120000.0), (0.25, 0.0)]),
+            range: Const(5.0),
+            radius: 0.1,
+        )),
+    ],
+    preview: Some((stage: Capsule, auto_triggers: [("hit", 1.0)])),
+)
+```
+
+A warm white flash of 150 000 lm that drops quickly and is gone after 0.25 s, each time the game fires `hit` — at the contact point with `vfx.trigger_at(instance, "hit", TriggerArgs::at(contact))`, else at the target. Add it to a hit burst package (recipe "Hit burst at the contact point") so the sparks light up the floor and the target.
+
 ### Afterimages (fading copies of the target's meshes)
 
 ```ron
@@ -1750,6 +1894,12 @@ Pick the stage that matches how the game uses the effect. The PREVIEW tab's targ
 | the trail shows between swings | `emit: Trigger(start, stop)` and fire the stop trigger when the swing ends |
 | sword shadows / echoes along the swing | an afterimage layer (section "afterimages"); 4–6 copies: `lifetime / interval` |
 | the copies pop out instead of fading | raise `max_ghosts` to lifetime / interval, fade_over_life to 0 at 1 |
+| sparks / a glow / light only during a swing | `play: Between(start: "swing_start", stop: "swing_end")` (particles, shapes, lights) |
+| the weapon should light the floor / the character | a light layer (section "lights") on a blade socket; intensity as a curve over the parameter |
+| a hit should flash | a light layer `play: OnTrigger("hit")`, `duration: Some(0.25)`, intensity `Age([...])` down to 0 |
+| the light is too weak / too strong on the floor | `intensity` (lumens; lux at 1 m ≈ lm / 12.6); the editor's sun is ~4600 lux |
+| the light reaches too far / cuts off hard | `range` (metres); a larger range fades out more gently |
+| the light should flicker like fire | `flicker: (amount: 0.3, speed: 7.0)` |
 
 ## Game
 
@@ -1776,6 +1926,8 @@ Tell the user which parameter and trigger names (and value ranges) the game must
 One-shot packages (every root layer `OnStart` with a finite `cycle_count`) finish and clean up by themselves; looping ones run until `stop`. Despawning the target removes its instances (and sends `VfxFinished`). Sockets with a `node` need that node name in the target's hierarchy (section "attach"). Editing the package file while the game runs updates running instances (hot reload, when the game enables Bevy's file watcher).
 
 Weapons are separate models with their own effects: spawn the weapon's package on the weapon entity and fire its swing triggers from the attack state — `vfx.trigger(weapon_fx, "swing_start")` when the swing begins and `vfx.trigger(weapon_fx, "swing_end")` when it ends (any names the package declares). Trails sample the blade sockets every frame and stay in the world; afterimages copy the weapon's meshes (put an afterimage package on the character for body copies). A stop ends emission and waits for the trail to age out / the copies to fade.
+
+Light layers are Bevy `PointLight`s placed every frame at their attach point; the game shows at most `VfxSettings::max_lights` of them at once (default 8, all effects together; the weakest go dark): `app.insert_resource(omagari::VfxSettings { max_lights: 4, ..default() })`. They light the game's own lit materials; unlit materials do not react.
 
 Surface layers draw on the meshes under the instance's target that belong to its own model (a weapon's glTF scene in the hand is skipped; mark other separate parts with `VfxSeparateModel`); spawn the package on the character's root entity. Shape layers need nothing from the game (the meshes are generated); a trigger's `trigger_at` position places an `OnTrigger` shape. The effect shader is embedded in the library: the game adds no shader files.
 

@@ -1714,9 +1714,16 @@ fn check_layer_bindings(d: &mut Diagnostics, project: &ProjectV2, layer: &Partic
         }
     }
     match &layer.play {
-        PlayDef::OnTrigger(trigger) => {
-            if project.trigger(trigger).is_none() {
-                d.error(name, format!("plays on trigger \"{}\", which is not a trigger of this package", trigger));
+        PlayDef::OnTrigger(_) | PlayDef::Between { .. } => {
+            for trigger in layer.play.triggers() {
+                if project.trigger(trigger).is_none() {
+                    d.error(name, format!("plays on trigger \"{}\", which is not a trigger of this package", trigger));
+                }
+            }
+            if let PlayDef::Between { start, stop } = &layer.play {
+                if start.is_empty() || stop.is_empty() {
+                    d.error(name, "play Between needs a start and a stop trigger");
+                }
             }
         }
         PlayDef::While(param, _) => float_param(d, "play While", param),
@@ -1724,10 +1731,10 @@ fn check_layer_bindings(d: &mut Diagnostics, project: &ProjectV2, layer: &Partic
     }
     let reads = layer.effect.properties_read();
     let reads_trigger = reads.iter().any(|p| p.starts_with("trigger_"));
-    if reads_trigger && layer.play.trigger().is_none() {
+    if reads_trigger && !matches!(layer.play, PlayDef::OnTrigger(_) | PlayDef::Between { .. }) {
         d.warn(
             name,
-            "reads trigger_pos / trigger_dir / trigger_strength, but only layers with play OnTrigger get them (they stay at the layer origin, +Y, 1)",
+            "reads trigger_pos / trigger_dir / trigger_strength, but only layers with play OnTrigger (or Between: the start trigger's) get them (they stay at the layer origin, +Y, 1)",
         );
     }
     if reads.iter().any(|p| p == "visibility") && layer.visible.is_none() {
@@ -2411,6 +2418,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
     super::surface_check::check_surface_layers(&mut d, project, assets_root);
     super::shape_check::check_shape_layers(&mut d, project, model_nodes.as_ref());
     super::trail_check::check_trail_layers(&mut d, project, model_nodes.as_ref(), assets_root);
+    super::light_check::check_light_layers(&mut d, project, model_nodes.as_ref());
 
     match package_string(project) {
         Ok(text) => match ProjectV2::from_ron_str_with_warnings(&text) {
@@ -3371,6 +3379,14 @@ fn bindings_text(project: &ProjectV2, layer: &ParticlesLayerDef) -> Vec<String> 
             p,
             fmt_num(*threshold)
         )),
+        PlayDef::Between { start, stop } if start == stop => lines.push(format!(
+            "play: Between(\"{}\", \"{}\") — each \"{}\" switches emission on, the next one off (held emission; simulated as on from t = 0); not at the start; a restart does not switch it on",
+            start, stop, start
+        )),
+        PlayDef::Between { start, stop } => lines.push(format!(
+            "play: Between(start: \"{}\", stop: \"{}\") — emits from the moment the game fires \"{}\" until it fires \"{}\" (held emission, e.g. during a swing; the spawner restarts at each start; simulated as on from t = 0); not at the start; a restart does not switch it on",
+            start, stop, start, stop
+        )),
         _ => {}
     }
     match &layer.rate {
@@ -3518,31 +3534,49 @@ fn parameters_report(project: &ProjectV2, n_samples: usize, sets: &[(String, Par
             .iter()
             .map(|p| format!("{} jumps to {} and returns over {}s", p.param, fmt_num(p.to), fmt_num(p.decay)))
             .collect();
-        let emitters: Vec<(&str, &EmitDef)> = project
+        // Layers held on between two triggers: trail / afterimage `emit:
+        // Trigger(start, stop)` and `play: Between(start, stop)`.
+        let emitters: Vec<(&str, &str, &str)> = project
             .trail_layers()
             .map(|(_, l)| (l.name.as_str(), &l.emit))
             .chain(project.afterimage_layers().map(|(_, l)| (l.name.as_str(), &l.emit)))
+            .filter_map(|(n, e)| match e {
+                EmitDef::Trigger { start, stop } => Some((n, start.as_str(), stop.as_str())),
+                _ => None,
+            })
+            .chain(
+                project
+                    .layers
+                    .iter()
+                    .filter_map(|l| match l {
+                        LayerDef::Particles(p) => Some((p.name.as_str(), &p.play)),
+                        LayerDef::Shape(s) => Some((s.name.as_str(), &s.play)),
+                        LayerDef::Light(s) => Some((s.name.as_str(), &s.play)),
+                        _ => None,
+                    })
+                    .filter_map(|(n, p)| match p {
+                        PlayDef::Between { start, stop } => Some((n, start.as_str(), stop.as_str())),
+                        _ => None,
+                    }),
+            )
             .collect();
         let switched = |start: bool| -> Vec<&str> {
             emitters
                 .iter()
-                .filter(|(_, e)| match e {
-                    EmitDef::Trigger { start: a, stop: b } => (if start { a } else { b }) == &t.name && a != b,
-                    _ => false,
-                })
-                .map(|(n, _)| *n)
+                .filter(|(_, a, b)| (if start { a } else { b }) == &t.name && a != b)
+                .map(|(n, _, _)| *n)
                 .collect()
         };
         let toggled: Vec<&str> = emitters
             .iter()
-            .filter(|(_, e)| matches!(e, EmitDef::Trigger { start, stop } if start == stop && start == &t.name))
-            .map(|(n, _)| *n)
+            .filter(|(_, a, b)| a == b && *a == t.name)
+            .map(|(n, _, _)| *n)
             .collect();
         let mut what = Vec::new();
         let bursts: Vec<String> = project
             .trigger_users(&t.name)
             .into_iter()
-            .filter(|n| !emitters.iter().any(|(e, _)| e == n))
+            .filter(|n| !emitters.iter().any(|(e, _, _)| e == n))
             .collect();
         if !bursts.is_empty() {
             what.push(format!("bursts {}", bursts.join(", ")));
@@ -3579,6 +3613,7 @@ fn parameters_report(project: &ProjectV2, n_samples: usize, sets: &[(String, Par
     super::surface_check::surface_sets_report(project, sets, only_effect, out);
     super::shape_check::shape_sets_report(project, sets, only_effect, out);
     super::trail_check::emitter_sets_report(project, sets, only_effect, out);
+    super::light_check::light_sets_report(project, sets, only_effect, out);
     for (effect, rows) in effects.iter().zip(rows.iter()) {
         if only_effect.is_some_and(|o| o != effect.name) {
             continue;
@@ -3815,6 +3850,11 @@ pub fn analyze_project_with_sets(
             super::trail_check::describe_afterimage_layer(project, index, layer, &mut out);
         }
     }
+    for (index, layer) in project.light_layers() {
+        if only_effect.is_none_or(|o| o == layer.name) {
+            super::light_check::describe_light_layer(project, index, layer, &mut out);
+        }
+    }
 
     if only_effect.is_none() && effects.is_empty() {
         let _ = writeln!(out, "\n## Whole project\n  no particle layers");
@@ -3822,6 +3862,9 @@ pub fn analyze_project_with_sets(
             let _ = writeln!(out, "  {}", text);
         }
         if let Some(text) = super::trail_check::emitters_lifecycle_text(project) {
+            let _ = writeln!(out, "  {}", text);
+        }
+        if let Some(text) = super::light_check::lights_lifecycle_text(project) {
             let _ = writeln!(out, "  {}", text);
         }
     } else if only_effect.is_none() {
@@ -3857,6 +3900,9 @@ pub fn analyze_project_with_sets(
         };
         let _ = writeln!(out, "  farthest particle {} units from the origin: {}", fmt_num(overall_extent), fits);
         if let Some(text) = super::trail_check::emitters_lifecycle_text(project) {
+            let _ = writeln!(out, "  {}", text);
+        }
+        if let Some(text) = super::light_check::lights_lifecycle_text(project) {
             let _ = writeln!(out, "  {}", text);
         }
     }
@@ -3958,7 +4004,7 @@ mod tests {
             assert!(report.contains("## Whole project"), "{}", report);
             checked += 1;
         }
-        assert!(checked >= 25, "only {} recipes found", checked);
+        assert!(checked >= 28, "only {} recipes found", checked);
     }
 
     fn has(list: &[String], needle: &str) -> bool {
@@ -4459,7 +4505,7 @@ mod tests {
         );
         let d = check_project(&p, &assets_root());
         assert!(d.errors.is_empty(), "{}", d.render());
-        assert!(has(&d.warnings, "only layers with play OnTrigger get them"), "{}", d.render());
+        assert!(has(&d.warnings, "only layers with play OnTrigger (or Between"), "{}", d.render());
         assert!(has(&d.warnings, "has no visible range"), "{}", d.render());
         assert!(has(&d.notes, "[parameter \"power\"] not used"), "{}", d.render());
     }
