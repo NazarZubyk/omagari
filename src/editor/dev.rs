@@ -310,6 +310,7 @@ pub fn run_dev_options(
     mut frame: Local<u32>,
     mut freeze: Local<FreezeState>,
     mut exit: MessageWriter<AppExit>,
+    game_assets: Res<crate::settings::GameAssets>,
 ) {
     *frame += 1;
     if options.no_in_place && *frame == 3 {
@@ -374,7 +375,10 @@ pub fn run_dev_options(
     if *frame == 3 {
         let opened = options.open_file_name().filter(|name| res.context.filename.as_ref() == Some(name));
         if let Some(name) = opened.filter(|_| options.import.is_empty()) {
-            res.context.status = Some(format!("Opened {} (--open)", name));
+            res.context.status = Some(match super::model::missing_model_note(project.preview.as_ref(), &game_assets) {
+                None => format!("Opened {} (--open)", name),
+                Some(note) => format!("Opened {} (--open); {}", name, note),
+            });
         }
         if let Some(id) = &options.asset {
             select_asset(&mut session, id);
