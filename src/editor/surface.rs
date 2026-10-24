@@ -187,7 +187,7 @@ pub(crate) fn texture_slot_ui(ui: &mut egui::Ui, slot: &mut TextureSlotDef, asse
     });
 }
 
-fn mapping_ui(ui: &mut egui::Ui, mapping: &mut NoiseMappingDef) {
+pub(crate) fn mapping_ui(ui: &mut egui::Ui, mapping: &mut NoiseMappingDef) {
     ui.horizontal(|ui| {
         ui.radio_value(mapping, NoiseMappingDef::Triplanar, "Triplanar")
             .on_hover_text("Projected from three sides in the model's rest pose: sticks to the body, no UVs needed");
@@ -220,7 +220,7 @@ fn model_names(model: Option<&ModelInfo>) -> (Vec<String>, Vec<String>) {
     (meshes, info.materials.clone())
 }
 
-fn targets_ui(ui: &mut egui::Ui, targets: &mut MeshTargetsDef, model: Option<&ModelInfo>, id: egui::Id) {
+pub(crate) fn targets_ui(ui: &mut egui::Ui, targets: &mut MeshTargetsDef, model: Option<&ModelInfo>, id: egui::Id) {
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
             let current = match targets {

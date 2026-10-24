@@ -12,6 +12,7 @@ pub mod dev;
 pub mod helpers;
 pub mod hints;
 pub mod history;
+pub mod distortion;
 pub mod inspector;
 pub mod layer_view;
 pub mod layers_panel;
@@ -81,6 +82,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<model::ModelPreview>()
             .init_resource::<scene::StageFloor>()
             .init_resource::<scene::LitFloor>()
+            .init_resource::<scene::PaintedGrid>()
             .init_gizmo_group::<model::SocketGizmos>()
             .add_systems(
                 Startup,
@@ -101,6 +103,7 @@ impl Plugin for EditorPlugin {
                     assets::update_texture_previews,
                     scene::sync_stage,
                     scene::sync_lit_floor,
+                    scene::sync_painted_grid,
                     move_preview_target,
                     camera::follow_preview_target.after(move_preview_target),
                     camera::focus_camera,
@@ -142,7 +145,8 @@ impl Plugin for EditorPlugin {
                         resource_changed::<scene::Backdrop>
                             .or_else(resource_changed::<scene::Stage>)
                             .or_else(resource_changed::<scene::StageFloor>)
-                            .or_else(resource_changed::<scene::LitFloor>),
+                            .or_else(resource_changed::<scene::LitFloor>)
+                            .or_else(resource_changed::<scene::PaintedGrid>),
                     ),
             )
             .add_systems(

@@ -120,6 +120,9 @@ pub fn apply_preview_commands(
                         let id = project.layers.get(layer.layer_index)?.as_particles()?.texture.as_ref()?;
                         Some((layer.texture.clone()?, project.texture(id)?.clone()))
                     })
+                    .chain(package.distortion_textures().into_iter().filter_map(|(slot, handle)| {
+                        Some((handle.clone(), project.texture(&slot.asset)?.clone()))
+                    }))
                     .chain(package.material_textures().into_iter().flat_map(|(material, textures)| {
                         let slots = material.texture_slots();
                         // `textures` holds noise A, noise B, mask; the slots
