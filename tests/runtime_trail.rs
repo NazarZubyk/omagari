@@ -348,3 +348,40 @@ fn skinned_copies_get_frozen_joints() {
     assert_eq!(ghost_count(&mut app), 0);
     assert!(app.world().get_entity(copy.joints[0]).is_err());
 }
+
+#[test]
+fn replace_package_rebuilds_trails_and_afterimages() {
+    let mut app = app();
+    let ron = r#"(
+        sockets: [(name: "a", node: Some("Hand")), (name: "b", node: Some("Hand"), offset: (0.0, 1.0, 0.0))],
+        layers: [
+            Trail((name: "t", from: "a", to: "b", fade: (in: 0.0, out: 0.5))),
+            Afterimage((name: "g", interval: 0.05, lifetime: 1.0, max_ghosts: 20)),
+        ],
+    )"#;
+    let package = add_package(&mut app, ron);
+    let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(Cuboid::new(0.1, 1.0, 0.1));
+    let (target, hand) = swinging_target(&mut app);
+    app.world_mut().spawn((Mesh3d(mesh), Transform::default(), ChildOf(target)));
+    let instance = spawn_vfx(&mut app, &package, target);
+    for _ in 0..6 {
+        swing(&mut app, hand, 0.2);
+        app.update();
+    }
+    let old_trail = app.world().get::<VfxInstance>(instance).unwrap().trail_layers()[0];
+    assert!(ghost_count(&mut app) >= 4);
+    let replacement = add_package(&mut app, &ron.replace("max_ghosts: 20", "max_ghosts: 2"));
+    control(&mut app, move |vfx| {
+        vfx.replace_package(instance, replacement);
+    });
+    for _ in 0..3 {
+        swing(&mut app, hand, 0.2);
+        app.update();
+    }
+    let new_trail = app.world().get::<VfxInstance>(instance).unwrap().trail_layers()[0];
+    assert_ne!(new_trail, old_trail);
+    assert!(app.world().get_entity(old_trail).is_err(), "the old trail is replaced at once");
+    assert_eq!(app.world().get::<TrailLayerState>(new_trail).unwrap().level, 1.0, "keeps its fade level");
+    assert!(ghost_count(&mut app) <= 2, "old copies went with the old layer; the new cap applies");
+    assert_eq!(app.world().get::<VfxInstance>(instance).unwrap().state(), VfxState::Running);
+}
