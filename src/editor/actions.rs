@@ -238,10 +238,18 @@ impl ActionContext<'_> {
                     Err(e) => self.status(format!("Recipe \"{}\" does not load: {}", recipe.title, e)),
                 }
             }
-            Action::Open(name) => match load_project(&name) {
-                Ok(project) => {
+            Action::Open(name) => match load_project_with_unknown_fields(&name) {
+                Ok((project, unknown)) => {
                     self.replace_project(project, Some(name.clone()), true);
-                    self.status(format!("Opened {}", name));
+                    match unknown.first() {
+                        None => self.status(format!("Opened {}", name)),
+                        Some(first) => self.status(format!(
+                            "Opened {}; {} unknown field(s) ignored (saving drops them): {}",
+                            name,
+                            unknown.len(),
+                            first
+                        )),
+                    }
                 }
                 Err(e) => self.status(format!("Cannot open {}: {}", name, e)),
             },

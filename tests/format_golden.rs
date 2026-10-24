@@ -226,7 +226,8 @@ fn v2_project_round_trips() {
     }
 }
 
-/// Partial files load; unknown struct fields are ignored.
+/// Partial files load; unknown struct fields are ignored, with a warning
+/// each.
 #[test]
 fn v2_partial_and_unknown_fields_load() {
     let text = r#"(
@@ -235,7 +236,9 @@ fn v2_partial_and_unknown_fields_load() {
         layers: [Particles((name: "a", glow: true, effect: (capacity: 8)))],
     )"#;
     let (project, warnings) = ProjectV2::from_ron_str_with_warnings(text).unwrap();
-    assert!(warnings.is_empty(), "{:?}", warnings);
+    assert_eq!(warnings.len(), 2, "{:?}", warnings);
+    assert!(warnings[0].starts_with("unknown field \"added_in_a_newer_editor\" at the top level"), "{:?}", warnings);
+    assert!(warnings[1].starts_with("unknown field \"glow\" at layers[0]"), "{:?}", warnings);
     let (_, layer) = project.particle_layers().next().unwrap();
     assert_eq!(layer.name, "a");
     assert_eq!(layer.effect.capacity, 8);
