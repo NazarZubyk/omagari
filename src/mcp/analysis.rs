@@ -21,6 +21,8 @@ use omagari::runtime::{socket_lookup, BUILTIN_TEXTURES};
 use crate::asset_library as library;
 
 const DT: f32 = 1.0 / 60.0;
+/// The next simulated particle's `particle_counter`.
+static PARTICLE_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Longest time a single particle is simulated.
 const MAX_PARTICLE_TIME: f32 = 30.0;
 /// Longest time the project timeline covers.
@@ -2100,7 +2102,16 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         if project.assets[..i].iter().any(|a| a.id == asset.id) {
             d.error(&label, "duplicate asset id; layers find assets by id");
         }
-        let AssetKind::Texture(t) = &asset.kind;
+        let t = match &asset.kind {
+            AssetKind::Texture(t) => t,
+            AssetKind::Mesh(m) => {
+                super::particle_check::check_mesh_asset(&mut d, &label, m, assets_root);
+                if project.asset_users(&asset.id).is_empty() {
+                    d.warn(&label, "not used by any layer");
+                }
+                continue;
+            }
+        };
         if let Some(file) = t.path.strip_prefix(BUILTIN_TEXTURES_PREFIX) {
             if !BUILTIN_TEXTURES.iter().any(|(f, _)| *f == file) {
                 let files: Vec<&str> = BUILTIN_TEXTURES.iter().map(|(f, _)| *f).collect();
@@ -2352,6 +2363,7 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
             }
         }
         check_render_modifiers(&mut d, project, layer);
+        super::particle_check::check_particle_layer(&mut d, project, layer, assets_root);
         let sets_velocity = effect.init_modifiers.iter().chain(effect.update_modifiers.iter()).any(|m| match m {
             ModifierEditor::SetAttribute(m) => m.attr == Attribute::VELOCITY,
             ModifierEditor::InheritAttribute(m) => m.attr == Attribute::VELOCITY,
@@ -2373,8 +2385,13 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
             .render_modifiers
             .iter()
             .any(|m| matches!(m, RenderModifierEditor::Orient(_)))
+            && super::particle_check::wants_orient(layer)
         {
-            d.warn(name, "no Orient render modifier: particles are flat quads in the XY plane and vanish when seen from the side; add Orient((mode: ParallelCameraDepthPlane)) or AlongVelocity");
+            if effect.is_ribbon() {
+                d.warn(name, "no Orient render modifier: the ribbon's width lies in the XY plane and vanishes when seen from the side; add Orient((mode: FaceCameraPosition)) so it faces the camera");
+            } else {
+                d.warn(name, "no Orient render modifier: particles are flat quads in the XY plane and vanish when seen from the side; add Orient((mode: ParallelCameraDepthPlane)) or AlongVelocity");
+            }
         }
         if !sets_velocity && !accelerates && orients_along_velocity(effect) {
             d.warn(name, "nothing sets a velocity, but Orient(AlongVelocity) orients particles along it, so motionless particles may render invisible (use another orient mode)");
@@ -2399,7 +2416,8 @@ pub fn check_project(project: &ProjectV2, assets_root: &Path) -> Diagnostics {
         if layer.simulation_space == SimulationSpaceDef::Global {
             let root = layers[root_index(&layers, i)];
             let lifetime = effect.max_lifetime();
-            if root.effect.spawner.cycle_count == 0 && lifetime.is_some_and(|l| l >= TRAIL_WARN_LIFETIME) {
+            // A Global ribbon is meant to leave a trail.
+            if root.effect.spawner.cycle_count == 0 && lifetime.is_some_and(|l| l >= TRAIL_WARN_LIFETIME) && !effect.is_ribbon() {
                 let lifetime = lifetime.unwrap();
                 let speed = target_speed(project);
                 d.warn(
@@ -2554,6 +2572,9 @@ fn simulate_particle(
     rng: &mut StdRng,
 ) -> Result<Sample, String> {
     let mut p = Attrs::default();
+    // bevy_hanabi's spawn counter: unique per particle (ribbon ids of
+    // children are often made from it).
+    p.set(Attribute::PARTICLE_COUNTER, Val::U(PARTICLE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     for m in effect.init_modifiers.iter().filter(|m| m.contexts().contains(ModifierContext::Init)) {
         apply_init(m, &mut p, parent, rng, birth)?;
     }
@@ -3253,7 +3274,15 @@ fn render_text(project: &ProjectV2, layer: &ParticlesLayerDef) -> String {
     let mut text = format!(
         "render: blend {}; texture sampling {}; orient {}",
         blend,
-        sampling.unwrap_or_else(|| "none (untextured quads)".into()),
+        sampling.unwrap_or_else(|| {
+            if layer.mesh.is_some() {
+                "none (untextured mesh)".into()
+            } else if effect.is_ribbon() {
+                "none (untextured ribbon)".into()
+            } else {
+                "none (untextured quads)".into()
+            }
+        }),
         orient.unwrap_or_else(|| "default (no Orient modifier)".into())
     );
     for m in effect.render_modifiers.iter() {
@@ -3311,6 +3340,158 @@ fn space_text(project: &ProjectV2, layer: &ParticlesLayerDef, layers: &[&Particl
             )
         }
     }
+}
+
+/// What a mesh-particle layer draws and its draw-order bias (no lines for a
+/// plain quad layer without a bias).
+fn mesh_and_order_text(project: &ProjectV2, layer: &ParticlesLayerDef, assets_root: &Path) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(mesh) = &layer.mesh {
+        let what = match mesh {
+            ParticleMeshDef::Shape(s) => format!("built-in {}", s.name()),
+            ParticleMeshDef::Asset(id) => match project.mesh(id) {
+                Some(m) => format!("mesh asset \"{}\" ({} {})", id, m.path, m.label()),
+                None => format!("mesh asset \"{}\" (missing: quads are drawn)", id),
+            },
+        };
+        let size = match super::particle_check::particle_mesh_info(project, layer, assets_root) {
+            Some((vertices, size)) => format!(
+                "; {} vertices per particle (× capacity {} = {}), {} m across at size 1",
+                vertices,
+                layer.effect.capacity,
+                vertices * layer.effect.capacity as usize,
+                fmt_num(size)
+            ),
+            None => String::new(),
+        };
+        lines.push(format!(
+            "mesh: each particle draws {}{} — unlit (one flat colour per particle: vary the colour per particle for depth), turned by Orient / the axis attributes",
+            what, size
+        ));
+    }
+    if layer.sort_bias != 0.0 {
+        let opaque = matches!(layer.effect.alpha_mode, AlphaModeDef::Opaque | AlphaModeDef::Mask(_));
+        lines.push(format!(
+            "draw order: sort_bias {:+} m — {}",
+            layer.sort_bias,
+            if opaque {
+                "no effect (Opaque / Mask layers are depth-tested)".to_string()
+            } else if layer.sort_bias > 0.0 {
+                "drawn over transparent effects up to that much nearer the camera (the emitter's distance counts)".to_string()
+            } else {
+                "drawn under transparent effects up to that much farther (the emitter's distance counts)".to_string()
+            }
+        ));
+    }
+    lines
+}
+
+/// Whether an expression reads a parent attribute (`ParentAttr`).
+fn attributes_read_parent(e: &ExprWriterEditor) -> bool {
+    let mut found = false;
+    e.visit(&mut |e| {
+        if let ExprWriterEditor::Operator(op) = e {
+            found |= matches!(**op, ExprOperatorEditor::ParentAttr(_));
+        }
+    });
+    found
+}
+
+/// How a ribbon layer looks, from its simulated particles: bevy_hanabi joins
+/// the particles with the same `ribbon_id` in age order into one strip as
+/// wide as the particle size. The ribbons are measured at the moment their
+/// newest sampled particle is born.
+fn ribbon_text(layer: &ParticlesLayerDef, samples: &[Sample], peak_alive: f32, parent_peak: Option<f32>) -> Option<String> {
+    let id_expr = layer.effect.ribbon_id()?;
+    let source = match id_expr {
+        None => "inherited from the parent".to_string(),
+        Some(e) if is_constant(e) => "the same for every particle: one ribbon per emitter".to_string(),
+        Some(e) if attributes_read_parent(e) => "from the parent particle: one ribbon per parent particle".to_string(),
+        Some(_) => "from an expression".to_string(),
+    };
+    let still = layer.effect.motion_integration == MotionIntegrationDef::None
+        && !layer.effect.update_modifiers.iter().any(|m| {
+            matches!(m, ModifierEditor::SetAttribute(s) if s.attr == Attribute::POSITION)
+                || matches!(m, ModifierEditor::SetPositionCircle(_) | ModifierEditor::SetPositionSphere(_))
+        });
+    let id_of = |s: &Sample| match s.init.get(Attribute::RIBBON_ID) {
+        Val::U(u) => u,
+        _ => 0,
+    };
+    let mut ids: Vec<u32> = samples.iter().map(id_of).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let position_at = |s: &Sample, t: f32| -> Vec3 {
+        if still || s.path.is_empty() {
+            return s.birth_pos;
+        }
+        let i = (((t - s.birth) / (5.0 * DT)).round().max(0.0) as usize).min(s.path.len() - 1);
+        s.path[i]
+    };
+    let alive_at = |s: &Sample, t: f32| s.birth <= t && s.death.is_none_or(|d| s.birth + d > t);
+    // Ribbons at once: distinct ids among the particles alive at a birth.
+    let step = (samples.len() / 100).max(1);
+    let concurrent = samples
+        .iter()
+        .step_by(step)
+        .map(|probe| {
+            let mut alive: Vec<u32> = samples.iter().filter(|s| alive_at(s, probe.birth)).map(id_of).collect();
+            alive.sort_unstable();
+            alive.dedup();
+            alive.len()
+        })
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    // Ids from the parent: one ribbon per parent particle (the sampled
+    // children come from a sample of the parents, so count those instead).
+    let reads_parent = match id_expr {
+        None => true,
+        Some(e) => attributes_read_parent(e),
+    };
+    let concurrent = match parent_peak {
+        Some(parents) if reads_parent => (parents.round() as usize).max(1),
+        _ => concurrent,
+    };
+    let mut lengths = Vec::new();
+    for id in ids.iter() {
+        let mut group: Vec<&Sample> = samples.iter().filter(|s| id_of(s) == *id).collect();
+        group.sort_by(|a, b| a.birth.total_cmp(&b.birth));
+        let Some(newest) = group.last() else { continue };
+        let t = newest.birth;
+        let alive: Vec<&&Sample> = group.iter().filter(|s| alive_at(s, t)).collect();
+        if alive.len() < 2 {
+            continue;
+        }
+        let length: f32 = alive.windows(2).map(|w| (position_at(w[1], t) - position_at(w[0], t)).length()).sum();
+        lengths.push(length);
+    }
+    let unique = ids.len() > 1 && ids.len() == samples.len();
+    let mut text = format!("ribbon: ribbon_id {}; up to {} ribbon(s) at once", source, concurrent);
+    if unique {
+        text.push_str(" — every particle has its own id: no two join, nothing is drawn");
+    } else if !lengths.is_empty() {
+        let _ = write!(
+            text,
+            ", about {} particles each, {} long",
+            fmt_num((peak_alive / concurrent as f32).round()),
+            range_text(&lengths, "m")
+        );
+        if lengths.iter().all(|l| *l < 1e-3) {
+            text.push_str(" (all its particles sit on one point: the ribbon shows when the emitter moves — a moving target or socket, or the preview motion)");
+        }
+    }
+    text.push_str(if still {
+        if layer.parent.is_some() {
+            "; particles stay where they were born (motion None): the ribbon is the path of its parent particle"
+        } else {
+            "; particles stay where they were born (motion None): the ribbon is the emitter's path"
+        }
+    } else {
+        "; particles keep moving, so the ribbon bends with them"
+    });
+    text.push_str("; width = particle size (SizeOverLifetime tapers the tail)");
+    Some(text)
 }
 
 /// Simulates a project and describes every layer in a compact text form.
@@ -3679,6 +3860,9 @@ pub fn analyze_project_with_sets(
         );
         let _ = writeln!(out, "  spawn: {}", sim.spawn_text);
         let _ = writeln!(out, "  {}", render_text(project, effect));
+        for line in mesh_and_order_text(project, effect, assets_root) {
+            let _ = writeln!(out, "  {}", line);
+        }
         let _ = writeln!(out, "  space: {}", space_text(project, effect, &effects, i));
         let _ = writeln!(out, "  attach: {}", attach_text(project, &effect.attach));
         for line in bindings_text(project, effect) {
@@ -3693,6 +3877,11 @@ pub fn analyze_project_with_sets(
             continue;
         }
         let samples = &sim.samples;
+        let peak_of = |s: &EffectSim| s.alive.iter().cloned().fold(0.0, f32::max);
+        let parent_peak = parent_index(&effects, i).map(|p| peak_of(&sims[p]));
+        if let Some(text) = ribbon_text(effect, samples, peak_of(sim), parent_peak) {
+            let _ = writeln!(out, "  {}", text);
+        }
 
         let total_births: f32 = sim.births.iter().sum();
         let peak = sim.alive.iter().cloned().fold(0.0, f32::max);
@@ -3972,6 +4161,11 @@ mod tests {
                 image::Rgba([255, (frame * 16) as u8, 40, if inside { 255 } else { 0 }])
             });
             image.save(&sheet).unwrap();
+        }
+        // The mesh-asset recipe's model (a generated rock).
+        let model = dir.join("vfx/models/debris.glb");
+        if !model.is_file() {
+            crate::model_info::tests::glb::write_rock_glb(&model);
         }
         dir
     }
@@ -4724,7 +4918,7 @@ mod tests {
         let d = check_project(&flip, &assets_root());
         assert!(has(&d.warnings, "Flipbook has no grid"), "{}", d.render());
         assert!(has(&d.warnings, "nothing sets it"), "{}", d.render());
-        let AssetKind::Texture(t) = &mut flip.assets[0].kind;
+        let t = flip.assets[0].kind.as_texture_mut().unwrap();
         t.grid = Some((2, 4));
         flip.layers[0].as_particles_mut().unwrap().effect.update_modifiers.push(ModifierEditor::SetAttribute(sprite_index_over_lifetime(8)));
         let d = check_project(&flip, &assets_root());

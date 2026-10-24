@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use omagari::format::{
-    AssetKind, ChannelDef, ParamValue, PreviewMotion, ProjectV2, TexturePurpose, BUILTIN_TEXTURES_PREFIX,
+    ChannelDef, ParamValue, PreviewMotion, ProjectV2, TexturePurpose, BUILTIN_TEXTURES_PREFIX,
     DEFAULT_MOTION_SPEED,
 };
 
@@ -23,6 +23,7 @@ use crate::settings::GameAssets;
 
 pub mod analysis;
 pub mod light_check;
+pub mod particle_check;
 pub mod shape_check;
 pub mod trail_check;
 pub mod surface_check;
@@ -445,13 +446,13 @@ fn tool_list() -> Value {
     json!([
         {
             "name": "guide",
-            "description": "Omagari effect authoring guide: workflow, file format (v2), layers, attach (sockets, segments, fit, lifecycle), model preview (models, animations, weapons), parameters and triggers (values and events the game sends), modifiers, expressions, textures, recipes, game use. Read before creating effects.",
+            "description": "Omagari effect authoring guide: workflow, file format (v2), layers, attach (sockets, segments, fit, lifecycle), model preview (models, animations, weapons), parameters and triggers (values and events the game sends), modifiers, expressions, textures, ribbons, mesh particles, draw order, recipes, game use. Read before creating effects.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "section": {
                         "type": "string",
-                        "description": "One section to keep the reply short: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, lights, recipes, design, game. Omit for the whole guide."
+                        "description": "One section to keep the reply short: workflow, format, layers, attach, model, parameters, triggers, spawner, modifiers, expressions, attributes, render, textures, assets, hierarchy, surfaces, shapes, trails, afterimages, lights, ribbons, meshes, order, recipes, design, game. Omit for the whole guide."
                     }
                 }
             }
@@ -523,13 +524,15 @@ fn tool_list() -> Value {
         },
         {
             "name": "import_asset",
-            "description": "Import a texture file (PNG or JPG; KTX2 is copied but not inspected) into the game assets folder like the editor does: files outside it are copied to vfx/textures/ (name taken by another file -> numeric suffix, identical file -> reused), files inside it are used in place. Returns the asset entry to put in a project's `assets`; with `project`, adds it to that saved project. Guide section \"assets\".",
+            "description": "Import a texture file (PNG or JPG; KTX2 is copied but not inspected) or a glTF model (.glb, or a .gltf already inside the game assets folder) into the game assets folder like the editor does: files outside it are copied to vfx/textures/ (models: vfx/models/; name taken by another file -> numeric suffix, identical file -> reused), files inside it are used in place. A model becomes a Mesh asset (one mesh of the file, for mesh particles; the reply lists the file's meshes). Returns the asset entry to put in a project's `assets`; with `project`, adds it to that saved project. Guide sections \"assets\" and \"meshes\".",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "The file to import (absolute, or relative to the Omagari folder)." },
                     "purpose": { "type": "string", "enum": ["Sprite", "Noise", "Mask", "Gradient"], "description": "What the texture is for; picks wrap and colour-space defaults. Default: guessed from the file name (noise/perlin/voronoi/cellular -> Noise, mask -> Mask, gradient/ramp -> Gradient, else Sprite)." },
-                    "id": { "type": "string", "description": "Asset id for the new entry. Default: the file name without extension." },
+                    "id": { "type": "string", "description": "Asset id for the new entry. Default: the file name without extension (a mesh: its name in the file)." },
+                    "mesh": { "type": "integer", "description": "Models only: index of the mesh in the file (MeshI in describe_model). Default: the first mesh mesh particles can draw." },
+                    "primitive": { "type": "integer", "description": "Models only: index of the primitive in the mesh (one per material; PrimitiveJ in describe_model). Default 0." },
                     "project": { "type": "string", "description": "A saved project (in saved_effects/) to add the asset to. The file is re-written in canonical form (comments are lost)." }
                 },
                 "required": ["path"]
@@ -537,7 +540,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "list_assets",
-            "description": "List the textures you can use (the 7 built-ins and the texture files in the game assets folder, with size, layout (RGBA / grayscale, bits) and which saved projects use them) and the glTF models of the game assets folder (preview models) with their size, height and animation clips.",
+            "description": "List the textures you can use (the 7 built-ins and the texture files in the game assets folder, with size, layout (RGBA / grayscale, bits) and which saved projects use them) and the glTF models of the game assets folder (preview models, and the meshes in them for mesh particles) with their size, height, animation clips and meshes.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -1011,6 +1014,9 @@ fn import_asset(args: &Value, ctx: &Context) -> Result<String, String> {
         None => library::guess_purpose(&file_name),
     };
     let project_path = str_arg("project").map(resolve_saved_project).transpose()?;
+    if crate::model_info::is_model_file(&source) {
+        return import_mesh_asset(args, ctx, &source, project_path);
+    }
     let imported = library::import_file(&source, &root)?;
 
     let mut out = format!("{}: {} -> {}.\n", source.display(), imported.kind.describe(), imported.path);
@@ -1054,6 +1060,53 @@ fn import_asset(args: &Value, ctx: &Context) -> Result<String, String> {
     Ok(out)
 }
 
+/// `import_asset` of a glTF model: copies a `.glb` into `vfx/models/` (or
+/// uses a model inside the game folder in place) and adds one of its meshes
+/// as a `Mesh` asset (`mesh` + `primitive` indices, default: the first mesh
+/// that mesh particles can draw).
+fn import_mesh_asset(args: &Value, ctx: &Context, source: &Path, project_path: Option<PathBuf>) -> Result<String, String> {
+    let root = ctx.assets_root();
+    let index = |key: &str| -> Result<Option<u32>, String> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v.as_u64().map(|n| Some(n as u32)).ok_or_else(|| format!("`{}` must be a whole number", key)),
+        }
+    };
+    let mesh = match (index("mesh")?, index("primitive")?) {
+        (None, None) => None,
+        (m, p) => Some((m.unwrap_or(0), p.unwrap_or(0))),
+    };
+    let imported = library::import_file(source, &root)?;
+    let info = crate::model_info::ModelInfo::cached(&root.join(&imported.path))?;
+    let mut out = format!("{}: {} -> {}.\n", source.display(), imported.kind.describe(), imported.path);
+    let mut project = match &project_path {
+        Some(path) => parse_project(&read(path)?)?.0,
+        None => ProjectV2::default(),
+    };
+    let (id, added) = library::add_mesh_asset(&mut project, &imported.path, &info, mesh, args.get("id").and_then(Value::as_str))?;
+    out += "Meshes in the file (mesh particles need UVs; every particle draws the whole mesh):\n";
+    for (mi, pi, m, p) in info.primitives() {
+        out += &format!("- Mesh{}/Primitive{} \"{}\" ({}): {}\n", mi, pi, m.name, p.entity_name, p.mesh_text());
+    }
+    let entry = asset_entry_ron(&project, &id);
+    match &project_path {
+        Some(path) => {
+            if added {
+                save_project_file(path, &project)?;
+                out += &format!("Added to {} as asset \"{}\": {}\n", path.display(), id, entry);
+            } else {
+                out += &format!("{} already has this mesh as asset \"{}\": {}\n", path.display(), id, entry);
+            }
+        }
+        None => out += &format!("Asset entry for a project's `assets` list:\n{}\n", entry),
+    }
+    out += &format!(
+        "Use it on a particle layer with `mesh: Some(Asset(\"{}\"))` (guide section \"meshes\"); pass `mesh` / `primitive` to pick another mesh of the file.",
+        id
+    );
+    Ok(out)
+}
+
 fn list_assets(ctx: &Context) -> String {
     let root = ctx.assets_root();
     // Which saved projects use which texture path.
@@ -1063,8 +1116,7 @@ fn list_assets(ctx: &Context) -> String {
         let Ok(text) = fs::read_to_string(&path) else { continue };
         let Ok((project, _)) = ProjectV2::from_ron_str_with_warnings(&text) else { continue };
         for asset in project.assets.iter() {
-            let AssetKind::Texture(t) = &asset.kind;
-            users.push((t.path.clone(), file.trim_end_matches(".omagari.ron").to_string()));
+            users.push((asset.kind.path().to_string(), file.trim_end_matches(".omagari.ron").to_string()));
         }
     }
     let used_by = |path: &str| {
@@ -1101,10 +1153,24 @@ fn list_assets(ctx: &Context) -> String {
         out += "- none.\n";
     }
     for (path, bytes) in models.iter() {
-        let info = crate::model_info::ModelInfo::cached(&root.join(path))
-            .map(|i| i.summary())
-            .unwrap_or_else(|e| format!("not readable: {}", e));
-        out += &format!("- {} - {} KB; {}\n", path, bytes.div_ceil(1024), info);
+        let info = crate::model_info::ModelInfo::cached(&root.join(path));
+        let summary = info.as_ref().map(|i| i.summary()).unwrap_or_else(|e| format!("not readable: {}", e));
+        out += &format!("- {} - {} KB; {}\n", path, bytes.div_ceil(1024), summary);
+        if let Ok(info) = info {
+            let prims: Vec<String> = info
+                .primitives()
+                .take(8)
+                .map(|(mi, pi, m, p)| format!("Mesh{}/Primitive{} \"{}\" ({})", mi, pi, m.name, p.mesh_text()))
+                .collect();
+            if !prims.is_empty() {
+                let more = info.primitives().count().saturating_sub(prims.len());
+                out += &format!(
+                    "  meshes (import_asset(path, mesh, primitive) for mesh particles): {}{}\n",
+                    prims.join(", "),
+                    if more > 0 { format!(", … {} more", more) } else { String::new() }
+                );
+            }
+        }
     }
     out
 }
@@ -1277,11 +1343,11 @@ fn texture_list(project: &ProjectV2) -> String {
     let mut builtin = Vec::new();
     let mut game = Vec::new();
     for asset in project.assets.iter() {
-        let AssetKind::Texture(t) = &asset.kind;
-        if t.path.starts_with(BUILTIN_TEXTURES_PREFIX) {
-            builtin.push(format!("{}={}", asset.id, t.path));
+        let path = asset.kind.path();
+        if path.starts_with(BUILTIN_TEXTURES_PREFIX) {
+            builtin.push(format!("{}={}", asset.id, path));
         } else {
-            game.push(format!("{}={}", asset.id, t.path));
+            game.push(format!("{}={}", asset.id, path));
         }
     }
     let mut out = String::new();
@@ -1292,7 +1358,7 @@ fn texture_list(project: &ProjectV2) -> String {
         if !out.is_empty() {
             out.push(' ');
         }
-        out += &format!("Game textures (must exist under the game's assets/ folder): {}.", game.join(", "));
+        out += &format!("Game files (textures, mesh models; must exist under the game's assets/ folder): {}.", game.join(", "));
     }
     if out.is_empty() {
         out = "No textures.".into();
@@ -1506,6 +1572,92 @@ mod tests {
     /// import_asset (with and without a project), extract_channel and
     /// list_assets against a temporary game assets folder.
     #[test]
+    fn models_import_as_mesh_assets_and_are_checked() {
+        let dir = crate::asset_library::tests::temp_dir("mcp_meshes");
+        let game = dir.join("game");
+        fs::create_dir_all(&game).unwrap();
+        crate::model_info::tests::glb::write_rock_glb(&dir.join("debris.glb"));
+        let ctx = Context::new(GameAssets::resolve(Some(game.to_string_lossy().to_string()), None, &Default::default()));
+        let source = dir.join("debris.glb").to_string_lossy().to_string();
+        let out = call_tool("import_asset", &json!({ "path": source }), &ctx).unwrap();
+        assert!(out.contains("-> vfx/models/debris.glb"), "{}", out);
+        assert!(out.contains("- Mesh0/Primitive0 \"Rock\" (Rock): 24 vertices, 0.40 m"), "{}", out);
+        assert!(out.contains("- Mesh1/Primitive0 \"Bare\" (Bare): 3 vertices, 0.30 m, no UVs, no normals"), "{}", out);
+        assert!(out.contains(r#"(id:"Rock",kind:Mesh((path:"vfx/models/debris.glb",mesh:0,primitive:0,name:Some("Rock"))))"#), "{}", out);
+        let out = call_tool("import_asset", &json!({ "path": source, "mesh": 1, "id": "flat" }), &ctx).unwrap();
+        assert!(out.contains(r#"(id:"flat",kind:Mesh((path:"vfx/models/debris.glb",mesh:1,primitive:0,name:Some("Bare"))))"#), "{}", out);
+        let list = call_tool("list_assets", &json!({}), &ctx).unwrap();
+        assert!(list.contains("meshes (import_asset(path, mesh, primitive) for mesh particles): Mesh0/Primitive0 \"Rock\""), "{}", list);
+
+        // Checks of mesh assets and mesh particles against the file.
+        let project = |assets: &str, layer: &str| {
+            format!(
+                r#"(version: 2, assets: [{}], layers: [Particles((name: "fx", {}, effect: (capacity: 64, alpha_mode: Opaque, init_modifiers: [SetAttribute((attr: "age", attr_expr: Float(0.0))), SetAttribute((attr: "size", attr_expr: Float(0.2)))], render_modifiers: [Orient((mode: FaceCameraPosition))])))])"#,
+                assets, layer
+            )
+        };
+        let check = |ron: String| match call_tool("check_project", &json!({ "ron": ron }), &ctx) {
+            Ok(text) | Err(text) => text,
+        };
+        let ok = check(project(r#"(id: "rock", kind: Mesh((path: "vfx/models/debris.glb", name: Some("Rock"))))"#, r#"mesh: Some(Asset("rock"))"#));
+        assert!(ok.starts_with("OK: no errors.") && !ok.contains("WARNINGS"), "{}", ok);
+        let bad = check(project(
+            r#"(id: "a", kind: Mesh((path: "vfx/models/debris.glb", mesh: 1))), (id: "b", kind: Mesh((path: "vfx/models/debris.glb", mesh: 3))), (id: "c", kind: Mesh((path: "vfx/models/debris.glb", name: Some("Pebble")))), (id: "d", kind: Mesh((path: "vfx/models/gone.glb")))"#,
+            r#"mesh: Some(Asset("a"))"#,
+        ));
+        for needle in [
+            "[asset \"a\"] Mesh1/Primitive0 has no texture coordinates (UVs)",
+            "[asset \"b\"] vfx/models/debris.glb has no Mesh3/Primitive0",
+            "[asset \"c\"] Mesh0/Primitive0 is \"Rock\" in the file, but \"Pebble\" was picked",
+            "[asset \"d\"] vfx/models/gone.glb is not in the game assets folder",
+            "[asset \"b\"] not used by any layer",
+        ] {
+            assert!(bad.contains(needle), "{}\n{}", needle, bad);
+        }
+        let missing = check(project("", r#"mesh: Some(Asset("rock"))"#));
+        assert!(missing.contains("[fx] mesh \"rock\" is not in the assets list"), "{}", missing);
+        let blend = check(project("", r#"mesh: Some(Shape(Cube))"#).replace("alpha_mode: Opaque", "alpha_mode: Blend"));
+        assert!(blend.contains("a see-through blend draws a mesh's far side"), "{}", blend);
+        let sorted = check(project("", "sort_bias: 80.0"));
+        assert!(sorted.contains("sort_bias has no effect on Opaque") && sorted.contains("sort_bias 80 m"), "{}", sorted);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The ribbon checks: random / per-particle ids, a parent value that is
+    /// never set, moving particles, random lifetimes, AlongVelocity.
+    #[test]
+    fn ribbons_are_checked() {
+        let ribbon = |init: &str, extra: &str| {
+            format!(
+                r#"(version: 2, layers: [Particles((name: "r", effect: (capacity: 128, {} spawner: (count: Single(60.0), spawn_duration: Single(1.0), period: Single(1.0), cycle_count: 0, starts_active: true, emit_on_start: true), init_modifiers: [SetAttribute((attr: "age", attr_expr: Float(0.0))), {}], render_modifiers: [Orient((mode: FaceCameraPosition))])))])"#,
+                extra, init
+            )
+        };
+        let check = |ron: String| match call_tool("check_project", &json!({ "ron": ron }), &ctx()) {
+            Ok(text) | Err(text) => text,
+        };
+        let good = check(ribbon(r#"SetAttribute((attr: "lifetime", attr_expr: Float(0.5))), SetAttribute((attr: "ribbon_id", attr_expr: U32(0)))"#, "motion_integration: None,"));
+        assert!(good.starts_with("OK: no errors.") && !good.contains("WARNINGS"), "{}", good);
+        let unique = check(ribbon(r#"SetAttribute((attr: "ribbon_id", attr_expr: Operator(Attr("particle_counter"))))"#, "motion_integration: None,"));
+        assert!(unique.contains("every particle gets its own ribbon_id"), "{}", unique);
+        let moving = check(ribbon(
+            r#"SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.5), Float(1.0))))), SetAttribute((attr: "velocity", attr_expr: Vec3((0.0, 1.0, 0.0)))), SetAttribute((attr: "ribbon_id", attr_expr: U32(0)))"#,
+            "",
+        ));
+        assert!(moving.contains("ribbon particles move by their velocity"), "{}", moving);
+        assert!(moving.contains("ribbon particles have different lifetimes"), "{}", moving);
+        let along = check(ribbon(r#"SetAttribute((attr: "ribbon_id", attr_expr: U32(0)))"#, "motion_integration: None,").replace("FaceCameraPosition", "AlongVelocity"));
+        assert!(along.contains("Orient AlongVelocity on a ribbon"), "{}", along);
+        let no_age = check(ribbon(r#"SetAttribute((attr: "ribbon_id", attr_expr: U32(0)))"#, "motion_integration: None,").replace(r#"SetAttribute((attr: "age", attr_expr: Float(0.0))), "#, ""));
+        assert!(no_age.contains("shader generation failed") && no_age.contains("AGE"), "{}", no_age);
+        // A child whose ribbon id reads a parent value the parent never sets.
+        let mut recipe = guide_recipes().into_iter().find(|r| r.title.starts_with("Magic streaks")).unwrap().ron;
+        recipe = recipe.replace(r#"SetAttribute((attr: "u32_0", attr_expr: Operator(Attr("particle_counter")))),"#, "");
+        let unset = check(recipe);
+        assert!(unset.contains("the ribbon id reads the parent's u32_0, which the parent's init never sets"), "{}", unset);
+    }
+
+    #[test]
     fn asset_tools_import_extract_and_list() {
         let dir = crate::asset_library::tests::temp_dir("mcp_assets");
         let game = dir.join("game");
@@ -1551,7 +1703,7 @@ mod tests {
 
     #[test]
     fn guide_sections_are_listed() {
-        for section in ["workflow", "format", "layers", "attach", "model", "textures", "assets", "surfaces", "shapes", "trails", "afterimages", "lights", "recipes", "game"] {
+        for section in ["workflow", "format", "layers", "attach", "model", "textures", "assets", "surfaces", "shapes", "trails", "afterimages", "lights", "ribbons", "meshes", "order", "recipes", "game"] {
             assert!(!guide_section(Some(section)).starts_with("No section"), "{}", section);
         }
     }
