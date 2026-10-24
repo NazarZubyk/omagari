@@ -1723,12 +1723,12 @@ A cyan ribbon 0.7 m tall behind the character's middle that always follows it fo
                 init_modifiers: [
                     SetAttribute((attr: "age", attr_expr: Float(0.0))),
                     SetAttribute((attr: "lifetime", attr_expr: Operator(Uniform(Float(0.2), Float(0.45))))),
-                    SetAttribute((attr: "size", attr_expr: Float(0.03))),
+                    SetAttribute((attr: "size", attr_expr: Float(0.05))),
                     SetAttribute((attr: "position", attr_expr: Operator(Mix(Property("segment_a"), Property("segment_b"), RandFloat)))),
                     SetAttribute((attr: "velocity", attr_expr: Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Float(1.5))))),
                 ],
                 update_modifiers: [
-                    AccelModifier((accel: Vec3((0.0, -6.0, 0.0)))),
+                    AccelModifier((accel_expr: Vec3((0.0, -6.0, 0.0)))),
                     LinearDragModifier((drag_expr: Float(2.0))),
                 ],
                 render_modifiers: [

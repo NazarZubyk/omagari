@@ -288,9 +288,9 @@ pub fn draw_light_gizmos(
         }
         let range = state.range.max(light.range);
         if range > 0.0 {
-            gizmos.circle(Isometry3d::new(position, Quat::from_rotation_arc(Vec3::Z, Vec3::Y)), range, color.with_alpha(alpha * 0.6));
+            gizmos.circle(Isometry3d::new(position, Quat::from_rotation_arc(Vec3::Z, Vec3::Y)), range, color.with_alpha(alpha * 0.45));
             if selected {
-                gizmos.sphere(Isometry3d::from_translation(position), range, color.with_alpha(0.25)).resolution(24);
+                gizmos.sphere(Isometry3d::from_translation(position), range, color.with_alpha(0.12)).resolution(32);
             }
         }
     }
