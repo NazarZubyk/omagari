@@ -3,7 +3,8 @@
 //! A package is the same type as a project: export clears the editor-only
 //! `preview` block. Every struct has `#[serde(default)]`, so partial files
 //! load, and unknown struct fields are ignored (a newer editor's file still
-//! loads in an older game).
+//! loads in an older game) but reported as warnings with their path
+//! ([`ProjectV2::from_ron_str_with_report`]), so typos do not go unnoticed.
 //!
 //! Parameters and triggers are declared per package (any names, any
 //! number); the runtime keeps their values per instance and fires triggers
@@ -23,6 +24,7 @@ use super::shape::ShapeLayerDef;
 use super::light::LightLayerDef;
 use super::surface::{EffectMaterialDef, FadeDef, SurfaceLayerDef};
 use super::trail::{AfterimageLayerDef, TrailLayerDef};
+use super::unknown_fields::{from_ron_str_tracking, FieldStep, UnknownField};
 use super::OmagariProject;
 
 /// The format version written by this library.
@@ -78,9 +80,27 @@ fn present<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     IgnoredAny::deserialize(d).map(|_| true)
 }
 
+/// What reading a project text found besides the project
+/// ([`ProjectV2::from_ron_str_with_report`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ParseReport {
+    /// Migration notes and a newer format version.
+    pub notes: Vec<String>,
+    /// Fields the format does not know (typos, or a newer editor's fields),
+    /// one message each with the path to the field; they are ignored.
+    pub unknown_fields: Vec<String>,
+}
+
+impl ParseReport {
+    /// Every message: notes, then unknown fields.
+    pub fn all(&self) -> Vec<String> {
+        self.notes.iter().chain(self.unknown_fields.iter()).cloned().collect()
+    }
+}
+
 impl ProjectV2 {
     /// Parses v1 or v2 text; v1 projects are migrated. Warnings (migration
-    /// notes, newer format version) are logged.
+    /// notes, newer format version, unknown fields) are logged.
     pub fn from_ron_str(text: &str) -> ron::error::SpannedResult<Self> {
         let (project, warnings) = Self::from_ron_str_with_warnings(text)?;
         for warning in warnings {
@@ -89,24 +109,56 @@ impl ProjectV2 {
         Ok(project)
     }
 
-    /// Like [`ProjectV2::from_ron_str`], returning the warnings instead of
-    /// logging them.
+    /// Like [`ProjectV2::from_ron_str`], returning the warnings (notes and
+    /// unknown fields, [`ParseReport::all`]) instead of logging them.
     pub fn from_ron_str_with_warnings(text: &str) -> ron::error::SpannedResult<(Self, Vec<String>)> {
+        let (project, report) = Self::from_ron_str_with_report(text)?;
+        Ok((project, report.all()))
+    }
+
+    /// Like [`ProjectV2::from_ron_str`], with the migration notes and the
+    /// unknown fields apart.
+    pub fn from_ron_str_with_report(text: &str) -> ron::error::SpannedResult<(Self, ParseReport)> {
         let probe: VersionProbe = ron::from_str(text)?;
-        let mut warnings = Vec::new();
+        let mut report = ParseReport::default();
         if probe.version.is_none() && probe.effects {
-            let v1 = OmagariProject::from_ron_str(text)?;
-            let project = migrate_v1(v1, &mut warnings);
-            return Ok((project, warnings));
+            let (v1, unknown): (OmagariProject, _) = from_ron_str_tracking(text)?;
+            report.unknown_fields = unknown
+                .iter()
+                .filter(|u| !is_legacy_v1_field(u))
+                .map(|u| describe_v1_unknown_field(&v1, u))
+                .collect();
+            let project = migrate_v1(v1, &mut report.notes);
+            return Ok((project, report));
         }
-        let project: ProjectV2 = ron::from_str(text)?;
+        let (project, unknown): (ProjectV2, _) = from_ron_str_tracking(text)?;
         if project.version > FORMAT_VERSION {
-            warnings.push(format!(
+            report.notes.push(format!(
                 "project format version {} is newer than {}; unknown values are ignored",
                 project.version, FORMAT_VERSION
             ));
         }
-        Ok((project, warnings))
+        report.unknown_fields = unknown.iter().map(|u| project.describe_unknown_field(u)).collect();
+        Ok((project, report))
+    }
+
+    /// A warning for a field the format does not know, naming the layer
+    /// (and modifier), asset or parameter it is in.
+    pub fn describe_unknown_field(&self, field: &UnknownField) -> String {
+        let mut context = Vec::new();
+        if let Some(layer) = field.index_after("layers").and_then(|i| self.layers.get(i)) {
+            context.push(format!("{} layer \"{}\"", layer.kind_name(), layer.name()));
+            if let LayerDef::Particles(p) = layer {
+                if let Some(kind) = modifier_kind_at(&field.location[2..], &p.effect) {
+                    context.push(kind.to_string());
+                }
+            }
+        } else if let Some(asset) = field.index_after("assets").and_then(|i| self.assets.get(i)) {
+            context.push(format!("asset \"{}\"", asset.id));
+        } else if let Some(param) = field.index_after("parameters").and_then(|i| self.parameters.get(i)) {
+            context.push(format!("parameter \"{}\"", param.name));
+        }
+        unknown_field_text(field, &context)
     }
 
     /// Serializes the project (pretty RON, `\n` line endings).
@@ -811,6 +863,52 @@ where
             Binding::Age(keys) => curve_value(keys, age),
         }
     }
+}
+
+/// The modifier kind a location inside a particle layer points at
+/// (`effect.update_modifiers[2]` → `AccelModifier`).
+fn modifier_kind_at(location: &[FieldStep], effect: &ParticleEffectDef) -> Option<&'static str> {
+    match location {
+        [FieldStep::Key(e), FieldStep::Key(list), FieldStep::Index(i), ..] if e == "effect" => match list.as_str() {
+            "init_modifiers" => effect.init_modifiers.get(*i).map(|m| m.kind_name()),
+            "update_modifiers" => effect.update_modifiers.get(*i).map(|m| m.kind_name()),
+            "render_modifiers" => effect.render_modifiers.get(*i).map(|m| m.kind_name()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn unknown_field_text(field: &UnknownField, context: &[String]) -> String {
+    let location = field.location_text();
+    let place = if location.is_empty() { "at the top level".to_string() } else { format!("at {}", location) };
+    let context = if context.is_empty() { String::new() } else { format!(" ({})", context.join(", ")) };
+    format!(
+        "unknown field \"{}\" {}{}; it is ignored (a typo, or a field of a newer format?)",
+        field.name, place, context
+    )
+}
+
+/// Fields old v1 editors wrote that the v1 model no longer reads: the `id`
+/// of a modifier (its position in the editor's list). Not reported.
+fn is_legacy_v1_field(field: &UnknownField) -> bool {
+    field.name == "id"
+        && matches!(
+            field.location.as_slice(),
+            [FieldStep::Key(e), FieldStep::Index(_), FieldStep::Key(list), FieldStep::Index(_)]
+                if e == "effects" && list.ends_with("_modifiers")
+        )
+}
+
+/// [`ProjectV2::describe_unknown_field`] for a v1 project.
+fn describe_v1_unknown_field(project: &OmagariProject, field: &UnknownField) -> String {
+    let context: Vec<String> = field
+        .index_after("effects")
+        .and_then(|i| project.effects.get(i))
+        .map(|e| format!("effect \"{}\"", e.name))
+        .into_iter()
+        .collect();
+    unknown_field_text(field, &context)
 }
 
 // --- assets ------------------------------------------------------------------

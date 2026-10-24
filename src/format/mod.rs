@@ -28,6 +28,7 @@ mod project;
 mod shape;
 mod surface;
 mod trail;
+pub mod unknown_fields;
 
 pub use expr::*;
 pub use hanabi_serde::{CpuValueDef, CpuVecDef, SpawnerDef, SpawnerPreset};

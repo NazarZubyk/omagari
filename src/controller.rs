@@ -376,9 +376,20 @@ pub fn projects_list() -> Vec<String> {
 
 /// Loads a project from `saved_effects/`; v1 files are migrated to v2.
 pub fn load_project(filename: &str) -> Result<ProjectV2, io::Error> {
+    load_project_with_unknown_fields(filename).map(|(project, _)| project)
+}
+
+/// [`load_project`], also returning the warnings about fields the format
+/// does not know (typos; they are ignored). Every warning is logged.
+pub fn load_project_with_unknown_fields(filename: &str) -> Result<(ProjectV2, Vec<String>), io::Error> {
     let file_path = Folder::SavedEffects.full_file_path(String::from(filename));
     let ron_string = std::fs::read_to_string(file_path)?;
-    ProjectV2::from_ron_str(&ron_string).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    let (project, report) =
+        ProjectV2::from_ron_str_with_report(&ron_string).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    for warning in report.all() {
+        warn!("{}: {}", filename, warning);
+    }
+    Ok((project, report.unknown_fields))
 }
 
 /// Saves a project (always v2) to `saved_effects/`.

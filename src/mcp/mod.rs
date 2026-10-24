@@ -656,7 +656,8 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
             let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
             let file_name = project_file_name(name)?;
             let (project, notes) = parse_project(ron_text)?;
-            let diagnostics = analysis::check_project(&project, &assets_root);
+            let mut diagnostics = analysis::check_project(&project, &assets_root);
+            notes.add_unknown_fields(&mut diagnostics);
             if !diagnostics.errors.is_empty() && !force {
                 return Err(format!("NOT SAVED.\n{}{}", notes.text(), diagnostics.render()));
             }
@@ -670,16 +671,18 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
             let path = Folder::SavedEffects.full_file_path(file_name.clone());
             fs::write(&path, text).map_err(|e| format!("{}: {}", path.display(), e))?;
             Ok(format!(
-                "Saved {}{}.\n{}{}",
+                "Saved {}{}.\n{}{}{}",
                 path.display(),
                 if notes.migrated { " (migrated from v1 to format v2)" } else { "" },
                 notes.text(),
+                notes.unknown_fields_text(),
                 analysis::analyze_project(&project, &assets_root, 200, None)
             ))
         }
         "check_project" => {
             let (project, notes) = load_from_args(args)?;
-            let diagnostics = analysis::check_project(&project, &assets_root);
+            let mut diagnostics = analysis::check_project(&project, &assets_root);
+            notes.add_unknown_fields(&mut diagnostics);
             let text = format!("{}{}", notes.text(), diagnostics.render());
             if diagnostics.errors.is_empty() { Ok(text) } else { Err(text) }
         }
@@ -709,8 +712,9 @@ fn call_tool(name: &str, args: &Value, ctx: &Context) -> Result<String, String> 
                 Some(other) => return Err(format!("params must be an array of objects, got {}", other)),
             };
             Ok(format!(
-                "{}{}",
+                "{}{}{}",
                 notes.text(),
+                notes.unknown_fields_text(),
                 analysis::analyze_project_with_sets(&project, &assets_root, samples, str_arg("effect"), sets.as_deref())
             ))
         }
@@ -1200,11 +1204,14 @@ fn read(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))
 }
 
-/// How a project text was read: migrated from v1, and the migration notes.
+/// How a project text was read: migrated from v1, the migration notes, and
+/// the fields the format does not know.
 #[derive(Default)]
 struct ParseNotes {
     migrated: bool,
     warnings: Vec<String>,
+    /// Unknown fields (typos), one message each with the path to the field.
+    unknown_fields: Vec<String>,
 }
 
 impl ParseNotes {
@@ -1221,16 +1228,32 @@ impl ParseNotes {
     }
 
     fn comment_lines(&self) -> String {
-        self.warnings.iter().map(|w| format!("// note: {}\n", w)).collect()
+        self.warnings
+            .iter()
+            .chain(self.unknown_fields.iter())
+            .map(|w| format!("// note: {}\n", w))
+            .collect()
+    }
+
+    /// Unknown fields become WARNINGS of `check_project` / `write_project`.
+    fn add_unknown_fields(&self, d: &mut analysis::Diagnostics) {
+        for field in self.unknown_fields.iter() {
+            d.warnings.push(format!("[file] {}", field));
+        }
+    }
+
+    /// Unknown fields as lines before a tool's output.
+    fn unknown_fields_text(&self) -> String {
+        self.unknown_fields.iter().map(|f| format!("WARNING: {}\n", f)).collect()
     }
 }
 
 /// Parses v1 or v2 project text; v1 is migrated to v2.
 fn parse_project(text: &str) -> Result<(ProjectV2, ParseNotes), String> {
-    let (project, warnings) =
-        ProjectV2::from_ron_str_with_warnings(text).map_err(|e| format!("RON parse error: {}", e))?;
+    let (project, report) =
+        ProjectV2::from_ron_str_with_report(text).map_err(|e| format!("RON parse error: {}", e))?;
     let migrated = is_v1(text);
-    Ok((project, ParseNotes { migrated, warnings }))
+    Ok((project, ParseNotes { migrated, warnings: report.notes, unknown_fields: report.unknown_fields }))
 }
 
 /// v1 projects are a plain `effects` list without `version`.
@@ -1344,6 +1367,18 @@ mod tests {
         assert!(check.starts_with("Input is a v1 project; it was migrated to format v2."), "{}", check);
         assert!(is_v1(v1));
         assert!(!is_v1(&recipe()));
+    }
+
+    /// A typo'd field is a WARNING with its path in check_project and
+    /// analyze_project; write_project still saves.
+    #[test]
+    fn unknown_fields_are_warnings() {
+        let typo = recipe().replacen("capacity:", "capasity: 5, capacity:", 1);
+        let check = call_tool("check_project", &json!({ "ron": typo }), &ctx()).unwrap();
+        assert!(check.contains("WARNINGS (1):"), "{}", check);
+        assert!(check.contains("- [file] unknown field \"capasity\" at layers[0].effect (particles layer"), "{}", check);
+        let report = call_tool("analyze_project", &json!({ "ron": typo }), &ctx()).unwrap();
+        assert!(report.starts_with("WARNING: unknown field \"capasity\""), "{}", report);
     }
 
     #[test]
