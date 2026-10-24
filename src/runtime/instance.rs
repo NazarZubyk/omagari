@@ -26,7 +26,9 @@ use bevy_hanabi::prelude::*;
 use super::attach::{FitState, SocketAttach};
 use super::package::{apply_texture_settings_to, VfxPackage};
 use super::params::{sync_instance, ParamState, VfxWarnOnce};
+use super::afterimage::{spawn_afterimage_layer, AfterimageLayerState};
 use super::shape::{spawn_shape_layer, ShapeLayerState};
+use super::trail::{spawn_trail_layer, TrailLayerState};
 use super::surface::{SurfaceLayerState, VfxSurfaceLayer};
 use super::triggers::TriggerArgs;
 use crate::format::{AttachDef, ParamValue};
@@ -185,6 +187,11 @@ pub struct VfxInstance {
     pub(crate) surfaces: Vec<Entity>,
     /// Shape layer entities, in the order of the package's shape layers.
     pub(crate) shapes: Vec<Entity>,
+    /// Trail layer entities, in the order of the package's trail layers.
+    pub(crate) trails: Vec<Entity>,
+    /// Afterimage layer entities, in the order of the package's afterimage
+    /// layers.
+    pub(crate) afterimages: Vec<Entity>,
     /// Counts restarts (`restart` while stopping): layers that keep their
     /// own clock (age, one-shot shapes) start over when it changes.
     pub(crate) generation: u32,
@@ -214,6 +221,8 @@ impl VfxInstance {
             layers: Vec::new(),
             surfaces: Vec::new(),
             shapes: Vec::new(),
+            trails: Vec::new(),
+            afterimages: Vec::new(),
             generation: 0,
             retired: Vec::new(),
             rebuild: false,
@@ -278,6 +287,17 @@ impl VfxInstance {
         &self.shapes
     }
 
+    /// Trail layer entities, in the order of [`VfxPackage::trail_layers`].
+    pub fn trail_layers(&self) -> &[Entity] {
+        &self.trails
+    }
+
+    /// Afterimage layer entities, in the order of
+    /// [`VfxPackage::afterimage_layers`].
+    pub fn afterimage_layers(&self) -> &[Entity] {
+        &self.afterimages
+    }
+
     /// How often the instance was restarted (`restart` while stopping).
     pub fn generation(&self) -> u32 {
         self.generation
@@ -285,7 +305,11 @@ impl VfxInstance {
 
     /// Whether no layer of any kind has been spawned yet.
     pub(crate) fn has_no_layers(&self) -> bool {
-        self.layers.is_empty() && self.surfaces.is_empty() && self.shapes.is_empty()
+        self.layers.is_empty()
+            && self.surfaces.is_empty()
+            && self.shapes.is_empty()
+            && self.trails.is_empty()
+            && self.afterimages.is_empty()
     }
 
     /// Layers of an earlier build that are fading out.
@@ -571,6 +595,8 @@ pub(crate) fn start_instances(
     mut instances: Query<(Entity, &mut VfxInstance)>,
     surfaces: Query<(&Name, &SurfaceLayerState)>,
     shapes: Query<(&Name, &ShapeLayerState)>,
+    trails: Query<(&Name, &TrailLayerState)>,
+    afterimages: Query<(&Name, &AfterimageLayerState)>,
 ) {
     for (entity, mut instance) in instances.iter_mut() {
         let rebuilding = instance.rebuild && instance.state() == VfxState::Running;
@@ -686,6 +712,39 @@ pub(crate) fn start_instances(
             commands.entity(e).try_despawn();
         }
         instance.shapes = shape_layers;
+
+        // Trails and afterimages too; a layer of the same name keeps its
+        // fade level (its samples and ghosts go with the old entity).
+        let old_trails: Vec<Entity> = instance.trails.drain(..).collect();
+        let mut trail_layers = Vec::with_capacity(package.trail_layers.len());
+        for (index, layer) in package.trail_layers.iter().enumerate() {
+            let level = old_trails
+                .iter()
+                .filter_map(|&e| trails.get(e).ok())
+                .find(|(name, _)| name.as_str() == layer.def.name)
+                .map(|(_, state)| state.level)
+                .unwrap_or(0.0);
+            trail_layers.push(spawn_trail_layer(&mut commands, entity, index, layer, &package.project, level));
+        }
+        for e in old_trails {
+            commands.entity(e).try_despawn();
+        }
+        instance.trails = trail_layers;
+        let old_afterimages: Vec<Entity> = instance.afterimages.drain(..).collect();
+        let mut afterimage_layers = Vec::with_capacity(package.afterimage_layers.len());
+        for (index, layer) in package.afterimage_layers.iter().enumerate() {
+            let level = old_afterimages
+                .iter()
+                .filter_map(|&e| afterimages.get(e).ok())
+                .find(|(name, _)| name.as_str() == layer.def.name)
+                .map(|(_, state)| state.level)
+                .unwrap_or(0.0);
+            afterimage_layers.push(spawn_afterimage_layer(&mut commands, entity, index, &layer.def.name, level));
+        }
+        for e in old_afterimages {
+            commands.entity(e).try_despawn();
+        }
+        instance.afterimages = afterimage_layers;
         instance.linger = package.stop_duration();
         instance.rebuild = false;
         if rebuilding {
@@ -803,6 +862,8 @@ pub(crate) fn on_instance_removed(
         .copied()
         .chain(instance.surfaces.iter().copied())
         .chain(instance.shapes.iter().copied())
+        .chain(instance.trails.iter().copied())
+        .chain(instance.afterimages.iter().copied())
         .chain(instance.retired_layers())
     {
         commands.entity(layer).try_despawn();

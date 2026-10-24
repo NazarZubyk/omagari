@@ -278,7 +278,7 @@ pub(crate) fn sync_surface_overlays(
 
 /// World metres per bind-pose unit of a skin: the scale of its first
 /// joint's skinning matrix (joint world transform × inverse bind pose).
-fn skin_rest_scale(
+pub(crate) fn skin_rest_scale(
     skin: &SkinnedMesh,
     bindposes: Option<&Assets<SkinnedMeshInverseBindposes>>,
     globals: &Query<&GlobalTransform>,

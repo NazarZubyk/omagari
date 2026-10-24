@@ -1,8 +1,10 @@
 //! The VFX runtime: [`VfxPackage`] assets, instances attached to entities
-//! (sockets, segments, size fit), parameters and triggers, surface and shape
-//! layers with Omagari's effect material, and built-in textures. Added by
+//! (sockets, segments, size fit), parameters and triggers, surface, shape,
+//! trail and afterimage layers with Omagari's effect material, and built-in
+//! textures. Added by
 //! [`crate::OmagariPlugin`].
 
+mod afterimage;
 mod attach;
 mod builtin;
 mod effect_material;
@@ -13,8 +15,10 @@ mod render_fix;
 mod shape;
 mod shape_mesh;
 mod surface;
+mod trail;
 mod triggers;
 
+pub use afterimage::*;
 pub use attach::*;
 pub use builtin::{resolve_asset_path, resolve_asset_path_in, BUILTIN_TEXTURES};
 pub use effect_material::*;
@@ -23,6 +27,7 @@ pub use package::*;
 pub use shape::*;
 pub use shape_mesh::*;
 pub use surface::*;
+pub use trail::*;
 pub use params::{
     evaluate_binding, evaluate_binding_at, smooth, smooth_value, ParamError, ParamSlot, ParamState, VfxWarnOnce,
 };
@@ -52,6 +57,7 @@ pub(crate) fn build(app: &mut App) {
         .add_observer(instance::on_instance_removed)
         .add_observer(instance::on_layer_removed)
         .add_observer(surface::on_surface_layer_removed)
+        .add_observer(afterimage::on_afterimage_layer_removed)
         .add_systems(
             Update,
             (
@@ -66,6 +72,8 @@ pub(crate) fn build(app: &mut App) {
                 surface::sync_surface_overlays,
                 surface::update_surface_materials,
                 shape::update_shapes,
+                trail::update_trails,
+                afterimage::update_afterimages,
                 instance::finish_instances,
             )
                 .chain()
@@ -76,6 +84,12 @@ pub(crate) fn build(app: &mut App) {
             (
                 attach::write_segment_properties.after(TransformSystems::Propagate),
                 shape::place_shapes
+                    .after(TransformSystems::Propagate)
+                    .before(VisibilitySystems::CheckVisibility),
+                trail::build_trails
+                    .after(TransformSystems::Propagate)
+                    .before(VisibilitySystems::CheckVisibility),
+                afterimage::snapshot_afterimages
                     .after(TransformSystems::Propagate)
                     .before(VisibilitySystems::CheckVisibility),
                 triggers::scale_spawn_counts.after(EffectSystems::TickSpawners),
