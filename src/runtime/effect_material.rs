@@ -18,7 +18,7 @@ use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError};
-use bevy::shader::ShaderRef;
+use bevy::shader::{Shader, ShaderRef};
 
 use crate::format::{AxisDef, ChannelDef, EffectBlendDef, EffectValues, NoiseMappingDef, NoiseValues};
 
@@ -27,6 +27,18 @@ pub const EFFECT_SHADER_PATH: &str = "embedded://omagari/shaders/omagari_effect.
 
 /// The shader source (also used by the WGSL validation test).
 pub const EFFECT_SHADER_SOURCE: &str = include_str!("../shaders/omagari_effect.wgsl");
+
+/// Asset path of the shared vertex stage (the `omagari::vertex` shader
+/// library imported by the effect and distortion shaders).
+pub const VERTEX_SHADER_LIBRARY_PATH: &str = "embedded://omagari/shaders/omagari_vertex.wgsl";
+
+/// The shared vertex stage's source.
+pub const VERTEX_SHADER_LIBRARY_SOURCE: &str = include_str!("../shaders/omagari_vertex.wgsl");
+
+/// Keeps the `omagari::vertex` shader library loaded (Bevy resolves named
+/// shader imports from loaded shaders only).
+#[derive(Resource)]
+pub struct OmagariShaderLibrary(pub Handle<Shader>);
 
 /// Metres overlays are drawn closer to the camera than the surface they
 /// cover, along the view ray (the screen position does not change), so a
@@ -312,6 +324,16 @@ pub(crate) fn build(app: &mut App) {
             Path::new("omagari/shaders/omagari_effect.wgsl"),
             EFFECT_SHADER_SOURCE.as_bytes(),
         );
+        let full_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/shaders/omagari_vertex.wgsl");
+        registry.insert_asset(
+            full_path,
+            Path::new("omagari/shaders/omagari_vertex.wgsl"),
+            VERTEX_SHADER_LIBRARY_SOURCE.as_bytes(),
+        );
+    }
+    if let (Some(server), true) = (app.world().get_resource::<AssetServer>(), app.world().contains_resource::<Assets<Shader>>()) {
+        let library = server.load::<Shader>(VERTEX_SHADER_LIBRARY_PATH);
+        app.insert_resource(OmagariShaderLibrary(library));
     }
     if app.is_plugin_added::<bevy::pbr::PbrPlugin>() {
         app.add_plugins(MaterialPlugin::<OmagariEffectMaterial>::default());

@@ -27,6 +27,7 @@ use super::attach::{FitState, SocketAttach};
 use super::package::{apply_texture_settings_to, VfxPackage};
 use super::params::{sync_instance, ParamState, VfxWarnOnce};
 use super::afterimage::{spawn_afterimage_layer, AfterimageLayerState};
+use super::distortion::{spawn_distortion_layer, DistortionLayerState};
 use super::light::{spawn_light_layer, LightLayerState};
 use super::shape::{spawn_shape_layer, ShapeLayerState};
 use super::trail::{spawn_trail_layer, TrailLayerState};
@@ -197,6 +198,9 @@ pub struct VfxInstance {
     pub(crate) afterimages: Vec<Entity>,
     /// Light layer entities, in the order of the package's light layers.
     pub(crate) lights: Vec<Entity>,
+    /// Distortion layer entities, in the order of the package's distortion
+    /// layers.
+    pub(crate) distortions: Vec<Entity>,
     /// Counts restarts (`restart` while stopping): layers that keep their
     /// own clock (age, one-shot shapes) start over when it changes.
     pub(crate) generation: u32,
@@ -229,6 +233,7 @@ impl VfxInstance {
             trails: Vec::new(),
             afterimages: Vec::new(),
             lights: Vec::new(),
+            distortions: Vec::new(),
             generation: 0,
             retired: Vec::new(),
             rebuild: false,
@@ -309,6 +314,12 @@ impl VfxInstance {
         &self.lights
     }
 
+    /// Distortion layer entities, in the order of
+    /// [`VfxPackage::distortion_layers`].
+    pub fn distortion_layers(&self) -> &[Entity] {
+        &self.distortions
+    }
+
     /// How often the instance was restarted (`restart` while stopping).
     pub fn generation(&self) -> u32 {
         self.generation
@@ -322,6 +333,7 @@ impl VfxInstance {
             && self.trails.is_empty()
             && self.afterimages.is_empty()
             && self.lights.is_empty()
+            && self.distortions.is_empty()
     }
 
     /// Layers of an earlier build that are fading out.
@@ -613,6 +625,7 @@ pub(crate) fn start_instances(
     trails: Query<(&Name, &TrailLayerState)>,
     afterimages: Query<(&Name, &AfterimageLayerState)>,
     lights: Query<(&Name, &LightLayerState)>,
+    distortions: Query<(&Name, &DistortionLayerState)>,
     mut particle_meshes: ResMut<ParticleMeshes>,
     mut meshes: Option<ResMut<Assets<Mesh>>>,
 ) {
@@ -789,6 +802,24 @@ pub(crate) fn start_instances(
             commands.entity(e).try_despawn();
         }
         instance.lights = light_layers;
+
+        // Distortion layers too; a looping one of the same name keeps its
+        // fade level (one-shots start over).
+        let old_distortions: Vec<Entity> = instance.distortions.drain(..).collect();
+        let mut distortion_layers = Vec::with_capacity(package.distortion_layers.len());
+        for (index, layer) in package.distortion_layers.iter().enumerate() {
+            let level = old_distortions
+                .iter()
+                .filter_map(|&e| distortions.get(e).ok())
+                .find(|(name, _)| name.as_str() == layer.def.name)
+                .map(|(_, state)| state.player.level)
+                .unwrap_or(0.0);
+            distortion_layers.push(spawn_distortion_layer(&mut commands, entity, index, layer, &package.project, level));
+        }
+        for e in old_distortions {
+            commands.entity(e).try_despawn();
+        }
+        instance.distortions = distortion_layers;
         instance.linger = package.stop_duration();
         instance.rebuild = false;
         if rebuilding {
@@ -831,6 +862,11 @@ pub(crate) fn reload_instances(
                     .and_then(|l| l.texture.as_ref())
                     .and_then(|id| package.project.texture(id));
                 if let Some(def) = def {
+                    apply_texture_settings_to(&mut images, handle, def);
+                }
+            }
+            for (slot, handle) in package.distortion_textures() {
+                if let Some(def) = package.project.texture(&slot.asset) {
                     apply_texture_settings_to(&mut images, handle, def);
                 }
             }
@@ -909,6 +945,7 @@ pub(crate) fn on_instance_removed(
         .chain(instance.trails.iter().copied())
         .chain(instance.afterimages.iter().copied())
         .chain(instance.lights.iter().copied())
+        .chain(instance.distortions.iter().copied())
         .chain(instance.retired_layers())
     {
         commands.entity(layer).try_despawn();

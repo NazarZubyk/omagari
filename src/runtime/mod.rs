@@ -1,12 +1,15 @@
 //! The VFX runtime: [`VfxPackage`] assets, instances attached to entities
 //! (sockets, segments, size fit), parameters and triggers, surface, shape,
 //! trail and afterimage layers with Omagari's effect material, light layers
-//! (point lights under a global cap, [`VfxSettings`]), mesh particles and
+//! (point lights under a global cap, [`VfxSettings`]), distortion layers
+//! ([`OmagariDistortionMaterial`], Bevy's screen-space transmission), mesh particles and
 //! the draw order of particle layers, and built-in textures. Added by [`crate::OmagariPlugin`].
 
 mod afterimage;
 mod attach;
 mod builtin;
+mod distortion;
+mod distortion_material;
 mod effect_material;
 mod instance;
 mod light;
@@ -24,6 +27,8 @@ mod triggers;
 pub use afterimage::*;
 pub use attach::*;
 pub use builtin::{resolve_asset_path, resolve_asset_path_in, BUILTIN_TEXTURES};
+pub use distortion::*;
+pub use distortion_material::*;
 pub use effect_material::*;
 pub use instance::*;
 pub use light::*;
@@ -54,12 +59,14 @@ pub struct VfxSystems;
 pub(crate) fn build(app: &mut App) {
     builtin::register_builtin_textures(app);
     effect_material::build(app);
+    distortion_material::build(app);
     render_fix::build(app);
     sorting::build(app);
     app.init_asset::<VfxPackage>()
         .init_asset_loader::<VfxPackageLoader>()
         .init_resource::<VfxWarnOnce>()
         .init_resource::<ShapeMeshCache>()
+        .init_resource::<DistortionMeshCache>()
         .init_resource::<ParticleMeshes>()
         .init_resource::<VfxSettings>()
         .add_message::<VfxFinished>()
@@ -67,6 +74,7 @@ pub(crate) fn build(app: &mut App) {
         .add_observer(instance::on_layer_removed)
         .add_observer(surface::on_surface_layer_removed)
         .add_observer(afterimage::on_afterimage_layer_removed)
+        .add_observer(distortion::on_distortion_layer_removed)
         .add_systems(
             Update,
             (
@@ -86,6 +94,9 @@ pub(crate) fn build(app: &mut App) {
                 afterimage::update_afterimages,
                 light::update_lights,
                 light::apply_light_cap,
+                distortion::sync_distortion_overlays,
+                distortion::update_distortions,
+                distortion::check_distortion_cameras,
                 instance::finish_instances,
             )
                 .chain()
@@ -105,6 +116,9 @@ pub(crate) fn build(app: &mut App) {
                     .after(TransformSystems::Propagate)
                     .before(VisibilitySystems::CheckVisibility),
                 light::place_lights
+                    .after(TransformSystems::Propagate)
+                    .before(VisibilitySystems::CheckVisibility),
+                distortion::place_distortions
                     .after(TransformSystems::Propagate)
                     .before(VisibilitySystems::CheckVisibility),
                 triggers::scale_spawn_counts.after(EffectSystems::TickSpawners),

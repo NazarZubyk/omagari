@@ -10,7 +10,7 @@ use bevy_hanabi::prelude::*;
 
 use super::builtin::{resolve_asset_path, resolve_asset_path_in};
 use crate::format::{
-    param_property_name, AfterimageLayerDef, AttachDef, Binding, EffectMaterialDef, EmitDef, LightLayerDef, MeshAssetDef,
+    param_property_name, AfterimageLayerDef, AttachDef, Binding, DistortionLayerDef, EffectMaterialDef, EmitDef, LightLayerDef, MeshAssetDef,
     ParamKind, ParticleMeshDef, ParticleShapeDef, PlayDef, ProjectV2, ShapeLayerDef, TimedPlay, SimulationSpaceDef, SurfaceLayerDef, TextureAssetDef, TrailLayerDef, TextureColorSpace, TextureFilter, TextureSlotDef, TextureWrap,
     VisibleRangeDef,
 };
@@ -36,13 +36,26 @@ pub struct VfxPackage {
     pub afterimage_layers: Vec<PreparedAfterimageLayer>,
     /// One entry per light layer, in layer order.
     pub light_layers: Vec<PreparedLightLayer>,
+    /// One entry per distortion layer, in layer order.
+    pub distortion_layers: Vec<PreparedDistortionLayer>,
     /// Seconds after which an instance finishes by itself: set when every
     /// root particle layer is one-shot (`play: OnStart` with a finite
-    /// `cycle_count`), every shape and light layer is one-shot (`play:
-    /// OnStart` with a `duration`) and there are no surface, trail or
-    /// afterimage layers; the last spawn plus the longest particle life, or
-    /// the longest shape / light.
+    /// `cycle_count`), every shape, light and distortion layer is one-shot
+    /// (`play: OnStart` with a `duration`) and there are no surface, trail
+    /// or afterimage layers; the last spawn plus the longest particle life,
+    /// or the longest shape / light / distortion.
     pub auto_finish: Option<f32>,
+}
+
+/// A distortion layer ready to be spawned: its definition and the
+/// textures of its noise slots.
+pub struct PreparedDistortionLayer {
+    /// Index of the layer in `project.layers`.
+    pub layer_index: usize,
+    pub def: DistortionLayerDef,
+    /// Textures of noise A and noise B (`None` = no texture, or its asset
+    /// is missing).
+    pub textures: [Option<Handle<Image>>; 2],
 }
 
 /// A light layer ready to be spawned.
@@ -514,6 +527,31 @@ impl VfxPackage {
             check_light_layer(&project, layer, warnings);
             light_layers.push(PreparedLightLayer { layer_index, def: layer.clone() });
         }
+        let mut distortion_layers = Vec::new();
+        for (layer_index, layer) in project.distortion_layers() {
+            check_distortion_layer(&project, layer, warnings);
+            let mut slot_texture = |slot: Option<&TextureSlotDef>, what: &str| -> Option<Handle<Image>> {
+                let slot = slot.filter(|s| !s.asset.trim().is_empty())?;
+                if let Some((_, handle)) = textures.iter().find(|(t, _)| *t == slot.asset) {
+                    return Some(handle.clone());
+                }
+                let Some(def) = project.texture(&slot.asset) else {
+                    warnings.push(format!(
+                        "[{}] {} texture \"{}\" is not in the assets list; that noise is off",
+                        layer.name, what, slot.asset
+                    ));
+                    return None;
+                };
+                let handle = assets.load_texture(def);
+                textures.push((slot.asset.clone(), handle.clone()));
+                Some(handle)
+            };
+            let slots = [
+                slot_texture(Some(&layer.noise.texture), "noise"),
+                slot_texture(layer.noise_b.as_ref().map(|n| &n.texture), "noise B"),
+            ];
+            distortion_layers.push(PreparedDistortionLayer { layer_index, def: layer.clone(), textures: slots });
+        }
 
         // A layer's particles can be spawned by its parents until their
         // particles die, so its linger includes the whole parent chain.
@@ -548,6 +586,7 @@ impl VfxPackage {
             .iter()
             .map(|s| &s.def as &dyn TimedPlay)
             .chain(light_layers.iter().map(|l| &l.def as &dyn TimedPlay))
+            .chain(distortion_layers.iter().map(|l| &l.def as &dyn TimedPlay))
             .collect();
         if !timed.is_empty() {
             let ends: Option<Vec<f32>> = timed
@@ -579,6 +618,7 @@ impl VfxPackage {
             trail_layers,
             afterimage_layers,
             light_layers,
+            distortion_layers,
             auto_finish,
         }
     }
@@ -594,6 +634,7 @@ impl VfxPackage {
             .chain(self.trail_layers.iter().map(|l| l.def.linger()))
             .chain(self.afterimage_layers.iter().map(|l| l.def.linger()))
             .chain(self.light_layers.iter().map(|l| l.def.linger()))
+            .chain(self.distortion_layers.iter().map(|l| l.def.linger()))
             .fold(0.0, f32::max)
     }
 
@@ -607,6 +648,22 @@ impl VfxPackage {
             .chain(self.shape_layers.iter().flat_map(|l| l.textures.iter().flatten()))
             .chain(self.trail_layers.iter().flat_map(|l| l.textures.iter().flatten()))
             .chain(self.afterimage_layers.iter().flat_map(|l| l.textures.iter().flatten()))
+            .chain(self.distortion_layers.iter().flat_map(|l| l.textures.iter().flatten()))
+    }
+
+    /// The noise textures of the distortion layers with their slots, e.g. to
+    /// apply changed texture settings.
+    pub fn distortion_textures(&self) -> Vec<(&TextureSlotDef, &Handle<Image>)> {
+        let mut out = Vec::new();
+        for layer in self.distortion_layers.iter() {
+            let slots = [Some(&layer.def.noise.texture), layer.def.noise_b.as_ref().map(|n| &n.texture)];
+            for (slot, handle) in slots.into_iter().zip(layer.textures.iter()) {
+                if let (Some(slot), Some(handle)) = (slot, handle) {
+                    out.push((slot, handle));
+                }
+            }
+        }
+        out
     }
 
     /// Every mesh asset the particle layers load.
@@ -721,6 +778,38 @@ fn check_shape_layer(project: &ProjectV2, layer: &ShapeLayerDef, warnings: &mut 
                 layer.name, what, param
             )),
             Some(ParamKind::Float) => {}
+        }
+    }
+}
+
+/// Warnings for a distortion layer's reads: its triggers, the parameters of
+/// its bindings (the tint may read a Color parameter), `visible` and `play:
+/// While`.
+fn check_distortion_layer(project: &ProjectV2, layer: &DistortionLayerDef, warnings: &mut Vec<String>) {
+    for trigger in layer.play.triggers() {
+        if project.trigger(trigger).is_none() {
+            warnings.push(format!(
+                "[{}] plays on trigger \"{}\", which is not a trigger of this package",
+                layer.name, trigger
+            ));
+        }
+    }
+    let reads = layer
+        .binding_params()
+        .into_iter()
+        .chain(layer.visible.as_ref().map(|v| ("visible", v.param.as_str())))
+        .chain(layer.play.param().map(|p| ("play While", p)));
+    for (what, param) in reads {
+        match project.param(param).map(|p| p.kind()) {
+            None => warnings.push(format!(
+                "[{}] {} reads \"{}\", which is not a parameter of this package",
+                layer.name, what, param
+            )),
+            Some(ParamKind::Color) if !DistortionLayerDef::is_color_binding(what) => warnings.push(format!(
+                "[{}] {} reads \"{}\", a Color parameter; it needs a Float one",
+                layer.name, what, param
+            )),
+            _ => {}
         }
     }
 }
