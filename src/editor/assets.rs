@@ -466,7 +466,7 @@ pub fn assets_tab(
         .iter()
         .map(|a| match &a.kind {
             AssetKind::Texture(t) => (a.id.clone(), t.path.clone(), t.purpose.name().to_string(), false),
-            AssetKind::Mesh(m) => (a.id.clone(), m.path.clone(), format!("Mesh {}", m.label()), true),
+            AssetKind::Mesh(m) => (a.id.clone(), m.path.clone(), format!("mesh {}", m.label()), true),
         })
         .collect();
     for (id, path, kind_text, is_mesh) in rows.iter() {
