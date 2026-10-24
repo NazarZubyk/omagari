@@ -27,6 +27,7 @@ use super::attach::{FitState, SocketAttach};
 use super::package::{apply_texture_settings_to, VfxPackage};
 use super::params::{sync_instance, ParamState, VfxWarnOnce};
 use super::afterimage::{spawn_afterimage_layer, AfterimageLayerState};
+use super::light::{spawn_light_layer, LightLayerState};
 use super::shape::{spawn_shape_layer, ShapeLayerState};
 use super::trail::{spawn_trail_layer, TrailLayerState};
 use super::surface::{SurfaceLayerState, VfxSurfaceLayer};
@@ -192,6 +193,8 @@ pub struct VfxInstance {
     /// Afterimage layer entities, in the order of the package's afterimage
     /// layers.
     pub(crate) afterimages: Vec<Entity>,
+    /// Light layer entities, in the order of the package's light layers.
+    pub(crate) lights: Vec<Entity>,
     /// Counts restarts (`restart` while stopping): layers that keep their
     /// own clock (age, one-shot shapes) start over when it changes.
     pub(crate) generation: u32,
@@ -223,6 +226,7 @@ impl VfxInstance {
             shapes: Vec::new(),
             trails: Vec::new(),
             afterimages: Vec::new(),
+            lights: Vec::new(),
             generation: 0,
             retired: Vec::new(),
             rebuild: false,
@@ -298,6 +302,11 @@ impl VfxInstance {
         &self.afterimages
     }
 
+    /// Light layer entities, in the order of [`VfxPackage::light_layers`].
+    pub fn light_layers(&self) -> &[Entity] {
+        &self.lights
+    }
+
     /// How often the instance was restarted (`restart` while stopping).
     pub fn generation(&self) -> u32 {
         self.generation
@@ -310,6 +319,7 @@ impl VfxInstance {
             && self.shapes.is_empty()
             && self.trails.is_empty()
             && self.afterimages.is_empty()
+            && self.lights.is_empty()
     }
 
     /// Layers of an earlier build that are fading out.
@@ -338,8 +348,10 @@ pub struct VfxLayerState {
     /// A burst waiting for the spawner (`OnTrigger` layers), with its
     /// payload.
     pub burst: Option<TriggerArgs>,
-    /// A `While` layer's condition was true last frame.
+    /// A `While` / `Between` layer was on last frame.
     pub while_on: bool,
+    /// A `Between` layer is between its start and its stop trigger.
+    pub held: bool,
     /// Fraction of a particle carried over to the next frame.
     pub remainder: f32,
     /// Seconds since the layer started, or since its last burst / `While`
@@ -356,6 +368,7 @@ impl Default for VfxLayerState {
             rate: None,
             burst: None,
             while_on: false,
+            held: false,
             remainder: 0.0,
             age: 0.0,
             generation: 0,
@@ -459,8 +472,8 @@ impl VfxControl<'_, '_> {
         inst.lifecycle.restart(auto_finish);
         inst.generation = inst.generation.wrapping_add(1);
         for (index, &layer) in inst.layers.iter().enumerate() {
-            // OnTrigger / While layers are switched by their trigger or
-            // parameter, never by a restart.
+            // OnTrigger / While / Between layers are switched by their
+            // trigger or parameter, never by a restart.
             let driven = package
                 .and_then(|p| p.particle_layers.get(index))
                 .is_some_and(|l| l.play.is_driven());
@@ -597,6 +610,7 @@ pub(crate) fn start_instances(
     shapes: Query<(&Name, &ShapeLayerState)>,
     trails: Query<(&Name, &TrailLayerState)>,
     afterimages: Query<(&Name, &AfterimageLayerState)>,
+    lights: Query<(&Name, &LightLayerState)>,
 ) {
     for (entity, mut instance) in instances.iter_mut() {
         let rebuilding = instance.rebuild && instance.state() == VfxState::Running;
@@ -745,6 +759,24 @@ pub(crate) fn start_instances(
             commands.entity(e).try_despawn();
         }
         instance.afterimages = afterimage_layers;
+
+        // Light layers too; a looping light of the same name keeps its fade
+        // level (one-shots start over).
+        let old_lights: Vec<Entity> = instance.lights.drain(..).collect();
+        let mut light_layers = Vec::with_capacity(package.light_layers.len());
+        for (index, layer) in package.light_layers.iter().enumerate() {
+            let level = old_lights
+                .iter()
+                .filter_map(|&e| lights.get(e).ok())
+                .find(|(name, _)| name.as_str() == layer.def.name)
+                .map(|(_, state)| state.player.level)
+                .unwrap_or(0.0);
+            light_layers.push(spawn_light_layer(&mut commands, entity, index, layer, &package.project, level));
+        }
+        for e in old_lights {
+            commands.entity(e).try_despawn();
+        }
+        instance.lights = light_layers;
         instance.linger = package.stop_duration();
         instance.rebuild = false;
         if rebuilding {
@@ -864,6 +896,7 @@ pub(crate) fn on_instance_removed(
         .chain(instance.shapes.iter().copied())
         .chain(instance.trails.iter().copied())
         .chain(instance.afterimages.iter().copied())
+        .chain(instance.lights.iter().copied())
         .chain(instance.retired_layers())
     {
         commands.entity(layer).try_despawn();

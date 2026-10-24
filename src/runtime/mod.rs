@@ -1,14 +1,15 @@
 //! The VFX runtime: [`VfxPackage`] assets, instances attached to entities
 //! (sockets, segments, size fit), parameters and triggers, surface, shape,
-//! trail and afterimage layers with Omagari's effect material, and built-in
-//! textures. Added by
-//! [`crate::OmagariPlugin`].
+//! trail and afterimage layers with Omagari's effect material, light layers
+//! (point lights under a global cap, [`VfxSettings`]), and built-in
+//! textures. Added by [`crate::OmagariPlugin`].
 
 mod afterimage;
 mod attach;
 mod builtin;
 mod effect_material;
 mod instance;
+mod light;
 mod package;
 mod params;
 mod render_fix;
@@ -23,6 +24,7 @@ pub use attach::*;
 pub use builtin::{resolve_asset_path, resolve_asset_path_in, BUILTIN_TEXTURES};
 pub use effect_material::*;
 pub use instance::*;
+pub use light::*;
 pub use package::*;
 pub use shape::*;
 pub use shape_mesh::*;
@@ -53,6 +55,7 @@ pub(crate) fn build(app: &mut App) {
         .init_asset_loader::<VfxPackageLoader>()
         .init_resource::<VfxWarnOnce>()
         .init_resource::<ShapeMeshCache>()
+        .init_resource::<VfxSettings>()
         .add_message::<VfxFinished>()
         .add_observer(instance::on_instance_removed)
         .add_observer(instance::on_layer_removed)
@@ -74,6 +77,8 @@ pub(crate) fn build(app: &mut App) {
                 shape::update_shapes,
                 trail::update_trails,
                 afterimage::update_afterimages,
+                light::update_lights,
+                light::apply_light_cap,
                 instance::finish_instances,
             )
                 .chain()
@@ -90,6 +95,9 @@ pub(crate) fn build(app: &mut App) {
                     .after(TransformSystems::Propagate)
                     .before(VisibilitySystems::CheckVisibility),
                 afterimage::snapshot_afterimages
+                    .after(TransformSystems::Propagate)
+                    .before(VisibilitySystems::CheckVisibility),
+                light::place_lights
                     .after(TransformSystems::Propagate)
                     .before(VisibilitySystems::CheckVisibility),
                 triggers::scale_spawn_counts.after(EffectSystems::TickSpawners),
