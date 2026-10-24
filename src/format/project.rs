@@ -20,7 +20,8 @@ use super::expr::ExprWriterEditor;
 use super::migrate::migrate_v1;
 use super::particles::ParticleEffectDef;
 use super::shape::ShapeLayerDef;
-use super::surface::{EffectMaterialDef, SurfaceLayerDef};
+use super::light::LightLayerDef;
+use super::surface::{EffectMaterialDef, FadeDef, SurfaceLayerDef};
 use super::trail::{AfterimageLayerDef, TrailLayerDef};
 use super::OmagariProject;
 
@@ -276,6 +277,14 @@ impl ProjectV2 {
             .filter_map(|(i, l)| l.as_afterimage().map(|s| (i, s)))
     }
 
+    /// The light layers, with their index in `layers`.
+    pub fn light_layers(&self) -> impl Iterator<Item = (usize, &LightLayerDef)> {
+        self.layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| l.as_light().map(|s| (i, s)))
+    }
+
     /// The parameter with this name.
     pub fn param(&self, name: &str) -> Option<&ParamDef> {
         self.parameters.iter().find(|p| p.name == name)
@@ -363,6 +372,23 @@ impl ProjectV2 {
                 users.push(format!("layer \"{}\" ({})", layer, what.join(", ")));
             }
         }
+        for (_, layer) in self.light_layers() {
+            let mut what: Vec<&str> = Vec::new();
+            for (value, param) in layer.binding_params() {
+                if param == name && !what.contains(&value) {
+                    what.push(value);
+                }
+            }
+            if layer.visible.as_ref().is_some_and(|v| v.param == name) {
+                what.push("visible");
+            }
+            if layer.play.param() == Some(name) {
+                what.push("play While");
+            }
+            if !what.is_empty() {
+                users.push(format!("layer \"{}\" ({})", layer.name, what.join(", ")));
+            }
+        }
         for trigger in self.triggers.iter() {
             if trigger.pulses.iter().any(|p| p.param == name) {
                 users.push(format!("trigger \"{}\" (pulse)", trigger.name));
@@ -372,13 +398,14 @@ impl ProjectV2 {
     }
 
     /// Names of the layers played by the trigger `name` (`play: OnTrigger`)
-    /// or switched by it (`emit: Trigger(start, stop)` of trails and
-    /// afterimages).
+    /// or switched by it (`play: Between(start, stop)`, `emit: Trigger(start,
+    /// stop)` of trails and afterimages).
     pub fn trigger_users(&self, name: &str) -> Vec<String> {
         self.particle_layers()
-            .filter(|(_, l)| l.play.trigger() == Some(name))
+            .filter(|(_, l)| l.play.triggers().contains(&name))
             .map(|(_, l)| l.name.clone())
-            .chain(self.shape_layers().filter(|(_, l)| l.play.trigger() == Some(name)).map(|(_, l)| l.name.clone()))
+            .chain(self.shape_layers().filter(|(_, l)| l.play.triggers().contains(&name)).map(|(_, l)| l.name.clone()))
+            .chain(self.light_layers().filter(|(_, l)| l.play.triggers().contains(&name)).map(|(_, l)| l.name.clone()))
             .chain(self.trail_layers().filter(|(_, l)| l.emit.triggers().contains(&name)).map(|(_, l)| l.name.clone()))
             .chain(
                 self.afterimage_layers()
@@ -419,6 +446,9 @@ impl ProjectV2 {
                 s.rename_param(from, to);
             }
             if let LayerDef::Afterimage(s) = layer {
+                s.rename_param(from, to);
+            }
+            if let LayerDef::Light(s) = layer {
                 s.rename_param(from, to);
             }
             let Some(layer) = layer.as_particles_mut() else { continue };
@@ -463,7 +493,7 @@ impl ProjectV2 {
     }
 
     /// Renames the trigger `from` to `to` and every reference to it (`play:
-    /// OnTrigger`, `emit: Trigger`, preview auto and animation triggers). Fails when `to` is empty or taken,
+    /// OnTrigger` / `Between`, `emit: Trigger`, preview auto and animation triggers). Fails when `to` is empty or taken,
     /// or `from` does not exist.
     pub fn rename_trigger(&mut self, from: &str, to: &str) -> Result<(), String> {
         let to = to.trim();
@@ -483,23 +513,13 @@ impl ProjectV2 {
             .ok_or_else(|| format!("no trigger \"{}\"", from))?;
         trigger.name = to.to_string();
         for layer in self.layers.iter_mut() {
-            let play = match layer {
-                LayerDef::Particles(p) => &mut p.play,
-                LayerDef::Shape(s) => &mut s.play,
-                LayerDef::Trail(t) => {
-                    t.emit.rename_trigger(from, to);
-                    continue;
-                }
-                LayerDef::Afterimage(a) => {
-                    a.emit.rename_trigger(from, to);
-                    continue;
-                }
-                LayerDef::Surface(_) => continue,
-            };
-            if let PlayDef::OnTrigger(name) = play {
-                if name == from {
-                    *name = to.to_string();
-                }
+            match layer {
+                LayerDef::Particles(p) => p.play.rename_trigger(from, to),
+                LayerDef::Shape(s) => s.play.rename_trigger(from, to),
+                LayerDef::Light(l) => l.play.rename_trigger(from, to),
+                LayerDef::Trail(t) => t.emit.rename_trigger(from, to),
+                LayerDef::Afterimage(a) => a.emit.rename_trigger(from, to),
+                LayerDef::Surface(_) => {}
             }
         }
         if let Some(preview) = &mut self.preview {
@@ -1072,6 +1092,15 @@ pub enum PlayDef {
     OnTrigger(String),
     /// While the parameter is at or above the threshold.
     While(String, f32),
+    /// From the trigger `start` until the trigger `stop` (held emission, e.g.
+    /// sparks along a blade between `swing_start` and `swing_end`; the same
+    /// semantics as a trail's `emit: Trigger(start, stop)`). When they are
+    /// the same trigger, it switches the layer on and off.
+    ///
+    /// ```ron
+    /// play: Between(start: "swing_start", stop: "swing_end")
+    /// ```
+    Between { start: String, stop: String },
 }
 
 impl PlayDef {
@@ -1083,10 +1112,120 @@ impl PlayDef {
         }
     }
 
+    /// Every trigger the layer listens to: an `OnTrigger`'s trigger, a
+    /// `Between`'s start and stop (once when they are the same).
+    pub fn triggers(&self) -> Vec<&str> {
+        match self {
+            PlayDef::OnTrigger(name) => vec![name.as_str()],
+            PlayDef::Between { start, stop } if start == stop => vec![start.as_str()],
+            PlayDef::Between { start, stop } => vec![start.as_str(), stop.as_str()],
+            _ => Vec::new(),
+        }
+    }
+
+    /// `"Loop"`, `"OnStart"`, `"OnTrigger"`, `"While"`, `"Between"`.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            PlayDef::Loop => "Loop",
+            PlayDef::OnStart => "OnStart",
+            PlayDef::OnTrigger(_) => "OnTrigger",
+            PlayDef::While(..) => "While",
+            PlayDef::Between { .. } => "Between",
+        }
+    }
+
+    /// What firing the trigger `name` does to a `Between` layer that is
+    /// `held` (on): the new state, `None` when the trigger is not one of its
+    /// two (or the layer is not `Between`).
+    pub fn on_between(&self, name: &str, held: bool) -> Option<bool> {
+        match self {
+            PlayDef::Between { start, stop } if start == stop && start == name => Some(!held),
+            PlayDef::Between { start, .. } if start == name => Some(true),
+            PlayDef::Between { stop, .. } if stop == name => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Renames the trigger `from` in `OnTrigger` and `Between`.
+    pub fn rename_trigger(&mut self, from: &str, to: &str) {
+        match self {
+            PlayDef::OnTrigger(name) if name == from => *name = to.to_string(),
+            PlayDef::Between { start, stop } => {
+                for name in [start, stop] {
+                    if name == from {
+                        *name = to.to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The parameter a `While` reads.
+    pub fn param(&self) -> Option<&str> {
+        match self {
+            PlayDef::While(p, _) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Renames the parameter of a `While`.
+    pub fn rename_param(&mut self, from: &str, to: &str) {
+        if let PlayDef::While(name, _) = self {
+            if name == from {
+                *name = to.to_string();
+            }
+        }
+    }
+
     /// Whether the runtime switches the layer's spawner on and off
-    /// (`OnTrigger`, `While`): such layers do not start by themselves.
+    /// (`OnTrigger`, `While`, `Between`): such layers do not start by
+    /// themselves.
     pub fn is_driven(&self) -> bool {
-        matches!(self, PlayDef::OnTrigger(_) | PlayDef::While(..))
+        matches!(self, PlayDef::OnTrigger(_) | PlayDef::While(..) | PlayDef::Between { .. })
+    }
+}
+
+/// When a layer with its own clock plays (shape and light layers): its
+/// `play`, an optional `duration` and its fades. One-shots (`OnStart` /
+/// `OnTrigger` with a duration) fade in and out inside the duration; for
+/// `Loop` / `While` / `Between` the age repeats every `duration` seconds.
+pub trait TimedPlay {
+    fn play_def(&self) -> &PlayDef;
+    fn duration_secs(&self) -> Option<f32>;
+    fn fade_def(&self) -> FadeDef;
+
+    /// Whether the layer plays once per start / trigger for `duration`
+    /// seconds (`OnStart` / `OnTrigger` with a duration).
+    fn is_one_shot(&self) -> bool {
+        self.duration_secs().is_some() && matches!(self.play_def(), PlayDef::OnStart | PlayDef::OnTrigger(_))
+    }
+
+    /// The one-shot length (`duration`, at least 0), for one-shots.
+    fn one_shot_duration(&self) -> Option<f32> {
+        self.duration_secs().filter(|_| self.is_one_shot()).map(|d| d.max(0.0))
+    }
+
+    /// The age bindings see: the age, wrapped by `duration` for layers that
+    /// are not one-shots (the animation repeats).
+    fn binding_age(&self, age: f32) -> f32 {
+        match self.duration_secs() {
+            Some(d) if d > 0.0 && !self.is_one_shot() => age.rem_euclid(d),
+            _ => age,
+        }
+    }
+
+    /// Level of a one-shot at `age`: up over `fade.in`, down over
+    /// `fade.out` before `duration`, 0 after it. 1 for other layers.
+    fn envelope(&self, age: f32) -> f32 {
+        let Some(d) = self.one_shot_duration() else { return 1.0 };
+        if age < 0.0 || age >= d {
+            return 0.0;
+        }
+        let fade = self.fade_def();
+        let up = if fade.fade_in > 0.0 { (age / fade.fade_in).clamp(0.0, 1.0) } else { 1.0 };
+        let down = if fade.fade_out > 0.0 { ((d - age) / fade.fade_out).clamp(0.0, 1.0) } else { 1.0 };
+        up * down
     }
 }
 
@@ -1131,8 +1270,8 @@ impl VisibleRangeDef {
 
 // --- layers ------------------------------------------------------------------
 
-/// One visual part of a package. More kinds (light, distortion) are added as
-/// new variants.
+/// One visual part of a package. More kinds (distortion) are added as new
+/// variants.
 #[derive(Serialize, Deserialize, Clone)]
 pub enum LayerDef {
     Particles(ParticlesLayerDef),
@@ -1145,6 +1284,8 @@ pub enum LayerDef {
     Trail(TrailLayerDef),
     /// Fading copies of the target's meshes (see [`AfterimageLayerDef`]).
     Afterimage(AfterimageLayerDef),
+    /// A point light at the attach point (see [`LightLayerDef`]).
+    Light(LightLayerDef),
 }
 
 impl LayerDef {
@@ -1155,6 +1296,7 @@ impl LayerDef {
             LayerDef::Shape(s) => &s.name,
             LayerDef::Trail(s) => &s.name,
             LayerDef::Afterimage(s) => &s.name,
+            LayerDef::Light(s) => &s.name,
         }
     }
 
@@ -1165,10 +1307,12 @@ impl LayerDef {
             LayerDef::Shape(s) => &mut s.name,
             LayerDef::Trail(s) => &mut s.name,
             LayerDef::Afterimage(s) => &mut s.name,
+            LayerDef::Light(s) => &mut s.name,
         }
     }
 
-    /// `"particles"` / `"surface"` / `"shape"` / `"trail"` / `"afterimage"`.
+    /// `"particles"` / `"surface"` / `"shape"` / `"trail"` / `"afterimage"` /
+    /// `"light"`.
     pub fn kind_name(&self) -> &'static str {
         match self {
             LayerDef::Particles(_) => "particles",
@@ -1176,15 +1320,18 @@ impl LayerDef {
             LayerDef::Shape(_) => "shape",
             LayerDef::Trail(_) => "trail",
             LayerDef::Afterimage(_) => "afterimage",
+            LayerDef::Light(_) => "light",
         }
     }
 
-    /// Where a particle or shape layer is attached (surface layers cover the
-    /// target's meshes instead; trails use [`LayerDef::socket_names`]).
+    /// Where a particle, shape or light layer is attached (surface layers
+    /// cover the target's meshes instead; trails use
+    /// [`LayerDef::socket_names`]).
     pub fn attach(&self) -> Option<&AttachDef> {
         match self {
             LayerDef::Particles(p) => Some(&p.attach),
             LayerDef::Shape(s) => Some(&s.attach),
+            LayerDef::Light(l) => Some(&l.attach),
             LayerDef::Surface(_) | LayerDef::Trail(_) | LayerDef::Afterimage(_) => None,
         }
     }
@@ -1200,7 +1347,7 @@ impl LayerDef {
     /// The effect material of a surface, shape, trail or afterimage layer.
     pub fn material(&self) -> Option<&EffectMaterialDef> {
         match self {
-            LayerDef::Particles(_) => None,
+            LayerDef::Particles(_) | LayerDef::Light(_) => None,
             LayerDef::Surface(s) => Some(&s.material),
             LayerDef::Shape(s) => Some(&s.material),
             LayerDef::Trail(s) => Some(&s.material),
@@ -1210,11 +1357,25 @@ impl LayerDef {
 
     pub fn material_mut(&mut self) -> Option<&mut EffectMaterialDef> {
         match self {
-            LayerDef::Particles(_) => None,
+            LayerDef::Particles(_) | LayerDef::Light(_) => None,
             LayerDef::Surface(s) => Some(&mut s.material),
             LayerDef::Shape(s) => Some(&mut s.material),
             LayerDef::Trail(s) => Some(&mut s.material),
             LayerDef::Afterimage(s) => Some(&mut s.material),
+        }
+    }
+
+    pub fn as_light(&self) -> Option<&LightLayerDef> {
+        match self {
+            LayerDef::Light(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_light_mut(&mut self) -> Option<&mut LightLayerDef> {
+        match self {
+            LayerDef::Light(s) => Some(s),
+            _ => None,
         }
     }
 
