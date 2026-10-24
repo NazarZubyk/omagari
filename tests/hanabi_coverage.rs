@@ -267,6 +267,32 @@ fn coverage_project() -> ProjectV2 {
         effect.spawner = effect.spawner.with_preset([SpawnerPreset::Once, SpawnerPreset::Rate, SpawnerPreset::Burst][i]);
         layer(&format!("settings_{}", i), effect);
     }
+    // P3b: a ribbon (one per emitter), a mesh layer per built-in shape, a
+    // draw-order bias.
+    let mut ribbon = base();
+    ribbon.motion_integration = MotionIntegrationDef::None;
+    for (attr, expr) in [(Attribute::AGE, ExprWriterEditor::Float(0.0)), (Attribute::RIBBON_ID, ExprWriterEditor::U32(0))] {
+        ribbon.init_modifiers.push(ModifierEditor::SetAttribute(SetAttributeModifierEditor { attr, attr_expr: expr }));
+    }
+    ribbon.render_modifiers = vec![RenderModifierEditor::Orient(OrientModifierEditor { mode: OrientModeDef::FaceCameraPosition, rotation_expr: None })];
+    layer("ribbon", ribbon);
+    let mut extra = Vec::new();
+    for shape in ParticleShapeDef::ALL {
+        let mut effect = base();
+        effect.alpha_mode = AlphaModeDef::Opaque;
+        extra.push(LayerDef::Particles(ParticlesLayerDef {
+            name: format!("mesh_{}", shape.name()),
+            mesh: Some(ParticleMeshDef::Shape(shape)),
+            effect,
+            ..default()
+        }));
+    }
+    extra.push(LayerDef::Particles(ParticlesLayerDef {
+        name: "sorted".into(),
+        sort_bias: 0.5,
+        effect: base(),
+        ..default()
+    }));
     let mut parent = base();
     parent.update_modifiers.push(ModifierEditor::EmitSpawnEventModifier(EmitSpawnEventModifierEditor {
         count_expr: ExprWriterEditor::U32(2),
@@ -281,6 +307,7 @@ fn coverage_project() -> ProjectV2 {
         effect: child,
         ..default()
     }));
+    project.layers.extend(extra);
     project
 }
 
@@ -312,10 +339,18 @@ fn every_modifier_and_setting_round_trips_through_the_loader() {
             built[pi].particle_layout()
         });
         let children = layers.iter().filter(|l| l.parent.as_deref() == Some(layer.name.as_str())).count() as u32;
-        if let Err(e) = EffectShaderSources::generate(&built[i], parent.as_ref(), children) {
-            panic!("{}: shader generation failed: {}", layer.name, e);
+        match EffectShaderSources::generate(&built[i], parent.as_ref(), children) {
+            Err(e) => panic!("{}: shader generation failed: {}", layer.name, e),
+            // Ribbons: bevy_hanabi links the particles by RIBBON_ID.
+            Ok(sources) => assert_eq!(
+                sources.layout_flags.contains(LayoutFlags::RIBBONS),
+                layer.effect.is_ribbon(),
+                "{}",
+                layer.name
+            ),
         }
     }
+    assert!(layers.iter().any(|l| l.effect.is_ribbon()));
 
     // Save, load through the runtime's package loader, compare.
     let dir = std::env::temp_dir().join(format!("omagari_hanabi_coverage_{}", std::process::id()));
@@ -357,6 +392,12 @@ fn every_modifier_and_setting_round_trips_through_the_loader() {
     assert_eq!(settings.simulation_condition, SimulationCondition::Always);
     assert_eq!(settings.prng_seed, 7);
     assert!(settings.spawner.is_once());
+    // Mesh particles and the draw-order bias reached the prepared layers.
+    for shape in ParticleShapeDef::ALL {
+        let prepared = package.particle_layers.iter().find(|l| l.name == format!("mesh_{}", shape.name())).unwrap();
+        assert_eq!(prepared.mesh, Some(omagari::runtime::PreparedMesh::Shape(shape)));
+    }
+    assert_eq!(package.particle_layers.iter().find(|l| l.name == "sorted").unwrap().sort_bias, 0.5);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
