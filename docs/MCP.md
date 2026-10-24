@@ -1,12 +1,12 @@
 # Making effects with Claude (MCP server)
 
-Omagari includes an [MCP](https://modelcontextprotocol.io) server, so Claude Code (or any MCP client) can create, check, tune and export particle effects (also GPU ribbons — magic streaks — and mesh particles such as debris and shards), surface effects (a shader drawn over your character's model: glowing skins, poison patterns, frost, energy shells), shapes, weapon trails, afterimages, lights and distortion (heat haze, shockwave ripples) for you.
+Omagari includes an [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server, so Claude Code (or any MCP client) can create, check, tune and export effects for you: particles (also GPU ribbons and mesh particles), surface skins over your character, shapes, weapon trails, afterimages, lights and distortion (heat haze, shockwave ripples).
 
 **Claude never sees the effect, and no images are sent to it.** That keeps token use low. Instead:
 
-- Claude writes the project file (format v2: texture and mesh assets + particle, surface, shape, trail, afterimage, light and distortion layers) and the server **checks it**: RON syntax, fields the format does not know (a typo such as `accel` for `accel_expr` is a WARNING with its path, e.g. `layers[0].effect.update_modifiers[2]`), structure (parents, child indices, modifier lists), assets and texture files, expression types, bevy_hanabi's own shader generation, and a package round trip. Mistakes that would otherwise show up as a blank viewport or a GPU error come back as text.
-- The server **simulates the effect on the CPU** and describes it in a few lines per layer: spawn pattern, particle counts vs capacity, lifetimes, how far and in which direction particles travel, size in world units, colors and when they are visible, blending, simulation space (with the trail a moving character would leave in Global space), where the layer is attached (target, socket, segment), the size fit, and an alive-over-time timeline. With parameters (values the game sets, like an intensity), it also simulates every number parameter at its min, middle and max and lists how each layer changes. Surface layers are not simulated but described: colour and opacity (at each parameter's min and max), noise (texture, channel, mapping, scroll speed on the body), rim, pulse, flash, dissolve, fill, shells and the thickness they give, fades.
-- **You** watch the real effect in the editor. Claude asks the running editor to load and play a project (`preview_in_editor`), and you describe what to change ("too fast", "more orange", "spread wider").
+- Claude writes the project file and the server **checks it**: RON syntax, fields the format does not know (a typo such as `accel` for `accel_expr` comes back as a warning with its path, e.g. `layers[0].effect.update_modifiers[2]`), structure, assets and texture files, expression types, bevy_hanabi's own shader generation and a package round trip. Mistakes that would otherwise show up as a blank viewport or a GPU error come back as text.
+- The server **simulates particle layers on the CPU** and describes every layer in a few lines: spawn pattern, counts, lifetimes, how far and where particles travel, sizes, colours over time, blending, simulation space, attachment, and how each layer changes across its parameters' ranges. Surface, shape, trail, afterimage, light and distortion layers are described from their values.
+- **You** watch the real effect in the open editor. Claude asks the editor to load and play a project (`preview_in_editor`), and you tell it what to change ("too fast", "more orange", "spread wider").
 
 ```
 Claude ──MCP (stdio)──▶ omagari --mcp ──writes──▶ saved_effects/*.omagari.ron ──export──▶ <game assets>/vfx/*.vfx.ron
@@ -14,53 +14,80 @@ Claude ──MCP (stdio)──▶ omagari --mcp ──writes──▶ saved_effe
                               └─ saved_effects/.preview_request ──▶ running editor loads + plays it ──▶ you watch
 ```
 
+- [Setup](#setup)
+- [Using it](#using-it)
+- [What Claude gets instead of a picture](#what-claude-gets-instead-of-a-picture)
+- [Tools](#tools)
+- [What the checks cover](#what-the-checks-cover)
+- [Token use](#token-use)
+- [Limits](#limits)
+- [Troubleshooting](#troubleshooting)
+
 ## Setup
 
-1. Build once, so the server starts quickly. Double-click `start.bat` in the repository folder: it builds everything and opens the editor. From a terminal:
+### 1. Build once
 
-   ```bash
-   start.bat
-   ```
+The MCP server is the editor binary started with `--mcp`. Build it once so the server starts quickly:
 
-   or build without opening the editor:
+| System | Command |
+| :-- | :-- |
+| Windows | `start.bat` (builds and opens the editor) |
+| Linux / macOS | `./start.sh` (builds and opens the editor) |
+| any | `cargo build --release --features editor` (build only) |
 
-   ```bash
-   cargo build --release --features editor
-   ```
+### 2. Register the server with Claude Code
 
-2. **Working in this repository:** `.mcp.json` already registers the server as `omagari`. Start Claude Code in the repository and approve the `omagari` server when asked. In the `claude` CLI, `/mcp` shows whether it is connected.
+**Working in the Omagari repository.** `.mcp.json` already registers the server:
 
-   **Working in another repository (for example your game):** register the built binary and point `--root` at this repository, so projects still go to `saved_effects/` here:
+```json
+{
+  "mcpServers": {
+    "omagari": {
+      "command": "cargo",
+      "args": ["run", "--release", "--quiet", "--features", "editor", "--", "--mcp"]
+    }
+  }
+}
+```
 
-   ```bash
-   claude mcp add omagari -- C:/bevy/omagari/omagari/target/release/omagari.exe --mcp --root C:/bevy/omagari/omagari
-   ```
+Start Claude Code in the repository folder and approve the `omagari` server when asked. In the `claude` CLI, `/mcp` shows whether it is connected. `CLAUDE.md` tells Claude to read the server's guide before making an effect.
 
-   **Exports** go to the game assets folder's `vfx/` when one is configured (the editor's **⚙ SETTINGS** window, stored in `omagari_settings.ron`; or `--game-assets <dir>` / `OMAGARI_GAME_ASSETS`, which the MCP server reads too), else to `exported_effects/`; `export_project`'s `copy_to` copies them anywhere else.
+**Working in another repository (for example your game).** Register the built binary and point `--root` at your Omagari folder, so projects are still saved to its `saved_effects/` (where the editor finds them):
 
-3. To watch effects, open the editor with `start.bat` (or `cargo run --release --features editor`) and leave it open next to Claude. You don't start the MCP server yourself; Claude Code starts it when needed.
+```text
+claude mcp add omagari -- /path/to/omagari/target/release/omagari --mcp --root /path/to/omagari
+```
 
-   The editor picks up preview requests every quarter second. If it isn't running, a request waits and loads the next time the editor starts.
+On Windows the binary is `target\release\omagari.exe`. Paths are absolute.
 
-   Effects play inside a big light gray cube (40 units wide) with a 1-unit grid on every face (darker lines every 5 units) and small axes at the spawn point (X red, Y green, Z blue), so you keep your orientation while rotating and can judge sizes. The toolbar and the **PREVIEW** tab change the scene:
+### 3. Tell it where your game is
 
-   - **STAGE** sets where the effect plays: **AIR** (middle of the room, nothing nearby; you see everything, including particles that fall), **FLOOR** (the floor is right at the spawn point, like ground in a game; particles below it are hidden), **OBJECT** (a rock about 2 units wide sits on the spawn point, for shields, barriers and auras), **CAPSULE** (a 0.7 × 1.8 m capsule whose centre is the spawn point) and **MODEL** (one of your game's models, e.g. a Mixamo character running with a clip from another file, optionally holding a weapon; see the README's "Model preview"). Claude can also choose the stage, the model and the animation when it asks for a preview. The stage is saved in the project (its `preview` block).
-   - **CAMERA**: **ORBIT** is the free camera; **GAME** shows the effect like the game's isometric camera (orthographic, 16 m visible height, following the target). Its values live in `omagari_settings.ron` and are edited in ⚙ SETTINGS.
-   - **BG** cycles through a light room, a dark room and black. Glow is easier to judge on dark or black.
-   - **Target motion** (PREVIEW tab) moves the effect's target: off, in a circle (radius) or back and forth (distance), at a speed in m/s (3.6 = a running character). `Local` layers stay on the moving target, `Global` layers leave a trail. The setting is saved in the project (its `preview` block); Claude can also set it when it asks for a preview.
-   - The **⚓ SOCKETS & FIT** tab edits the project's sockets (named points on the target: a node/bone name of the game's model, or none = the target's origin, plus an offset) and its size fit (none, target scale, or target height for a reference height). A layer's **Attach** setting picks the target, a socket, or a segment between two sockets. On the MODEL stage the sockets show as labelled dots on the model (segments as lines); drag a dot, type the offset or nudge it. The **🌲 HIERARCHY** tab lists the model's nodes, bones, meshes and materials, and turns a node into the preview's attach point, a socket or a segment end.
+Exports go to the **game assets folder**'s `vfx/`, and textures and models are imported into it. The server uses the same setting as the editor:
 
-   While you edit by hand, the preview rebuilds a moment after each change (**Live** in the bottom bar), Ctrl+Z / Ctrl+Y undo and redo, and the layer list and the Problems list show the same checks Claude runs (`check_project`).
+1. `--game-assets <dir>` on the server's command line (add it after `--mcp`),
+2. else the `OMAGARI_GAME_ASSETS` environment variable,
+3. else `game_assets` in `omagari_settings.ron` in the Omagari folder (set it in the editor's ⚙ SETTINGS),
+4. else no game folder: the repository's `assets/` folder is used, and exports go to `exported_effects/`.
+
+`export_project` can also copy a package anywhere with `copy_to`.
+
+### 4. Open the editor to watch
+
+Start the editor (`start.bat`, `./start.sh` or `cargo run --release --features editor`) and leave it open next to Claude. You don't start the MCP server yourself; Claude Code starts it when needed.
+
+The editor picks up preview requests every quarter of a second. If it isn't running, a request waits and loads the next time the editor starts. See [EDITOR.md](EDITOR.md) for the stages (AIR, FLOOR, OBJECT, CAPSULE, MODEL), the cameras and the tabs; while you edit by hand, the editor's problems counter shows the same checks Claude runs.
 
 ## Using it
 
 Ask for an effect in plain words, with as much context as you have:
 
-> Make a looping campfire effect for my game. Characters are about 1.8 units tall and the camera is about 8 units away. Save it as `campfire`.
+> Make a looping campfire effect for my game. Characters are about 1.8 m tall and the camera shows about 16 m of the scene vertically. Save it as `campfire`.
 
-> Make a one-shot blue magic impact, about 1 unit across, under a second long. Export it to `../my_game/assets/effects/`.
+> Make a one-shot blue magic impact, about 1 m across, under a second long. Export it and copy it to `../my_game/assets/effects/`.
 
 > Load `fireball` and make the sparks fall slower and last longer.
+
+> Make a poison status skin for my character `characters/hero.glb` that flashes on a `tick` trigger, and show it on the model running with `characters/run.glb`.
 
 Claude reads the guide, starts from a recipe or a bundled example, saves the project, reads the analysis, adjusts numbers, and then asks the editor to play it. Tell it what you see. The more specific the feedback, the fewer rounds it takes:
 
@@ -70,13 +97,15 @@ Claude reads the guide, starts from a recipe or a bundled example, saves the pro
 | "make it better" | "it pops in; fade the start" / "it needs a bright flash at the start" |
 | "too much" | "half as many particles, and smaller" |
 
-Every layer in a project plays at the same point, so layered effects (a flash, sparks, smoke) go into one project as separate root layers.
+All layers of a project play together on one target, so a layered effect (a flash, sparks, smoke) is one project with several layers.
 
-**Unsaved edits:** a preview replaces what the editor has open. If the open project has unsaved changes, the editor asks first (Save / Don't save / Cancel). The editor's Problems list and the layer badges show the same checks as `check_project`, updated as you edit.
+**Unsaved edits:** a preview replaces what the editor has open. If the open project has unsaved changes, the editor asks first (Save / Don't save / Cancel).
+
+**Your game.** Tell Claude the parameter and trigger names your game will use, or ask it which ones the effect declares. [GAME_INTEGRATION.md](GAME_INTEGRATION.md) shows the game side.
 
 ## What Claude gets instead of a picture
 
-This is the analysis of the spark recipe from the guide:
+The analysis of the spark recipe from the guide:
 
 ```
 OK: no errors.
@@ -97,20 +126,36 @@ OK: no errors.
 
 ## Tools
 
-| Tool | What it does |
-| :-- | :-- |
-| `guide` | The authoring guide ([`CLAUDE_VFX_GUIDE.md`](CLAUDE_VFX_GUIDE.md)), whole or one section: file format, layers and simulation space, attach (sockets, segments, size fit, lifecycle), model preview (models, animations, weapons), parameters, triggers, spawner, modifiers, expressions, attributes, render settings, textures, assets (import, purposes, channels), parent/child layers, surfaces (surface layers: effect shader over the model, shells), shapes (shape layers: spheres, rings, arcs, ... with the same shader; follow modes, one-shots, curves over age), trails (a ribbon between two moving sockets: sword swings, comet tails; emission by start / stop triggers), afterimages (fading copies of the target's meshes), lights (point lights: lumens, range, flicker, flashes, the game's light cap), distortion (heat haze, ripples, aura shimmer: strength as a fraction of the view height, noise, edge, refraction, what bends and what does not, the game camera), ribbons (bevy_hanabi GPU ribbons: `ribbon_id`, motion, orientation), meshes (mesh particles: built-in shapes, mesh assets from glTF files, unlit), order (draw order between effects: `sort_bias`), tested recipes (incl. "Magic streaks", "Swirling ribbon", "Debris burst", "Glowing shards from a mesh asset", "Status skin", "Energy shell", "Frost from the feet up", "Shield bubble", "Ground ring", "Shockwave", "Slash arc", "Sword trail", "Energy trail on a moving target", "Afterimages", "Sword sparks during a swing", "Weapon glow growing with a parameter", "Hit flash light", "Blade heat haze", "Shockwave ripple"), design tips, game use. |
-| `list_projects` | Saved projects, bundled examples, the game assets folder and exported packages. |
-| `read_project` | Returns a project's RON (`fireball`, or `examples/fireworks`); v1 projects come back migrated to v2. |
-| `write_project` | Checks and saves `saved_effects/<name>.omagari.ron` (v1 input is migrated, everything is saved as v2). Refuses to save a project with errors unless `force` is set. Returns the analysis. |
-| `check_project` | Validation only (v1 or v2 input). Also checks textures (missing files, paths outside the game assets folder, sprite-sheet grids, settings that fight the purpose such as Noise with Clamp, 16-bit grayscale PNGs, JPG needing Bevy's `jpeg` feature), sockets, attach (socket names that are not package sockets are listed as NOTES: they must exist as node names in the game's model), segment property use, fit, render modifiers (flipbook grid, texture sampling and `sprite_index`; Orient rotation with AlongVelocity; random values at render time, which bevy_hanabi gives every particle alike; ScreenSpaceSize sizes below 2 pixels), expressions bevy_hanabi 0.19 cannot compile (integer random values, `AlphaCutoff`, `Asin`/`Acos` of an out-of-range constant, `Uniform`/`Normal` of a `Param` without a `Cast`), modifiers in a list they cannot be in, `motion_integration: None` with velocities, and parameters and triggers: unknown names in expressions, `rate`, `visible`, `play` and pulses, a colour parameter where a number is needed, pulses on colour parameters, `OnTrigger` / `Between` layers whose triggers do not exist, `OnTrigger` layers that never stop, preview values; parameters and triggers nothing uses are NOTES. With a preview model (`preview.model`), socket nodes, attach names, `attach_to` and the weapon node are checked against the model's nodes (errors), and the preview clip against its file (a missing clip is an error, nodes the model lacks a warning); without one, socket names that are not package sockets stay NOTES. Surface layers: mesh / material targets against the preview model (errors; NOTES without a model), texture slots (missing assets are errors, an empty slot with a noise strength above 0 a warning), parameter reads and curves, a `Blend` overlay so opaque (≥ 0.95, at the defaults or any parameter's min / max) that it hides the model (warning), shell offsets below 0 or above 0.1 m, dissolve without noise, empty target lists and shell lists. Shape layers: sizes of 0 or less and a ring's inner radius at or above its outer (errors), shapes over ~20 m across at their largest scale, an `OnTrigger` shape whose trigger does not exist (error) or that has no `duration` (it would stay after the first trigger), curves over age with keys past the duration (never reached), fades longer than a one-shot, a fill along Y on a flat shape, an opaque `Blend` sphere / capsule / cylinder around the target, socket names like particle layers, and the same material checks as surfaces. Trail layers: `from` / `to` sockets (against the preview model like attach names), `from` = `to` (no width), `length` ≤ 0, unknown emit triggers or `While` parameters (errors); trails over 3 s, more than 16 subdivisions, unsorted or out-of-range `width_over_u` / `fade_over_u` keys, a fill along X / Y / Z instead of U / V (warnings). Afterimage layers: `interval` / `lifetime` ≤ 0 and unknown emit triggers (errors), source meshes against the preview model (errors; NOTES without a model), an interval shorter than a frame, a lifetime shorter than the interval, a `max_ghosts` that cuts copies before they fade, age keys past the lifetime (warnings). Light layers: intensity below 0, range ≤ 0, a negative radius, unknown triggers and parameters (a Color parameter only for the colour) are errors; a light that never shines, a peak under 200 lm (too dim) or over 1 000 000 lm (blinding), a range over 25 m (costly), a radius larger than the range, flicker outside 0..1 / with speed 0 / above 40 changes per second, `shadows: true` (six shadow maps per frame), an `OnTrigger` light without a duration, age keys past the duration and more than three lights in one package (the game's cap is 8 Omagari lights at once) are warnings; sockets like other layers. Distortion layers: shape sizes ≤ 0, a negative strength, unknown triggers, parameters (a Color parameter only for the tint) and noise assets are errors; a strength that is always 0, under 0.001 of the view height (invisible) or above 0.05 (the picture tears), no noise texture and no refraction (nothing moves), a noise texture with Clamp wrap, a noise B without a texture, noise scale ≤ 0, weights / softness / refraction outside 0..1, a surface offset inside the model or far from it, a flat shape (vanishes edge-on), an `OnTrigger` layer without a duration and age keys past the duration are warnings; surface targets are checked against the preview model like surface layers, and a NOTE says when the package's own transparent layers (particles, surfaces, shapes, trails, afterimages) will not be bent. Curves over the layer's age (`Age([...])`, any binding) are checked for keys and order. |
-| `analyze_project` | Validation plus the CPU simulation and text description. `effect` limits it to one layer, `samples` sets the accuracy. The main report uses the parameters' defaults (an `OnTrigger` layer is simulated as fired once at the start); then each layer is simulated at parameter sets and compared (count, size, colour, reach): by default every number parameter at its min, middle and max, or the sets in `params` (`[{"intensity": 0.2}, {"intensity": 0.9, "tint": [1, 0.2, 0, 1]}]`). Surface and shape layers are described in words instead of simulated: a shape's size, placement, follow mode, play mode and its size / opacity / fill over one play (one-shots) or over its age, and at each parameter set; a trail's sockets, width (their distance when both are offsets from the same node or the target root), length in time and the arc a 10 m/s blade tip draws, emission (which triggers start and stop it), width and opacity along it; an afterimage layer's copies on screen (lifetime / interval, capped); a light's attach point, play mode, colour, intensity (lumens and lux at 1 m, compared with the editor's sun on the floor), range, flicker range, at each number parameter's min / middle / max, over one flash (one-shots) or over its age, and at each parameter set; a distortion layer's volume (a capsule spanning its segment, a shape, or the air around the body), what it bends (opaque things only) and how far it moves the picture (fraction of the view height and pixels of a 1080 px view) at each number parameter's min / middle / max, over one play or its age (with the size of a growing ripple) and at each parameter set, plus the game camera it needs and its cost. A `Between` particle layer is simulated as held on from the start. Triggers list which layers they burst, start, stop or toggle. |
-| `export_project` | Writes the package `<name>.vfx.ron` to `<game assets>/vfx/` (or `exported_effects/`), and with `copy_to` also a copy elsewhere. |
-| `import_asset` | Imports a texture file (PNG, JPG; KTX2 copied only) or a glTF model (a `.glb`, or a `.gltf` already inside the game assets folder; one of its meshes becomes a `Mesh` asset for mesh particles, `mesh` / `primitive` pick which, the reply lists them all) into the game assets folder like the editor: copied into `vfx/textures/` (models: `vfx/models/`) when outside it (name collision → `_2`, identical file → reused), used in place when inside. `purpose` defaults to a guess from the file name; with `project` the asset is added to that saved project. Reports size and layout (16-bit grayscale PNGs and JPG are flagged). |
-| `list_assets` | The built-in textures and every texture in the game assets folder, with size, layout and which saved projects use them; and the glTF models (`.glb` / `.gltf`) of the game assets folder with their node counts, height, animation clips and meshes (`MeshI/PrimitiveJ` with vertex counts and size, for mesh particles). |
-| `describe_model` | One model of the game assets folder, read on the CPU (nothing is rendered): its node hierarchy with bones marked and rest positions (the names sockets, `attach_to` and weapon nodes use), mesh entities and materials (surface layer targets; each mesh primitive with its `MeshI/PrimitiveJ` label, vertex count, size and missing UVs / normals, for mesh assets), animation clips with their lengths, and the rest-pose bounds and height. |
-| `extract_channel` | Writes one channel (`R`, `G`, `B`, `A`, `Luminance`) of a project's texture as an 8-bit grayscale PNG next to it and adds it to the project with the same settings. Needed because particle layers cannot pick a channel. |
-| `preview_in_editor` | Asks the running editor to load and play a saved project, optionally in a given stage (`air`, `floor`, `object`, `capsule`, `model`), on a `model` of the game assets folder with an `animation` clip (from `animation_file` when the clip is in another file with the same skeleton), attached to a node (`attach_to`) with the target `root_height` above the feet (checked against the files first), with a `camera` (`orbit`, `game`), with a target `motion` (`{"type": "circle", "radius": 3, "speed": 3.6}`, `{"type": "back_and_forth", "distance": 4, "speed": 3.6}` or `{"type": "none"}`), with parameter values (`params: {"intensity": 0.8}`; they become the project's preview values, as if the game had set them) and a `trigger` to fire once it plays. The request is a small JSON file (`saved_effects/.preview_request`); the old two-line form still works. Returns only whether the editor picked it up. |
+A project `name` is a file in `saved_effects/` (`"fireball"` or `"fireball.omagari.ron"`), or `"examples/fireworks"` for a bundled example (read-only).
+
+| Tool | Arguments | What it does |
+| :-- | :-- | :-- |
+| `guide` | `section` (optional) | The authoring guide ([CLAUDE_VFX_GUIDE.md](CLAUDE_VFX_GUIDE.md)), whole or one section: `workflow`, `format`, `layers`, `attach`, `model`, `parameters`, `triggers`, `spawner`, `modifiers`, `expressions`, `attributes`, `render`, `textures`, `assets`, `hierarchy`, `surfaces`, `shapes`, `trails`, `afterimages`, `lights`, `distortion`, `ribbons`, `meshes`, `order`, `recipes`, `design`, `game`. |
+| `list_projects` | – | Saved projects, bundled examples, the game assets folder and exported packages. |
+| `read_project` | `name` | A project's RON; version 1 projects come back migrated to version 2. |
+| `write_project` | `name`, `ron`, `force` (optional) | Checks and saves `saved_effects/<name>.omagari.ron` (always version 2). Refuses a project with errors unless `force: true`. Returns the check and a short analysis. |
+| `check_project` | `name` or `ron` | Validation only ([what it covers](#what-the-checks-cover)). |
+| `analyze_project` | `name` or `ron`; `effect`, `samples`, `params` (optional) | The check plus the CPU simulation and description. `effect` limits it to one layer; `samples` (20–2000, default 300) sets the accuracy; `params` is a list of parameter sets to compare, e.g. `[{"intensity": 0.2}, {"intensity": 0.9, "tint": [1, 0.2, 0, 1]}]` (default: every number parameter at its min, middle and max). |
+| `export_project` | `name`, `copy_to` (optional) | Writes the package `<name>.vfx.ron` to `<game assets>/vfx/` (or `exported_effects/`), and with `copy_to` also to another file or folder. |
+| `import_asset` | `path`; `purpose`, `id`, `mesh`, `primitive`, `project` (optional) | Imports a texture (PNG, JPG; KTX2 is copied only) or a glTF model into the game assets folder like the editor: copied to `vfx/textures/` (models: `vfx/models/`) when outside it, used in place when inside. `purpose` (`Sprite`, `Noise`, `Mask`, `Gradient`) defaults to a guess from the file name. A model becomes a `Mesh` asset for mesh particles (`mesh` / `primitive` pick which). With `project`, the asset is added to that saved project. |
+| `list_assets` | – | The built-in textures and every texture in the game assets folder (size, layout, which projects use them), and the glTF models with their node counts, height, clips and meshes. |
+| `describe_model` | `path`; `max_nodes` (optional) | One model of the game assets folder, read on the CPU: node hierarchy (bones marked, rest positions), meshes and materials, mesh primitives (`MeshI/PrimitiveJ`, vertex counts, size), animation clips with lengths, rest-pose bounds and height. |
+| `extract_channel` | `project`, `asset`, `channel` | Writes one channel (`R`, `G`, `B`, `A`, `Luminance`) of a project's texture as a grayscale PNG next to it and adds it to the project. Particle layers cannot pick a channel themselves. |
+| `preview_in_editor` | `name`; `stage`, `camera`, `motion`, `params`, `trigger`, `model`, `animation`, `animation_file`, `attach_to`, `root_height` (optional) | Asks the running editor to load and play a saved project. `stage`: `air`, `floor`, `object`, `capsule`, `model`. `camera`: `orbit`, `game`. `motion`: `{"type": "circle", "radius": 3, "speed": 3.6}`, `{"type": "back_and_forth", "distance": 4, "speed": 3.6}` or `{"type": "none"}`. `params`: `{"intensity": 0.8}`. `trigger`: fired once it plays. The model arguments pick a model, clip, attach node and root height (checked against the files first). Returns only whether the editor picked it up. |
+
+## What the checks cover
+
+`check_project` (and `write_project`, `analyze_project`, the editor's problems counter) reports **errors** (the effect will not work), **warnings** (it probably does not do what you want) and **notes**.
+
+- **Everything**: RON syntax; unknown fields (warnings with their path); structure (parents, child indices, modifier lists); asset ids; texture files (missing, outside the game assets folder, 16-bit grayscale PNGs, JPG needing Bevy's `jpeg` feature, sprite-sheet grids, settings that fight the purpose such as Noise with Clamp); unknown parameters and triggers in expressions, `rate`, `visible`, `play` and pulses; a colour parameter where a number is needed; `OnTrigger` / `Between` layers whose triggers do not exist; curves (keys and order). Parameters and triggers that nothing uses are notes.
+- **Particles**: expressions bevy_hanabi 0.19 cannot compile (integer random values, `AlphaCutoff`, `Asin` / `Acos` of an out-of-range constant, `Uniform` / `Normal` of a `Param` without a `Cast`); modifiers in a list they cannot be in; `motion_integration: None` with velocities; render modifiers (flipbook grid, texture sampling and `sprite_index`, `Orient` rotation with `AlongVelocity`, random values at render time, screen-space sizes below 2 pixels); play mode against the spawner; ribbons and mesh assets.
+- **Sockets and the preview model**: with a preview model, socket nodes, attach names, `attach_to`, the weapon node and surface / afterimage targets are checked against the model's nodes and meshes (errors), and the clip against its file. A missing model or animation file is a warning (the editor then shows the capsule). Without a model, socket names that are not package sockets are notes: they must exist in your game's model.
+- **Surface**: texture slots, a `Blend` overlay so opaque it hides the model, shell offsets below 0 or above 0.1 m, dissolve without noise, empty target and shell lists.
+- **Shape**: sizes of 0 or less, a ring's inner radius at or above its outer, shapes over ~20 m, an `OnTrigger` shape without a `duration`, age keys past the duration, fades longer than a one-shot, a fill along Y on a flat shape, an opaque `Blend` volume around the target.
+- **Trail**: `from` = `to`, `length` ≤ 0, unknown emit triggers or parameters (errors); trails over 3 s, more than 16 subdivisions, unsorted or out-of-range width / fade keys, a fill along X / Y / Z instead of U / V (warnings).
+- **Afterimage**: `interval` / `lifetime` ≤ 0, unknown emit triggers (errors); an interval shorter than a frame, a lifetime shorter than the interval, a `max_ghosts` that cuts copies before they fade (warnings).
+- **Light**: negative intensity, range ≤ 0, a negative radius (errors); a light that never shines, under 200 lm or over 1 000 000 lm, a range over 25 m, a radius larger than the range, odd flicker values, `shadows: true`, an `OnTrigger` light without a duration, more than three lights in one package (warnings).
+- **Distortion**: shape sizes ≤ 0, negative strength, unknown noise assets (errors); a strength that is always 0, under 0.001 or above 0.05 of the view height, no noise and no refraction, a noise texture with Clamp, values outside 0..1, a surface offset inside the model or far from it, a flat shape, an `OnTrigger` layer without a duration (warnings); a note when the package's own transparent layers will not be bent.
 
 ## Token use
 
@@ -120,21 +165,19 @@ OK: no errors.
 
 ## Limits
 
-- The simulation is approximate: it assumes 60 updates per second, uses CPU random numbers, and `ConformToSphereModifier` is simplified. Every update modifier (forces, `RadialAccel`, `TangentAccel`, kill volumes, spawn events, setters running every frame) and every expression operator is simulated; render-only features (flipbooks, rounded corners, rotation, screen-pixel sizes) are described, and SetColor / SetSize enter the colour and size lines. It is reliable for scale, timing, counts and colors, not for exact looks.
-- The check runs bevy_hanabi's own shader generation, but it cannot compile the shaders for the GPU (that happens in the editor and the game); the known bevy_hanabi 0.19 compile failures are reported as errors.
+- The simulation is approximate: it assumes 60 updates per second, uses CPU random numbers, and `ConformToSphereModifier` is simplified. Every update modifier and every expression operator is simulated; render-only features (flipbooks, rounded corners, rotation, screen-pixel sizes) are described. It is reliable for scale, timing, counts and colours, not for exact looks.
+- The check runs bevy_hanabi's own shader generation, but cannot compile shaders for the GPU (that happens in the editor and the game); the known bevy_hanabi 0.19 compile failures are reported as errors.
 - The analysis can't judge taste. You still decide whether it looks good.
-- Parameters and triggers: the analysis compares parameter sets, but smoothing and pulses play out over time and are only described; the user sees them in the editor (PARAMETERS sliders and "animate", TRIGGERS FIRE and auto-fire).
-- Trails and afterimages depend on how the game moves the sockets and the model, so they are described, not simulated; a trail's metres are the blade speed × its `length`. The user watches the swing in the editor (MODEL stage with a sword clip: the trail / afterimage inspector's Swing preview fires the start / stop triggers at two clip times; PREVIEW → In place keeps the character on the target).
-- Light layers are described from their values (lumens, lux at 1 m, range); how bright they look depends on the scene's other lights, the floor's colour and the camera's exposure, so the user judges them in the editor (the floor is lit while the project has a light layer; the dark room shows light best) and in the game.
-- Ribbons (bevy_hanabi GPU ribbons: particles with the same `ribbon_id` joined into strips) are simulated like other particles and described from them: how many ribbons at once, particles per ribbon, length, and whether the particles stay put (the ribbon is the emitter's or parent particle's path). How wide and smooth a ribbon looks, and a ribbon behind a moving socket, the user judges in the editor (MODEL stage with an animation, or the preview motion). Mesh particles are described (mesh, vertices × capacity, size in metres); they are drawn unlit (one flat colour per particle), which the user judges in the editor. A particle layer's `sort_bias` is described, not simulated.
-- Distortion layers are described from their values (how far the picture moves, in pixels of a 1080 px tall view); whether the haze is visible depends on what is behind it: it bends only opaque things (floor, walls, models) and a flat, single-coloured background shows nothing. The user judges it in the editor (the room's grid is painted into the walls while a project has a distortion layer; MODEL / CAPSULE / FLOOR stages) and in the game. Transparent particles and Omagari's see-through layers are never bent.
-- Shape layers are described from their values too: the analysis gives sizes, timings and opacity over the age, not how a shape overlaps the model or sorts against particles (`sort_bias`); the user judges that in the editor. A particle `rate` over age is simulated at its age-0 value.
-- Surface layers are described from their values, not rendered: the check cannot see z-fighting, how a pattern reads on a particular model, or how bloom looks; the user judges those in the editor (MODEL stage with the game's character, GAME camera).
-- Claude can only use what the editor supports: nearly all of bevy_hanabi's 3D modifiers, every expression operator and value type, render settings, ribbons, mesh particles (built-in shapes and meshes of glTF files), the draw order of particle layers, surface, shape, trail, afterimage, light and distortion layers (one effect shader with noise, rim, pulse, flash, dissolve, fill and mask, and a distortion shader), the eight built-in textures (seven particle sprites and a tileable noise) and textures in the game assets folder (`import_asset` brings files in, `list_assets` lists them). Claude never sees a texture; it gets its size, layout and purpose. The simulation assumes a still target; the trail a moving target leaves in Global space is estimated at 3.6 m/s (or the preview motion's speed). Sockets on model nodes are simulated at the target's origin (plus their offset); the editor shows them on the model (MODEL stage), and `describe_model` gives the nodes' rest positions.
+- Parameters and triggers: smoothing and pulses play out over time and are only described; you see them in the editor (PARAMETERS sliders and "animate", TRIGGERS FIRE and auto-fire).
+- Trails and afterimages depend on how your game moves the sockets and the model, so they are described, not simulated.
+- Lights, surfaces, shapes and distortions are described from their values. How bright a light looks depends on the scene; whether a distortion is visible depends on what is behind it (it bends only opaque things); how a skin reads on a particular model, z-fighting and bloom are for you to judge in the editor.
+- The simulation assumes a still target; the trail a moving target leaves in `Global` space is estimated at 3.6 m/s (or the preview motion's speed). Sockets on model nodes are simulated at the target's origin plus their offset.
+- Claude can only use what the editor supports: nearly all of bevy_hanabi's 3D modifiers, every expression operator and value type, ribbons, mesh particles, the seven layer kinds, the eight built-in textures and textures in your game assets folder. It never sees a texture; it gets its size, layout and purpose.
 
 ## Troubleshooting
 
 - **The `omagari` server fails to start or times out:** build it first (step 1). The first `cargo run` after source changes recompiles; on Windows that fails while the editor (the same `.exe`) is running, so close the editor, run `start.bat`, and restart Claude's session. You can also set `MCP_TIMEOUT=60000` for Claude Code.
-- **"no editor picked it up within 3s":** the editor isn't running, or runs from a different folder. Start it with `start.bat`.
-- **Textures are missing in the editor:** start it with `start.bat` or `cargo run` from the repository root. Launching `target/release/omagari.exe` directly only finds `assets/` if `BEVY_ASSET_ROOT` points to the repository, which `start.bat` sets.
-- **The effect is invisible in the game but fine in the editor:** the game needs a camera with HDR and bloom for colors above 1.0 to glow, and textures other than the built-ins must exist at their path under the game's `assets/` folder (`check_project` warns when they are missing from the configured game assets folder). Legacy `*.hanabi.ron` files need the textures passed to `EffectComplex::spawn` in the editor's old order.
+- **"no editor picked it up within 3s":** the editor isn't running, or runs from a different folder than the server's `--root`. Start it with `start.bat` / `./start.sh` from the Omagari folder.
+- **Textures are missing in the editor:** start it with `start.bat`, `./start.sh` or `cargo run` from the repository folder. Launching the binary directly only finds `assets/` when `BEVY_ASSET_ROOT` points to the repository (the start scripts set it).
+- **Exports go to the wrong place:** check the game assets folder (step 3); `list_projects` shows the one in effect.
+- **The effect is invisible in the game but fine in the editor:** the game camera needs `Hdr` and `Bloom` for colours above 1.0 to glow, and textures other than the built-ins must exist at their path under the game's `assets/` folder. See [GAME_INTEGRATION.md](GAME_INTEGRATION.md#15-limits-and-troubleshooting).
