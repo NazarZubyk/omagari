@@ -1,0 +1,37 @@
+(
+    version: 2,
+    parameters: [],
+    triggers: [
+        (name: "slam"),
+    ],
+    assets: [
+        (id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise))),
+    ],
+    fit: None,
+    layers: [
+        Distortion((
+            name: "ripple",
+            source: Shape(shape: Sphere(radius: 1.0), follow: Position),
+            scale: Age([(0.0, (0.3, 0.3, 0.3)), (0.6, (3.0, 3.0, 3.0))]),
+            strength: Age([(0.0, 0.03), (0.6, 0.0)]),
+            noise: (texture: (asset: "noise"), scale: 1.5, scroll: (0.0, 0.0)),
+            edge: Rim,
+            refraction: 0.75,
+            edge_softness: 0.35,
+            play: OnTrigger("slam"),
+            duration: Some(0.6),
+            fade: (in: 0.0, out: 0.1),
+        )),
+    ],
+    sockets: [],
+    preview: Some((
+        stage: Model,
+        camera: Game,
+        model: Some("anim/tpose.glb"),
+        animation: Some("mixamo.com"),
+        animation_speed: 1.0,
+        auto_triggers: [("slam", 1.5)],
+        root_height: 0.9,
+        animation_file: Some("anim/BreathingIdle.glb"),
+    )),
+)
