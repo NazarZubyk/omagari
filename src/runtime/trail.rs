@@ -282,10 +282,21 @@ pub fn write_ribbon(mesh: &mut Mesh, data: RibbonData) {
     mesh.insert_indices(Indices::U32(data.indices));
 }
 
-/// An empty trail mesh (filled every frame).
+/// A placeholder trail mesh (one degenerate triangle; filled while the
+/// trail shows). Never empty: Bevy's mesh allocator logs errors for meshes
+/// without vertices.
 pub fn empty_trail_mesh() -> Mesh {
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-    write_ribbon(&mut mesh, RibbonData::default());
+    write_ribbon(
+        &mut mesh,
+        RibbonData {
+            positions: vec![[0.0; 3]; 3],
+            normals: vec![[0.0, 1.0, 0.0]; 3],
+            uvs: vec![[0.0; 2]; 3],
+            colors: vec![[1.0, 1.0, 1.0, 0.0]; 3],
+            indices: vec![0, 1, 2],
+        },
+    );
     mesh
 }
 
@@ -558,12 +569,11 @@ pub(crate) fn build_trails(
             *global = GlobalTransform::IDENTITY;
         }
         let shown = points.len() >= 2 && state.level * state.visibility > 0.0;
-        if let Some(handle) = &state.mesh {
-            if shown || meshes.get(handle).is_some_and(|m| m.count_vertices() > 0) {
-                if let Some(mut mesh) = meshes.get_mut(handle) {
-                    let data = if shown { ribbon_mesh(&points, now, def) } else { RibbonData::default() };
-                    write_ribbon(&mut mesh, data);
-                }
+        // Hidden trails keep their last geometry (not drawn); the mesh is
+        // rewritten only while the trail shows.
+        if let Some(handle) = state.mesh.as_ref().filter(|_| shown) {
+            if let Some(mut mesh) = meshes.get_mut(handle) {
+                write_ribbon(&mut mesh, ribbon_mesh(&points, now, def));
             }
         }
         let wanted = if shown { Visibility::Inherited } else { Visibility::Hidden };
