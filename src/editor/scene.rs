@@ -2,8 +2,12 @@
 //! backdrop), the stage (where the room sits relative to the effect) and the
 //! rock of the OBJECT stage.
 
+use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
+use bevy::math::Affine2;
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use omagari::format::{PreviewDef, PreviewStage, ProjectV2};
 
@@ -206,6 +210,89 @@ pub fn sync_lit_floor(project: Res<ProjectV2>, mut lit: ResMut<LitFloor>) {
     }
 }
 
+/// Whether the room's grid is painted into its faces (opaque textures)
+/// instead of drawn as lines over them: on while the project has a
+/// distortion layer, because distortion bends only opaque things (the
+/// line grid is drawn after it and would stay sharp on top).
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PaintedGrid(pub bool);
+
+/// Keeps [`PaintedGrid`] on "the project has a distortion layer".
+pub fn sync_painted_grid(project: Res<ProjectV2>, mut painted: ResMut<PaintedGrid>) {
+    if project.is_changed() {
+        painted.set_if_neq(PaintedGrid(project.distortion_layers().next().is_some()));
+    }
+}
+
+/// Pixels per metre of the painted grid.
+const GRID_CELL_PX: usize = 64;
+
+/// A 5 × 5 m tile of the room's grid as an sRGB texture with mipmaps: the
+/// face colour, a minor line every metre and a major line on its edge (so
+/// tiles repeat into the 5 m grid the line gizmos draw).
+fn grid_tile(face: Color, minor: Color, major: Color) -> Image {
+    let n = GRID_CELL_PX * 5;
+    let px = |c: Color| {
+        let s = c.to_srgba();
+        [(s.red * 255.0).round() as u8, (s.green * 255.0).round() as u8, (s.blue * 255.0).round() as u8, 255u8]
+    };
+    let (f, mi, ma) = (px(face), px(minor), px(major));
+    let on_line = |v: usize, width: usize, period: usize| v % period < width || v % period >= period - width;
+    let mut level = Vec::with_capacity(n * n * 4);
+    for y in 0..n {
+        for x in 0..n {
+            let c = if on_line(x, 3, n) || on_line(y, 3, n) {
+                ma
+            } else if on_line(x, 1, GRID_CELL_PX) || on_line(y, 1, GRID_CELL_PX) {
+                mi
+            } else {
+                f
+            };
+            level.extend_from_slice(&c);
+        }
+    }
+    // Mipmaps (2 × 2 box filter), so the far walls do not shimmer.
+    let mut data = level.clone();
+    let mut size = n;
+    let mut levels = 1;
+    while size > 1 {
+        let half = (size / 2).max(1);
+        let mut next = vec![0u8; half * half * 4];
+        for y in 0..half {
+            for x in 0..half {
+                for c in 0..4 {
+                    let at = |xx: usize, yy: usize| level[((yy.min(size - 1)) * size + xx.min(size - 1)) * 4 + c] as u32;
+                    let sum = at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1);
+                    next[(y * half + x) * 4 + c] = (sum / 4) as u8;
+                }
+            }
+        }
+        data.extend_from_slice(&next);
+        level = next;
+        size = half;
+        levels += 1;
+    }
+    let mut image = Image::new(
+        Extent3d { width: n as u32, height: n as u32, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        Vec::new(),
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.data = Some(data);
+    image.texture_descriptor.mip_level_count = levels;
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..default()
+    });
+    image
+}
+
 /// The editor's sun: illuminance (lux) and where it shines from.
 const SUN_ILLUMINANCE: f32 = 6000.0;
 const SUN_POSITION: Vec3 = Vec3::new(3.0, 6.0, 4.0);
@@ -315,14 +402,17 @@ fn rock_mesh() -> (Mesh, f32) {
     (mesh, bottom)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply_scene(
     backdrop: Res<Backdrop>,
     stage: Res<Stage>,
     floor: Res<StageFloor>,
     lit_floor: Res<LitFloor>,
+    painted: Res<PaintedGrid>,
     rock_bottom: Res<RockBottom>,
     mut clear_color: ResMut<ClearColor>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut room: Single<(&mut Transform, &mut Visibility), With<Room>>,
     mut rock: Single<&mut Visibility, (With<Rock>, Without<Room>)>,
     faces: Query<(&RoomFace, &MeshMaterial3d<StandardMaterial>)>,
@@ -339,13 +429,25 @@ pub fn apply_scene(
                     let lit = face.shade == 0 && lit_floor.0;
                     material.unlit = !lit;
                     material.perceptual_roughness = 0.9;
+                    // With a painted grid the texture carries the colour.
+                    let grid = backdrop.grid_colors().filter(|_| painted.0);
+                    let c = if grid.is_some() { LinearRgba::WHITE } else { colors[face.shade].to_linear() };
                     material.base_color = if lit {
-                        let c = colors[face.shade].to_linear();
                         let k = lit_floor_factor();
                         Color::linear_rgb(c.red * k, c.green * k, c.blue * k)
                     } else {
-                        colors[face.shade]
+                        Color::from(c)
                     };
+                    match grid {
+                        Some((minor, major)) => {
+                            material.base_color_texture = Some(images.add(grid_tile(colors[face.shade], minor, major)));
+                            material.uv_transform = Affine2::from_scale(Vec2::splat(2.0 * ROOM_HALF_SIZE / 5.0));
+                        }
+                        None => {
+                            material.base_color_texture = None;
+                            material.uv_transform = Affine2::IDENTITY;
+                        }
+                    }
                 }
             }
         }
@@ -358,12 +460,14 @@ pub fn apply_scene(
     };
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_room_grid(
     mut gizmos: Gizmos,
     backdrop: Res<Backdrop>,
     stage: Res<Stage>,
     floor: Res<StageFloor>,
     rock_bottom: Res<RockBottom>,
+    painted: Res<PaintedGrid>,
     cameras: Query<(&Camera, &Transform, &Projection), With<PreviewCamera>>,
     target: Single<&Transform, (With<PreviewTarget>, Without<PreviewCamera>)>,
 ) {
@@ -374,6 +478,10 @@ pub fn draw_room_grid(
     let Some((minor, major)) = backdrop.grid_colors() else {
         return;
     };
+    // Painted into the faces instead (distortion layers bend it).
+    if painted.0 {
+        return;
+    }
     let Some((_, camera, projection)) = cameras.iter().find(|(c, _, _)| c.is_active) else {
         return;
     };

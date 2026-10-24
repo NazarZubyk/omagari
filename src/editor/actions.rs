@@ -14,6 +14,7 @@ use omagari::runtime::resolve_asset_path_in;
 use super::assets::{select_asset, TexturePreviews};
 use super::effect::new_particles_layer;
 use super::shape::new_shape_layer;
+use super::distortion::new_distortion_layer;
 use super::light::new_light_layer;
 use super::trail::{new_afterimage_layer, new_trail_layer};
 use super::surface::new_surface_layer;
@@ -58,6 +59,8 @@ pub enum Action {
     AddAfterimageLayer,
     /// ➕ ADD → Light layer.
     AddLightLayer,
+    /// ➕ ADD → Distortion layer.
+    AddDistortionLayer,
     /// A ribbon or mesh-particle preset on the particle layer `layer` (may
     /// add layers after it).
     ApplyParticlePreset { layer: usize, preset: super::particle_presets::ParticlePreset },
@@ -357,6 +360,14 @@ impl ActionContext<'_> {
                 let project = &mut *self.project;
                 let layer = new_light_layer(&mut project.triggers, &project.sockets, &names, param.as_ref());
                 project.layers.push(LayerDef::Light(layer));
+                self.session.select(self.project.layers.len() - 1);
+            }
+            Action::AddDistortionLayer => {
+                let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
+                let param = self.project.parameters.iter().find(|p| p.kind() == omagari::format::ParamKind::Float).cloned();
+                let project = &mut *self.project;
+                let layer = new_distortion_layer(&mut project.assets, &mut project.sockets, &mut project.triggers, &names, param.as_ref());
+                project.layers.push(LayerDef::Distortion(layer));
                 self.session.select(self.project.layers.len() - 1);
             }
             Action::SelectLayer(index) => {

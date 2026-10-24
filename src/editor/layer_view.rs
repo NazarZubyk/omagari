@@ -62,7 +62,7 @@ impl LayerView {
     /// The project the preview builds: particle layers that don't show get an
     /// alpha mask nothing passes, so they still simulate and spawn children;
     /// surface layers that don't show lose their shells, shapes, trails and
-    /// afterimages become fully transparent, lights dark.
+    /// afterimages become fully transparent, lights dark, distortions flat.
     pub fn apply(&self, project: &ProjectV2) -> ProjectV2 {
         let mut project = project.clone();
         for layer in project.layers.iter_mut() {
@@ -87,6 +87,12 @@ impl LayerView {
                 // A hidden light is dark.
                 LayerDef::Light(l) if !shows => l.intensity = omagari::format::Binding::Const(0.0),
                 LayerDef::Light(_) => {}
+                // A hidden distortion bends nothing (and is not drawn).
+                LayerDef::Distortion(d) if !shows => {
+                    d.strength = omagari::format::Binding::Const(0.0);
+                    d.tint = omagari::format::Binding::Const(bevy::prelude::Vec4::new(1.0, 1.0, 1.0, 0.0));
+                }
+                LayerDef::Distortion(_) => {}
             }
         }
         project

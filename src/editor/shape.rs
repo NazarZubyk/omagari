@@ -243,7 +243,7 @@ fn dim(ui: &mut egui::Ui, label: &str, value: &mut f32, max: f32, unit: &str) {
 }
 
 /// The shape kind and its dimensions.
-fn shape_ui(ui: &mut egui::Ui, shape: &mut ShapeDef, id: egui::Id) {
+pub(crate) fn shape_ui(ui: &mut egui::Ui, shape: &mut ShapeDef, id: egui::Id) {
     ui.vertical(|ui| {
         egui::ComboBox::from_id_salt(id.with("kind"))
             .selected_text(shape.kind_name())
@@ -315,7 +315,7 @@ fn shape_ui(ui: &mut egui::Ui, shape: &mut ShapeDef, id: egui::Id) {
     });
 }
 
-fn vec3_fields(ui: &mut egui::Ui, v: &mut Vec3, min: f32, max: f32, speed: f32, unit: &str) {
+pub(crate) fn vec3_fields(ui: &mut egui::Ui, v: &mut Vec3, min: f32, max: f32, speed: f32, unit: &str) {
     ui.horizontal(|ui| {
         for (label, i) in [("x", 0), ("y", 1), ("z", 2)] {
             ui.label(label);

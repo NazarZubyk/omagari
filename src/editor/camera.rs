@@ -2,7 +2,7 @@
 //! camera, set up from the render profiles of `omagari_settings.ron`
 //! ([`RenderSettings`]). A project picks one in `preview.camera`.
 
-use bevy::camera::{Exposure, Hdr, ScalingMode};
+use bevy::camera::{Exposure, ScalingMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -138,7 +138,9 @@ pub fn spawn_preview_cameras(mut commands: Commands, settings: Res<RenderSetting
     commands.spawn((
         PreviewCamera::Orbit,
         Camera3d::default(),
-        Hdr,
+        // Hdr + screen-space transmission for distortion layers (Bevy copies
+        // the screen only while one draws).
+        omagari::distortion_camera(),
         Camera::default(),
         orbit.projection_component(),
         Transform::from_translation(orbit.offset()).looking_at(Vec3::ZERO, Vec3::Y),
@@ -155,7 +157,7 @@ pub fn spawn_preview_cameras(mut commands: Commands, settings: Res<RenderSetting
     commands.spawn((
         PreviewCamera::Game,
         Camera3d::default(),
-        Hdr,
+        omagari::distortion_camera(),
         Camera {
             is_active: false,
             ..default()

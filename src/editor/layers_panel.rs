@@ -79,7 +79,14 @@ pub fn layers_panel(ui: &mut egui::Ui, project: &ProjectV2, session: &mut Editor
                     session.actions.push(Action::AddLightLayer);
                     ui.close();
                 }
-                ui.add_enabled(false, egui::Button::new("Distortion… (later phase)"));
+                if ui
+                    .button("🌊 Distortion layer")
+                    .on_hover_text("Bends what is behind it: heat haze around a blade, a shockwave ripple, a shimmering aura (presets in the inspector). Only solid things behind it bend")
+                    .clicked()
+                {
+                    session.actions.push(Action::AddDistortionLayer);
+                    ui.close();
+                }
             })
             .response
             .on_hover_text("Add a layer");
@@ -174,6 +181,7 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
             LayerDef::Trail(_) => "〰",
             LayerDef::Afterimage(_) => "👥",
             LayerDef::Light(_) => "💡",
+            LayerDef::Distortion(_) => "🌊",
         };
         let mut text = RichText::new(format!("{} {}", icon, name));
         if !shows {
@@ -211,6 +219,24 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
                 },
                 l.play.kind_name(),
                 if l.shadows { ", casts shadows" } else { "" }
+            ),
+            LayerDef::Distortion(d) => format!(
+                "Distortion layer: {}, strength {}, plays {}. Right-click for more.",
+                match &d.source {
+                    omagari::format::DistortionSourceDef::Shape { shape, .. } if d.is_segment_capsule() =>
+                        format!("a capsule along the segment, radius {} m", match shape {
+                            omagari::format::ShapeDef::Capsule { radius, .. } => *radius,
+                            _ => 0.0,
+                        }),
+                    omagari::format::DistortionSourceDef::Shape { shape, .. } => shape.describe(),
+                    omagari::format::DistortionSourceDef::Surface { offset, .. } =>
+                        format!("around the target's meshes ({} m out)", offset),
+                },
+                match &d.strength {
+                    omagari::format::Binding::Const(s) => format!("{}", s),
+                    _ => "bound".to_string(),
+                },
+                d.play.kind_name()
             ),
         });
         if response.clicked() {

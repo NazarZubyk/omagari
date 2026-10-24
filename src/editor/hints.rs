@@ -233,3 +233,27 @@ pub const LIGHT_DURATION: &str = "Seconds an OnStart / OnTrigger light shines (a
 pub const LIGHT_FADE: &str = "Seconds to fade in when it starts and out when it stops (and when the game stops the effect; the effect waits for it). A flash fades inside its duration.";
 pub const LIGHT_SHADOWS: &str = "Cast shadows. Costly (six shadow maps per light, every frame): leave off for effect lights unless the shadow matters.";
 pub const LIGHT_GIZMO: &str = "Draws the lights of the preview in the viewport: a star at the light and a circle at its range (the selected light layer brighter).";
+
+// --- distortion layers -------------------------------------------------------------
+
+pub const DISTORTION: &str = "A distortion layer bends what is behind it (heat haze, a shockwave ripple, a shimmering aura). Only solid (opaque) things behind it bend: the floor, walls, the model; particles and see-through layers stay sharp and draw over it.";
+pub const DISTORTION_SOURCE: &str = "What bends. Shape = a volume at the attach point (a capsule spanning a Segment, a sphere for a ripple, any shape); Surface = the air just around the target's own meshes (copies of them pushed outward, moving with the body).";
+pub const DISTORTION_SOURCE_SHAPE: &str = "A shape at the attach point. With Attach = Segment a capsule runs from one socket to the other (heat around a blade).";
+pub const DISTORTION_SOURCE_SURFACE: &str = "Copies of the target's own meshes pushed outward by Offset: the air around the body shimmers (an aura). Attach is not used.";
+pub const DISTORTION_OFFSET: &str = "Metres the copies are pushed out along the normals (scaled with the size fit): 0.02–0.06 for an aura hugging the body.";
+pub const DISTORTION_ATTACH: &str = "Where the volume sits: Target = the target's root; Socket = follows a named point; Segment = between two sockets (a capsule spans it).";
+pub const DISTORTION_SCALE: &str = "Scale (X, Y, Z) of the shape. A curve over age makes a ripple grow. A segment capsule keeps its length from the sockets (Y is ignored).";
+pub const DISTORTION_STRENGTH: &str = "The largest shift of the picture, as a fraction of the view's height: 0.005–0.012 is heat haze, 0.01–0.03 a strong ripple, above 0.05 the picture tears. The same on the orthographic game camera and the orbit camera. 0 draws nothing and costs nothing: bind it to a parameter (heat) or animate it over age.";
+pub const DISTORTION_NOISE: &str = "The scrolling noise that moves the picture (two lookups of its channel give the x and y shift). Use a soft noise texture (the built-in noise).";
+pub const DISTORTION_NOISE_B: &str = "A second noise with another scale and scroll, mixed in by its weight, for a less regular wobble.";
+pub const DISTORTION_NOISE_SCALE: &str = "Repeats per metre (Triplanar) or per UV square: higher = finer, faster-looking ripples.";
+pub const DISTORTION_NOISE_SCROLL: &str = "Texture squares per second: (0, 0.5–1) rises like heat.";
+pub const DISTORTION_NOISE_CONTRAST: &str = "Sharpens the noise around middle grey: 1 = as it is; higher gives harder, glassier ripples.";
+pub const DISTORTION_NOISE_WEIGHT: &str = "How much of the shift comes from this noise (0..1).";
+pub const DISTORTION_EDGE: &str = "Soft = strongest where the surface faces the camera (the middle of a sphere, along a capsule's axis), nothing at the outline: haze without a visible edge. Rim = strongest in a band inside the outline: a ring on a sphere (shockwave), a shimmering outline around a body. Softness (0..1) = how far in it reaches full strength (Soft) or where the band peaks (Rim).";
+pub const DISTORTION_REFRACTION: &str = "How much of the shift follows the surface's direction on screen instead of the noise, like a lens: 0 = shimmer only (haze), 0.6–1 = a clean bulge (a shockwave ring: a sphere with Edge = Rim). Works without a noise texture.";
+pub const DISTORTION_TINT: &str = "A colour multiplied into what is behind (rgb) and how much (alpha 0..1): a slight warm tint for heat. Alpha 0 = no tint.";
+pub const DISTORTION_PLAY: &str = "When it bends. Loop = all the time; OnStart = once at the start; OnTrigger = each time the game fires the trigger (a ripple: give it a Duration; with a payload position it plays there); While = while a parameter is at or above a threshold; Between = from a start trigger until a stop trigger.";
+pub const DISTORTION_SORT: &str = "Only matters where two distortion volumes overlap (metres added to its distance when Bevy sorts them).";
+pub const DISTORTION_BEHIND: &str = "Distortion bends solid things behind it. While a project has a distortion layer the room's grid is painted into its walls so the bending shows; the model, the rock and the floor bend too.";
+pub const DISTORTION_LIMITS: &str = "Bends only solid (opaque) things: particles and see-through layers behind it are not bent and draw over it. The game's camera needs Bevy's screen-space transmission (on by default; omagari::distortion_camera()).";
