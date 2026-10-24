@@ -29,6 +29,7 @@ pub mod shape;
 pub mod shortcuts;
 pub mod surface;
 pub mod toolbar;
+pub mod trail;
 pub mod ui;
 
 use bevy::prelude::*;
@@ -120,7 +121,13 @@ impl Plugin for EditorPlugin {
             )
             .add_systems(
                 PostUpdate,
-                model::update_socket_markers.after(bevy::transform::TransformSystems::Propagate),
+                (
+                    model::update_socket_markers.after(bevy::transform::TransformSystems::Propagate),
+                    model::keep_model_in_place
+                        .after(bevy::app::AnimationSystems)
+                        .before(bevy::transform::TransformSystems::Propagate),
+                    model::draw_trail_samples.after(omagari::runtime::VfxSystems),
+                ),
             )
             .add_systems(
                 Update,

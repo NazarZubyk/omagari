@@ -87,7 +87,23 @@ pub struct DevOptions {
     /// `--focus-node <name>`: the orbit camera looks at this node of the
     /// preview model (e.g. `mixamorig:Hips`) instead of the target.
     pub focus_node: Option<String>,
+    /// `--anim-start <seconds>`: jumps the animation to this clip time at
+    /// startup and lets it play (unlike `--anim-time`, which pauses).
+    pub anim_start: Option<f32>,
+    /// `--freeze-at <seconds>`: when the playing animation passes this clip
+    /// time (after the warm-up frames), pauses the whole preview (virtual
+    /// time: animation, trails, particles) and takes the screenshot a few
+    /// frames later, so trails and afterimages show as they were then.
+    pub freeze_at: Option<f32>,
+    /// `--no-in-place`: keeps the clip's root motion (preview `in_place`
+    /// off).
+    pub no_in_place: bool,
 }
+
+/// Frames after `--freeze-at` froze the preview before the screenshot.
+const FREEZE_SCREENSHOT_FRAMES: u32 = 8;
+/// Frames before `--freeze-at` starts watching the clip time (loading).
+const FREEZE_WARMUP_FRAMES: u32 = 60;
 
 /// Parses `a,b,c,...` into exactly `n` numbers.
 fn numbers<T: std::str::FromStr>(text: &str, n: usize) -> Option<Vec<T>> {
@@ -168,14 +184,20 @@ impl DevOptions {
                 "--animation" => options.animation = Some(value()?),
                 "--animation-file" => options.animation_file = Some(value()?),
                 "--attach-to" => options.attach_to = Some(value()?),
-                "--root-height" | "--anim-time" => {
+                "--root-height" | "--anim-time" | "--anim-start" | "--freeze-at" => {
                     let text = value()?;
                     let number: f32 = text.parse().map_err(|_| format!("{} {}: not a number", flag, text))?;
-                    if flag == "--root-height" {
-                        options.root_height = Some(number);
-                    } else {
-                        options.anim_time = Some(number);
+                    match flag {
+                        "--root-height" => options.root_height = Some(number),
+                        "--anim-time" => options.anim_time = Some(number),
+                        "--anim-start" => options.anim_start = Some(number),
+                        _ => options.freeze_at = Some(number),
                     }
+                }
+                "--no-in-place" => {
+                    options.no_in_place = true;
+                    i += 1;
+                    continue;
                 }
                 "--asset" => options.asset = Some(value()?),
                 "--channel" => {
@@ -263,6 +285,15 @@ pub fn queue_startup_actions(options: Res<DevOptions>, mut session: ResMut<Edito
         session.actions.push(Action::ImportFiles(options.import.clone()));
     }}
 
+/// `--freeze-at` progress.
+#[derive(Default)]
+pub struct FreezeState {
+    /// Clip time last frame.
+    last: Option<f32>,
+    /// The frame the preview was paused.
+    frozen_at: Option<u32>,
+}
+
 /// Applies the view options once the startup actions ran, and takes the
 /// screenshot after the requested number of frames.
 pub fn run_dev_options(
@@ -274,11 +305,40 @@ pub fn run_dev_options(
     mut backdrop: ResMut<Backdrop>,
     mut orbits: Query<&mut bevy_panorbit_camera::PanOrbitCamera>,
     nodes: Query<(&Name, &GlobalTransform)>,
+    mut virtual_time: ResMut<Time<Virtual>>,
+    mut project: ResMut<omagari::format::ProjectV2>,
     mut frame: Local<u32>,
+    mut freeze: Local<FreezeState>,
     mut exit: MessageWriter<AppExit>,
 ) {
     *frame += 1;
-    let at = options.screenshot_after.max(4);
+    if options.no_in_place && *frame == 3 {
+        if let Some(preview) = project.preview.as_mut() {
+            preview.in_place = false;
+        }
+    }
+    // --freeze-at: pause everything when the clip passes the time.
+    if let Some(at) = options.freeze_at {
+        if freeze.frozen_at.is_none() && *frame > FREEZE_WARMUP_FRAMES && model.clip.is_some() {
+            let now = model.time;
+            if freeze.last.is_some_and(|last| super::model::passes(last, now, at, 1.0)) {
+                virtual_time.pause();
+                freeze.frozen_at = Some(*frame);
+                info!("dev: froze the preview at clip time {:.3} s (asked {:.3})", now, at);
+            }
+            freeze.last = Some(now);
+        }
+    }
+    let at = match (options.freeze_at, freeze.frozen_at) {
+        (Some(_), Some(f)) => f + FREEZE_SCREENSHOT_FRAMES,
+        (Some(_), None) => u32::MAX - SCREENSHOT_TIMEOUT_FRAMES - 1,
+        _ => options.screenshot_after.max(4),
+    };
+    if options.freeze_at.is_some() && freeze.frozen_at.is_none() && *frame > options.screenshot_after.max(4) + SCREENSHOT_TIMEOUT_FRAMES {
+        eprintln!("omagari: the animation never passed --freeze-at; quitting");
+        exit.write(AppExit::error());
+        return;
+    }
     if let Some((yaw, pitch, distance)) = options.orbit {
         if *frame == 5 || *frame + 1 == at {
             for mut orbit in orbits.iter_mut() {
@@ -331,6 +391,9 @@ pub fn run_dev_options(
         if let Some(time) = options.anim_time {
             model.seek = Some(time);
             model.paused = true;
+        }
+        if let Some(time) = options.anim_start {
+            model.seek = Some(time);
         }
     }
     if options.focus && (*frame == 3 || *frame + 2 == options.screenshot_after.max(4)) {
@@ -418,6 +481,9 @@ mod tests {
         assert!(DevOptions::parse(&args("--motion fly")).is_err());
         assert!(DevOptions::parse(&args("--anim-time soon")).is_err());
         assert!(DevOptions::parse(&args("--window-size big")).is_err());
+        let o = DevOptions::parse(&args("--anim-start 0.5 --freeze-at 1.25 --no-in-place --open x")).unwrap();
+        assert_eq!((o.anim_start, o.freeze_at, o.no_in_place), (Some(0.5), Some(1.25), true));
+        assert_eq!(o.open.as_deref(), Some("x"));
         let o = DevOptions::parse(&args("--fire slam --fire-before 20")).unwrap();
         assert_eq!((o.fire.as_deref(), o.fire_before), (Some("slam"), Some(20)));
         assert!(DevOptions::parse(&args("--fire-before soon")).is_err());

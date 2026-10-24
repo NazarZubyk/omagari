@@ -55,7 +55,23 @@ pub fn layers_panel(ui: &mut egui::Ui, project: &ProjectV2, session: &mut Editor
                     session.actions.push(Action::AddShapeLayer);
                     ui.close();
                 }
-                ui.add_enabled(false, egui::Button::new("Trail, afterimage, light… (later phases)"));
+                if ui
+                    .button("〰 Trail layer")
+                    .on_hover_text("A glowing ribbon between two moving sockets (a sword swing's arc), fading behind them (presets in the inspector)")
+                    .clicked()
+                {
+                    session.actions.push(Action::AddTrailLayer);
+                    ui.close();
+                }
+                if ui
+                    .button("👥 Afterimage layer")
+                    .on_hover_text("Fading copies of the target's meshes left along their path (sword shadows, dash echoes)")
+                    .clicked()
+                {
+                    session.actions.push(Action::AddAfterimageLayer);
+                    ui.close();
+                }
+                ui.add_enabled(false, egui::Button::new("Light, distortion… (later phases)"));
             })
             .response
             .on_hover_text("Add a layer");
@@ -147,6 +163,8 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
             LayerDef::Particles(_) => "✨",
             LayerDef::Surface(_) => "🎨",
             LayerDef::Shape(_) => "🔷",
+            LayerDef::Trail(_) => "〰",
+            LayerDef::Afterimage(_) => "👥",
         };
         let mut text = RichText::new(format!("{} {}", icon, name));
         if !shows {
@@ -162,6 +180,20 @@ fn layer_row(ui: &mut egui::Ui, project: &ProjectV2, session: &mut EditorSession
                 s.shells.len()
             ),
             LayerDef::Shape(s) => format!("Shape layer: {}. Right-click for more.", s.shape.describe()),
+            LayerDef::Trail(t) => format!(
+                "Trail layer from \"{}\" to \"{}\", {} s long, emits {}. Right-click for more.",
+                t.from,
+                t.to,
+                t.length,
+                t.emit.kind_name()
+            ),
+            LayerDef::Afterimage(a) => format!(
+                "Afterimage layer: a copy every {} s, each for {} s (~{} on screen), emits {}. Right-click for more.",
+                a.interval,
+                a.lifetime,
+                a.ghosts_on_screen(),
+                a.emit.kind_name()
+            ),
         });
         if response.clicked() {
             session.actions.push(Action::SelectLayer(index));

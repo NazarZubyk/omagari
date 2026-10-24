@@ -14,6 +14,7 @@ use omagari::runtime::resolve_asset_path_in;
 use super::assets::{select_asset, TexturePreviews};
 use super::effect::new_particles_layer;
 use super::shape::new_shape_layer;
+use super::trail::{new_afterimage_layer, new_trail_layer};
 use super::surface::new_surface_layer;
 use super::helpers::ui_text;
 use super::session::{Dialog, EditorSession};
@@ -50,6 +51,10 @@ pub enum Action {
     /// Adds a surface layer (effect shader over the target's meshes).
     AddSurfaceLayer,
     AddShapeLayer,
+    /// Adds a trail layer (a sword trail on the first two sockets).
+    AddTrailLayer,
+    /// Adds an afterimage layer.
+    AddAfterimageLayer,
     SelectLayer(usize),
     DuplicateLayer(usize),
     DeleteLayer(usize),
@@ -306,6 +311,19 @@ impl ActionContext<'_> {
                 let param = self.project.parameters.iter().find(|p| p.kind() == omagari::format::ParamKind::Float).cloned();
                 let layer = new_shape_layer(&mut self.project.assets, &names, trigger.as_deref(), param.as_ref());
                 self.project.layers.push(LayerDef::Shape(layer));
+                self.session.select(self.project.layers.len() - 1);
+            }
+            Action::AddTrailLayer => {
+                let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
+                let project = &mut *self.project;
+                let layer = new_trail_layer(&mut project.assets, &mut project.triggers, &mut project.sockets, &names);
+                project.layers.push(LayerDef::Trail(layer));
+                self.session.select(self.project.layers.len() - 1);
+            }
+            Action::AddAfterimageLayer => {
+                let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
+                let layer = new_afterimage_layer(&mut self.project.triggers, &names);
+                self.project.layers.push(LayerDef::Afterimage(layer));
                 self.session.select(self.project.layers.len() - 1);
             }
             Action::SelectLayer(index) => {

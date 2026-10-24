@@ -104,6 +104,8 @@ pub struct EditorSession {
     pub problems_open: bool,
     /// F was pressed: the camera turns to the target.
     pub focus_camera: bool,
+    /// Draw the samples of trail layers (debug, not saved).
+    pub show_trail_samples: bool,
     /// Asset shown in the ASSETS tab's details.
     pub selected_asset: Option<String>,
     /// Channel the large asset preview shows; `None` = RGB.
@@ -155,6 +157,7 @@ impl Default for EditorSession {
             settings_open: false,
             problems_open: false,
             focus_camera: false,
+            show_trail_samples: false,
             selected_asset: None,
             asset_view: None,
             rename_draft: None,
