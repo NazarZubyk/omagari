@@ -1,0 +1,122 @@
+(
+    version: 2,
+    parameters: [],
+    triggers: [
+        (
+            name: "hit",
+            pulses: [],
+        ),
+    ],
+    assets: [
+        (
+            id: "spark1",
+            kind: Texture((
+                path: "omagari://textures/spark1.png",
+                purpose: Sprite,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+    ],
+    fit: None,
+    layers: [
+        Light((
+            name: "flash",
+            attach: Target,
+            offset: (0.0, 0.2, -0.6),
+            color: Const((1.0, 0.85, 0.6, 1.0)),
+            intensity: Age([
+                (0.0, 150000.0),
+                (0.05, 120000.0),
+                (0.25, 0.0),
+            ]),
+            range: Const(5.0),
+            radius: 0.1,
+            flicker: (
+                amount: 0.0,
+                speed: 6.0,
+            ),
+            play: OnTrigger("hit"),
+            duration: Some(0.25),
+            fade: (
+                in: 0.0,
+                out: 0.05,
+            ),
+            visible: None,
+            shadows: false,
+        )),
+        Particles((
+            name: "hit_sparks",
+            parent: None,
+            attach: Target,
+            simulation_space: Global,
+            play: OnTrigger("hit"),
+            texture: Some("spark1"),
+            rate: None,
+            visible: None,
+            effect: (
+                capacity: 256,
+                spawner: (
+                    count: Single(40.0),
+                    spawn_duration: Single(0.0),
+                    period: Single(1.0),
+                    cycle_count: 1,
+                    starts_active: true,
+                    emit_on_start: true,
+                ),
+                alpha_mode: Add,
+                init_modifiers: [
+                    SetAttribute((
+                        attr: "position",
+                        attr_expr: Property("trigger_pos"),
+                    )),
+                    SetAttribute((
+                        attr: "age",
+                        attr_expr: Float(0.0),
+                    )),
+                    SetAttribute((
+                        attr: "lifetime",
+                        attr_expr: Operator(Uniform(Float(0.2), Float(0.45))),
+                    )),
+                    SetAttribute((
+                        attr: "size",
+                        attr_expr: Float(0.04),
+                    )),
+                    SetAttribute((
+                        attr: "velocity",
+                        attr_expr: Operator(Multiply(Operator(Normalized(Operator(Add(Property("trigger_dir"), Operator(Multiply(Operator(Subtract(Operator(Multiply(RandVec3, Float(2.0))), Float(1.0))), Float(0.8))))))), Operator(Multiply(Operator(Uniform(Float(2.0), Float(5.0))), Property("trigger_strength"))))),
+                    )),
+                ],
+                update_modifiers: [
+                    LinearDragModifier((
+                        drag_expr: Float(3.0),
+                    )),
+                    AccelModifier((
+                        accel_expr: Vec3((0.0, -6.0, 0.0)),
+                    )),
+                ],
+                render_modifiers: [
+                    ColorOverLifetime((
+                        gradient: (
+                            g: [
+                                (0.0, (6.0, 4.0, 1.5, 1.0)),
+                                (1.0, (2.0, 0.5, 0.1, 0.0)),
+                            ],
+                        ),
+                        blend: Some(Overwrite),
+                        mask: Some((15)),
+                    )),
+                    ParticleTexture((
+                        sample_mapping: ModulateOpacityFromR,
+                    )),
+                    Orient((
+                        mode: AlongVelocity,
+                    )),
+                ],
+            ),
+        )),
+    ],
+    sockets: [],
+)
