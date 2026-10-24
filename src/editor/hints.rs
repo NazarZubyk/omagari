@@ -214,7 +214,7 @@ pub const GHOST_FADE: &str = "Opacity of a copy over its life as (fraction of th
 
 // --- light layers ------------------------------------------------------------------
 
-pub const LIGHT: &str = "A light layer is a point light at the attach point: it lights the floor, the model and the scene around it (a weapon glow, a flash on a hit, a torch flicker). The game shows at most a few Omagari lights at once (the weakest are switched off), so keep one or two per effect.";
+pub const LIGHT: &str = "A light layer is a point light at the attach point: it lights the floor, the model and the scene around it (a weapon glow, a flash on a hit, a torch flicker). The game shows at most a few Omagari lights at once (the weakest are switched off), so keep one to three per effect.";
 pub const LIGHT_ATTACH: &str = "Where the light is: Target = the target's root; Socket = follows a named point (e.g. the hand bone or the blade's middle); Segment = the middle between two sockets.";
 pub const LIGHT_OFFSET: &str = "Metres from the attach point, in its space (scaled with the size fit).";
 pub const LIGHT_COLOR: &str = "The light's colour. Keep the brightest channel at about 1: how bright it is comes from Intensity. Can follow a colour parameter (tint) or a curve.";
