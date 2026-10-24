@@ -26,6 +26,7 @@ mod particles;
 mod project;
 mod shape;
 mod surface;
+mod trail;
 
 pub use expr::*;
 pub use hanabi_serde::{CpuValueDef, CpuVecDef, SpawnerDef, SpawnerPreset};
@@ -35,6 +36,7 @@ pub use particles::*;
 pub use project::*;
 pub use shape::*;
 pub use surface::*;
+pub use trail::*;
 
 /// A v1 editor project: a list of particle effects, saved as `*.omagari.ron`.
 #[derive(Resource, Serialize, Deserialize, Default, Clone)]

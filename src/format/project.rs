@@ -21,6 +21,7 @@ use super::migrate::migrate_v1;
 use super::particles::ParticleEffectDef;
 use super::shape::ShapeLayerDef;
 use super::surface::{EffectMaterialDef, SurfaceLayerDef};
+use super::trail::{AfterimageLayerDef, TrailLayerDef};
 use super::OmagariProject;
 
 /// The format version written by this library.
@@ -140,15 +141,13 @@ impl ProjectV2 {
     }
 
     /// Names of the layers that use the asset `id` (particle textures,
-    /// texture slots of surface and shape layers).
+    /// texture slots of surface, shape, trail and afterimage layers).
     pub fn asset_users(&self, id: &str) -> Vec<String> {
         self.layers
             .iter()
             .filter(|l| match l {
                 LayerDef::Particles(p) => p.texture.as_deref() == Some(id),
-                LayerDef::Surface(_) | LayerDef::Shape(_) => {
-                    l.material().is_some_and(|m| m.texture_slots().iter().any(|(_, slot)| slot.asset == id))
-                }
+                _ => l.material().is_some_and(|m| m.texture_slots().iter().any(|(_, slot)| slot.asset == id)),
             })
             .map(|l| l.name().to_string())
             .collect()
@@ -180,7 +179,7 @@ impl ProjectV2 {
                         p.texture = Some(to.to_string());
                     }
                 }
-                LayerDef::Surface(_) | LayerDef::Shape(_) => {
+                _ => {
                     for slot in layer.material_mut().into_iter().flat_map(|m| m.texture_slots_mut()) {
                         if slot.asset == from {
                             slot.asset = to.to_string();
@@ -261,6 +260,22 @@ impl ProjectV2 {
             .filter_map(|(i, l)| l.as_shape().map(|s| (i, s)))
     }
 
+    /// The trail layers, with their index in `layers`.
+    pub fn trail_layers(&self) -> impl Iterator<Item = (usize, &TrailLayerDef)> {
+        self.layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| l.as_trail().map(|s| (i, s)))
+    }
+
+    /// The afterimage layers, with their index in `layers`.
+    pub fn afterimage_layers(&self) -> impl Iterator<Item = (usize, &AfterimageLayerDef)> {
+        self.layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| l.as_afterimage().map(|s| (i, s)))
+    }
+
     /// The parameter with this name.
     pub fn param(&self, name: &str) -> Option<&ParamDef> {
         self.parameters.iter().find(|p| p.name == name)
@@ -324,6 +339,30 @@ impl ProjectV2 {
                 users.push(format!("layer \"{}\" ({})", layer.name, what.join(", ")));
             }
         }
+        let emitters = self
+            .trail_layers()
+            .map(|(_, l)| (l.name.as_str(), l.binding_params(), l.visible.as_ref(), &l.emit))
+            .chain(
+                self.afterimage_layers()
+                    .map(|(_, l)| (l.name.as_str(), l.binding_params(), l.visible.as_ref(), &l.emit)),
+            );
+        for (layer, bindings, visible, emit) in emitters {
+            let mut what: Vec<&str> = Vec::new();
+            for (value, param) in bindings {
+                if param == name && !what.contains(&value) {
+                    what.push(value);
+                }
+            }
+            if visible.is_some_and(|v| v.param == name) {
+                what.push("visible");
+            }
+            if emit.param() == Some(name) {
+                what.push("emit While");
+            }
+            if !what.is_empty() {
+                users.push(format!("layer \"{}\" ({})", layer, what.join(", ")));
+            }
+        }
         for trigger in self.triggers.iter() {
             if trigger.pulses.iter().any(|p| p.param == name) {
                 users.push(format!("trigger \"{}\" (pulse)", trigger.name));
@@ -332,12 +371,20 @@ impl ProjectV2 {
         users
     }
 
-    /// Names of the layers played by the trigger `name` (`play: OnTrigger`).
+    /// Names of the layers played by the trigger `name` (`play: OnTrigger`)
+    /// or switched by it (`emit: Trigger(start, stop)` of trails and
+    /// afterimages).
     pub fn trigger_users(&self, name: &str) -> Vec<String> {
         self.particle_layers()
             .filter(|(_, l)| l.play.trigger() == Some(name))
             .map(|(_, l)| l.name.clone())
             .chain(self.shape_layers().filter(|(_, l)| l.play.trigger() == Some(name)).map(|(_, l)| l.name.clone()))
+            .chain(self.trail_layers().filter(|(_, l)| l.emit.triggers().contains(&name)).map(|(_, l)| l.name.clone()))
+            .chain(
+                self.afterimage_layers()
+                    .filter(|(_, l)| l.emit.triggers().contains(&name))
+                    .map(|(_, l)| l.name.clone()),
+            )
             .collect()
     }
 
@@ -366,6 +413,12 @@ impl ProjectV2 {
                 s.rename_param(from, to);
             }
             if let LayerDef::Shape(s) = layer {
+                s.rename_param(from, to);
+            }
+            if let LayerDef::Trail(s) = layer {
+                s.rename_param(from, to);
+            }
+            if let LayerDef::Afterimage(s) = layer {
                 s.rename_param(from, to);
             }
             let Some(layer) = layer.as_particles_mut() else { continue };
@@ -410,7 +463,7 @@ impl ProjectV2 {
     }
 
     /// Renames the trigger `from` to `to` and every reference to it (`play:
-    /// OnTrigger`, preview auto and animation triggers). Fails when `to` is empty or taken,
+    /// OnTrigger`, `emit: Trigger`, preview auto and animation triggers). Fails when `to` is empty or taken,
     /// or `from` does not exist.
     pub fn rename_trigger(&mut self, from: &str, to: &str) -> Result<(), String> {
         let to = to.trim();
@@ -433,6 +486,14 @@ impl ProjectV2 {
             let play = match layer {
                 LayerDef::Particles(p) => &mut p.play,
                 LayerDef::Shape(s) => &mut s.play,
+                LayerDef::Trail(t) => {
+                    t.emit.rename_trigger(from, to);
+                    continue;
+                }
+                LayerDef::Afterimage(a) => {
+                    a.emit.rename_trigger(from, to);
+                    continue;
+                }
                 LayerDef::Surface(_) => continue,
             };
             if let PlayDef::OnTrigger(name) = play {
@@ -1070,8 +1131,8 @@ impl VisibleRangeDef {
 
 // --- layers ------------------------------------------------------------------
 
-/// One visual part of a package. More kinds (trail, ...) are added as new
-/// variants.
+/// One visual part of a package. More kinds (light, distortion) are added as
+/// new variants.
 #[derive(Serialize, Deserialize, Clone)]
 pub enum LayerDef {
     Particles(ParticlesLayerDef),
@@ -1080,6 +1141,10 @@ pub enum LayerDef {
     Surface(SurfaceLayerDef),
     /// A simple 3D shape with the effect shader (see [`ShapeLayerDef`]).
     Shape(ShapeLayerDef),
+    /// A ribbon between two moving sockets (see [`TrailLayerDef`]).
+    Trail(TrailLayerDef),
+    /// Fading copies of the target's meshes (see [`AfterimageLayerDef`]).
+    Afterimage(AfterimageLayerDef),
 }
 
 impl LayerDef {
@@ -1088,6 +1153,8 @@ impl LayerDef {
             LayerDef::Particles(p) => &p.name,
             LayerDef::Surface(s) => &s.name,
             LayerDef::Shape(s) => &s.name,
+            LayerDef::Trail(s) => &s.name,
+            LayerDef::Afterimage(s) => &s.name,
         }
     }
 
@@ -1096,34 +1163,48 @@ impl LayerDef {
             LayerDef::Particles(p) => &mut p.name,
             LayerDef::Surface(s) => &mut s.name,
             LayerDef::Shape(s) => &mut s.name,
+            LayerDef::Trail(s) => &mut s.name,
+            LayerDef::Afterimage(s) => &mut s.name,
         }
     }
 
-    /// `"particles"` / `"surface"` / `"shape"`.
+    /// `"particles"` / `"surface"` / `"shape"` / `"trail"` / `"afterimage"`.
     pub fn kind_name(&self) -> &'static str {
         match self {
             LayerDef::Particles(_) => "particles",
             LayerDef::Surface(_) => "surface",
             LayerDef::Shape(_) => "shape",
+            LayerDef::Trail(_) => "trail",
+            LayerDef::Afterimage(_) => "afterimage",
         }
     }
 
     /// Where a particle or shape layer is attached (surface layers cover the
-    /// target's meshes instead).
+    /// target's meshes instead; trails use [`LayerDef::socket_names`]).
     pub fn attach(&self) -> Option<&AttachDef> {
         match self {
             LayerDef::Particles(p) => Some(&p.attach),
-            LayerDef::Surface(_) => None,
             LayerDef::Shape(s) => Some(&s.attach),
+            LayerDef::Surface(_) | LayerDef::Trail(_) | LayerDef::Afterimage(_) => None,
         }
     }
 
-    /// The effect material of a surface or shape layer.
+    /// Every socket name the layer uses (its attach, or a trail's two ends).
+    pub fn socket_names(&self) -> Vec<&str> {
+        match self {
+            LayerDef::Trail(t) => t.socket_names(),
+            _ => self.attach().map(|a| a.socket_names()).unwrap_or_default(),
+        }
+    }
+
+    /// The effect material of a surface, shape, trail or afterimage layer.
     pub fn material(&self) -> Option<&EffectMaterialDef> {
         match self {
             LayerDef::Particles(_) => None,
             LayerDef::Surface(s) => Some(&s.material),
             LayerDef::Shape(s) => Some(&s.material),
+            LayerDef::Trail(s) => Some(&s.material),
+            LayerDef::Afterimage(s) => Some(&s.material),
         }
     }
 
@@ -1132,6 +1213,36 @@ impl LayerDef {
             LayerDef::Particles(_) => None,
             LayerDef::Surface(s) => Some(&mut s.material),
             LayerDef::Shape(s) => Some(&mut s.material),
+            LayerDef::Trail(s) => Some(&mut s.material),
+            LayerDef::Afterimage(s) => Some(&mut s.material),
+        }
+    }
+
+    pub fn as_trail(&self) -> Option<&TrailLayerDef> {
+        match self {
+            LayerDef::Trail(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_trail_mut(&mut self) -> Option<&mut TrailLayerDef> {
+        match self {
+            LayerDef::Trail(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_afterimage(&self) -> Option<&AfterimageLayerDef> {
+        match self {
+            LayerDef::Afterimage(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_afterimage_mut(&mut self) -> Option<&mut AfterimageLayerDef> {
+        match self {
+            LayerDef::Afterimage(s) => Some(s),
+            _ => None,
         }
     }
 
@@ -1307,6 +1418,16 @@ pub struct PreviewDef {
     /// A second model (a weapon) attached to a node of the first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weapon: Option<PreviewWeaponDef>,
+    /// "In place": the preview removes the horizontal root motion of the
+    /// model's skeleton root (e.g. Mixamo's hips) after the animation, so
+    /// the model stays on the target; its vertical bob is kept. Editor
+    /// only; default on (written only when off).
+    #[serde(skip_serializing_if = "is_true")]
+    pub in_place: bool,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -1330,6 +1451,7 @@ impl Default for PreviewDef {
             animation_triggers: Vec::new(),
             target: PreviewTargetModel::Body,
             weapon: None,
+            in_place: true,
         }
     }
 }
@@ -1488,9 +1610,15 @@ mod tests {
         assert_eq!(preview.animation_source(), Some("a.glb"));
         assert!(preview.shows_model());
         let text = old.to_ron_string().unwrap();
-        for field in ["root_height", "animation_file", "animation_triggers", "target", "weapon"] {
+        for field in ["root_height", "animation_file", "animation_triggers", "target", "weapon", "in_place"] {
             assert!(!text.contains(field), "{} written: {}", field, text);
         }
+        assert!(preview.in_place, "in place by default");
+        let mut off = old.clone();
+        off.preview.as_mut().unwrap().in_place = false;
+        let text = off.to_ron_string().unwrap();
+        assert!(text.contains("in_place: false"), "{}", text);
+        assert!(!ProjectV2::from_ron_str(&text).unwrap().preview.unwrap().in_place);
 
         let full = r#"(version: 2, preview: Some((
             stage: Model, model: Some("anim/tpose.glb"), root_height: 0.9,
