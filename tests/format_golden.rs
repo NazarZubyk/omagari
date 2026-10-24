@@ -294,3 +294,36 @@ fn examples_are_migrated_goldens() {
     }
     assert!(checked >= 4, "only {} examples found", checked);
 }
+
+/// P3b fields (mesh particles, mesh assets, the draw-order bias) round-trip,
+/// and are not written when unset (so older files and goldens save
+/// unchanged).
+#[test]
+fn v2_mesh_and_draw_order_round_trip() {
+    use omagari::format::{AssetKind, ParticleMeshDef, ParticleShapeDef, ProjectV2};
+    let text = r#"(
+        version: 2,
+        assets: [(id: "rock", kind: Mesh((path: "vfx/models/debris.glb", mesh: 1, primitive: 2, name: Some("Rock"))))],
+        layers: [
+            Particles((name: "a", mesh: Some(Asset("rock")), sort_bias: -0.25)),
+            Particles((name: "b", mesh: Some(Shape(Shard)))),
+            Particles((name: "c")),
+        ],
+    )"#;
+    let (project, warnings) = ProjectV2::from_ron_str_with_warnings(text).unwrap();
+    assert!(warnings.is_empty(), "{:?}", warnings);
+    let a = project.layers[0].as_particles().unwrap();
+    assert_eq!(a.mesh, Some(ParticleMeshDef::Asset("rock".into())));
+    assert_eq!(a.sort_bias, -0.25);
+    assert_eq!(project.layers[1].as_particles().unwrap().mesh, Some(ParticleMeshDef::Shape(ParticleShapeDef::Shard)));
+    let AssetKind::Mesh(m) = &project.assets[0].kind else { panic!() };
+    assert_eq!(m.asset_path(), "vfx/models/debris.glb#Mesh1/Primitive2");
+    let saved = project.to_ron_string().unwrap();
+    let again = ProjectV2::from_ron_str(&saved).unwrap();
+    assert_eq!(again.to_ron_string().unwrap(), saved);
+    assert_eq!(saved.matches("mesh: Some(").count(), 2, "{}", saved);
+    assert_eq!(saved.matches("sort_bias").count(), 1, "only the layer with a bias: {}", saved);
+    // A layer without the new fields saves as before.
+    let plain = ProjectV2::from_ron_str(r#"(layers: [Particles((name: "c"))])"#).unwrap().to_ron_string().unwrap();
+    assert!(!plain.contains("mesh") && !plain.contains("sort_bias"), "{}", plain);
+}

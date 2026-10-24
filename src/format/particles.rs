@@ -800,6 +800,27 @@ impl ParticleEffectDef {
         Some((s.cycle_count - 1) as f32 * cycle + duration)
     }
 
+    /// How the layer's particles get their ribbon id, when they are drawn as
+    /// a ribbon (bevy_hanabi joins the particles with the same
+    /// `Attribute::RIBBON_ID`, in age order, into one strip): the init
+    /// SetAttribute of `ribbon_id` (`Some(Some(expr))`), an InheritAttribute
+    /// of it (`Some(None)`: the parent's id), or `None` when the layer is not
+    /// a ribbon.
+    pub fn ribbon_id(&self) -> Option<Option<&ExprWriterEditor>> {
+        self.init_modifiers.iter().rev().find_map(|m| match m {
+            ModifierEditor::SetAttribute(s) if s.attr == Attribute::RIBBON_ID => Some(Some(&s.attr_expr)),
+            ModifierEditor::InheritAttribute(i) if i.attr == Attribute::RIBBON_ID => Some(None),
+            _ => None,
+        })
+    }
+
+    /// Whether bevy_hanabi draws the layer as ribbons: an init modifier sets
+    /// `ribbon_id` (bevy_hanabi 0.19 links by that attribute alone; the old
+    /// `prev` / `next` attributes no longer do anything).
+    pub fn is_ribbon(&self) -> bool {
+        self.ribbon_id().is_some()
+    }
+
     /// Longest time a particle of this effect can live, in seconds, estimated
     /// from the init `lifetime` attribute. `None` when it cannot be known
     /// without simulating (e.g. it reads other attributes).

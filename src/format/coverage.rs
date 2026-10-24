@@ -155,16 +155,23 @@ pub const BUILTIN_OPERATORS: [BuiltInOperator; 9] = {
 /// with the reason. Empty: every registered modifier is exposed.
 pub const SKIPPED_MODIFIERS: [(&str, &str); 0] = [];
 
-/// Other bevy_hanabi features (3D) that are not exposed yet, with the
-/// reason or the phase that adds them.
-pub const SKIPPED_FEATURES: [(&str, &str); 9] = [
-    ("Expr::TextureSample", "sampling a texture inside an expression needs extra texture slots; particle layers have one (P3b/P4)"),
+/// Other bevy_hanabi features (3D) that are not exposed, with the reason.
+///
+/// Exposed in P3b (no longer skipped): ribbons (`Attribute::RIBBON_ID` set
+/// by an init modifier; `ParticleEffectDef::is_ribbon`, checks, presets),
+/// mesh particles (`ParticlesLayerDef::mesh`: built-in shapes or `Mesh`
+/// assets, given to bevy_hanabi as its `EffectMesh` component, because
+/// `EffectAsset::mesh` takes only an asset path) and the draw order between
+/// effects (`ParticlesLayerDef::sort_bias`, applied to bevy_hanabi's
+/// transparent draws by `runtime::sorting`, since bevy_hanabi 0.19 sorts 3D
+/// effects by the emitter's distance only).
+pub const SKIPPED_FEATURES: [(&str, &str); 8] = [
+    ("Expr::TextureSample", "sampling a texture inside an expression needs extra texture slots; particle layers have one (P4)"),
     ("matrix literals (mat2..mat4)", "no modifier input takes a matrix and no operator needs one for 3D particles"),
     ("AlphaMode::Mask with an expression cutoff", "the cutoff is a number (f32); an expression adds nothing a render modifier cannot do"),
-    ("EffectAsset::mesh (mesh particles)", "needs mesh assets in the asset library (P3b)"),
-    ("ribbons (Attribute::RIBBON_ID / PREV / NEXT linking)", "the attributes can be set, but the ribbon preset and editor support come in P3b"),
-    ("draw ordering between effects (examples/ordering.rs)", "P3b"),
-    ("EffectAsset::z_layer_2d, 2D rendering", "Omagari is 3D only"),
+    ("Attribute::PREV / Attribute::NEXT", "soft-deprecated in bevy_hanabi 0.19: they no longer link ribbons or anything else (ribbons use RIBBON_ID); settable as attributes, nothing reads them"),
+    ("EffectAsset::mesh (asset path)", "Omagari gives the mesh as bevy_hanabi's EffectMesh component instead (built-in shapes have no asset path; mesh assets are loaded with the package)"),
+    ("EffectAsset::z_layer_2d, 2D rendering", "Omagari is 3D only; 3D draw order is ParticlesLayerDef::sort_bias"),
     ("render layers / multi-camera", "not needed by the game (one camera)"),
     ("SizeOverLifetimeModifier::screen_space_size", "bevy_hanabi 0.19 ignores the field; use the ScreenSpaceSize render modifier"),
 ];

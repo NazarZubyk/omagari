@@ -79,8 +79,10 @@ pub fn migrate_v1(project: OmagariProject, warnings: &mut Vec<String>) -> Projec
             simulation_space: SimulationSpaceDef::Global,
             play,
             texture,
+            mesh: None,
             rate: None,
             visible: None,
+            sort_bias: 0.0,
             effect: migrate_effect(effect, warnings),
         };
         v2.layers.push(LayerDef::Particles(layer));
