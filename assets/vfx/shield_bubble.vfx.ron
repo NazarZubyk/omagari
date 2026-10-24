@@ -1,0 +1,93 @@
+(
+    version: 2,
+    parameters: [
+        (
+            name: "shield",
+            default: Float(1.0),
+            min: 0.0,
+            max: 1.0,
+            smoothing: 0.3,
+        ),
+    ],
+    triggers: [],
+    assets: [
+        (
+            id: "noise",
+            kind: Texture((
+                path: "omagari://textures/noise.png",
+                purpose: Noise,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+    ],
+    fit: None,
+    layers: [
+        Shape((
+            name: "bubble",
+            attach: Target,
+            follow: Position,
+            shape: Sphere(
+                radius: 1.1,
+            ),
+            transform: (
+                offset: (0.0, 0.0, 0.0),
+                rotation_deg: (0.0, 0.0, 0.0),
+            ),
+            material: (
+                blend: Add,
+                color: Const((0.3, 0.7, 1.6, 0.25)),
+                opacity: Param("shield", [
+                    (0.0, 0.0),
+                    (1.0, 1.0),
+                ]),
+                emissive: Const(1.0),
+                noise_a: Some((
+                    texture: (
+                        asset: "noise",
+                        channel: Luminance,
+                    ),
+                    mapping: Triplanar,
+                    scale: Const(2.0),
+                    scroll: Const((0.05, 0.15)),
+                    strength: Const(0.6),
+                    contrast: Const(1.5),
+                )),
+                noise_b: None,
+                rim: Some((
+                    color: Const((0.5, 1.2, 2.5, 0.8)),
+                    power: Const(2.5),
+                    intensity: Param("shield", [
+                        (0.0, 0.0),
+                        (1.0, 2.0),
+                    ]),
+                )),
+                pulse: Some((
+                    frequency: Const(0.7),
+                    amount: Const(0.2),
+                )),
+                flash: None,
+                dissolve: None,
+                fill: None,
+                mask: None,
+            ),
+            scale: Param("shield", [
+                (0.0, (0.9, 0.9, 0.9)),
+                (1.0, (1.0, 1.0, 1.0)),
+            ]),
+            rotation_speed: Const(12.0),
+            rotation_axis: (0.0, 1.0, 0.0),
+            play: Loop,
+            duration: None,
+            fade: (
+                in: 0.3,
+                out: 0.4,
+            ),
+            visible: None,
+            sort_bias: 0.0,
+        )),
+    ],
+    sockets: [],
+)

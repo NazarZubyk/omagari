@@ -1,0 +1,91 @@
+(
+    version: 2,
+    parameters: [
+        (
+            name: "flash",
+            default: Float(0.0),
+            min: 0.0,
+            max: 1.0,
+            smoothing: 0.0,
+        ),
+    ],
+    triggers: [
+        (
+            name: "tick",
+            pulses: [
+                (
+                    param: "flash",
+                    to: 1.0,
+                    decay: 0.35,
+                ),
+            ],
+        ),
+    ],
+    assets: [
+        (
+            id: "noise",
+            kind: Texture((
+                path: "omagari://textures/noise.png",
+                purpose: Noise,
+                wrap: None,
+                color_space: None,
+                filter: None,
+                grid: None,
+            )),
+        ),
+    ],
+    fit: None,
+    layers: [
+        Surface((
+            name: "poison_skin",
+            targets: AllMeshes,
+            material: (
+                blend: Blend,
+                color: Const((0.55, 0.08, 0.95, 0.7)),
+                opacity: Const(1.0),
+                emissive: Const(1.5),
+                noise_a: Some((
+                    texture: (
+                        asset: "noise",
+                        channel: Luminance,
+                    ),
+                    mapping: Triplanar,
+                    scale: Const(3.0),
+                    scroll: Const((0.0, 0.25)),
+                    strength: Const(0.85),
+                    contrast: Const(2.5),
+                )),
+                noise_b: None,
+                rim: Some((
+                    color: Const((1.0, 0.45, 1.0, 0.8)),
+                    power: Const(2.5),
+                    intensity: Const(1.5),
+                )),
+                pulse: Some((
+                    frequency: Const(0.8),
+                    amount: Const(0.25),
+                )),
+                flash: Some(Param("flash", [
+                    (0.0, 0.0),
+                    (1.0, 1.0),
+                ])),
+                dissolve: None,
+                fill: None,
+                mask: None,
+            ),
+            shells: [
+                (
+                    offset: 0.0,
+                    opacity: 1.0,
+                    noise_offset: 0.0,
+                ),
+            ],
+            fade: (
+                in: 0.3,
+                out: 0.6,
+            ),
+            visible: None,
+        )),
+    ],
+    sockets: [],
+)

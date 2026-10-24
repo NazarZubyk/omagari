@@ -1,0 +1,61 @@
+(
+    version: 2,
+    parameters: [],
+    triggers: [
+        (name: "swing_start"),
+        (name: "swing_end"),
+    ],
+    assets: [
+        (id: "noise", kind: Texture((path: "omagari://textures/noise.png", purpose: Noise))),
+    ],
+    fit: None,
+    layers: [
+        Trail((
+            name: "slash",
+            from: "blade_base",
+            to: "blade_tip",
+            length: 0.22,
+            subdivisions: 6,
+            min_sample_distance: 0.01,
+            emit: Trigger(start: "swing_start", stop: "swing_end"),
+            width_over_u: [(0.0, 1.0), (1.0, 0.6)],
+            fade_over_u: [(0.0, 1.0), (0.2, 0.85), (1.0, 0.0)],
+            material: (
+                blend: Add,
+                color: Const((2.4, 2.0, 1.5, 1.0)),
+                emissive: Const(1.2),
+                noise_a: Some((texture: (asset: "noise"), mapping: Uv, scale: Const(2.0), scroll: Const((-2.0, 0.0)), strength: Const(0.4), contrast: Const(1.5))),
+                fill: Some((axis: V, from: Const(0.0), to: Const(1.0), softness: Const(0.25))),
+            ),
+        )),
+        Afterimage((
+            name: "shadows",
+            source: TargetModel,
+            interval: 0.04,
+            lifetime: 0.25,
+            max_ghosts: 8,
+            emit: Trigger(start: "swing_start", stop: "swing_end"),
+            fade_over_life: [(0.0, 0.6), (1.0, 0.0)],
+            material: (
+                blend: Add,
+                color: Const((0.3, 0.6, 1.6, 0.35)),
+                rim: Some((color: Const((0.6, 1.0, 2.5, 1.0)), power: Const(2.0), intensity: Const(1.2))),
+            ),
+        )),
+    ],
+    sockets: [
+        (name: "blade_base", node: None, offset: (0.0, 0.15, 0.0)),
+        (name: "blade_tip", node: None, offset: (0.0, 1.1, 0.0)),
+    ],
+    preview: Some((
+        stage: Capsule,
+        camera: Orbit,
+        model: None,
+        animation: None,
+        animation_speed: 1.0,
+        attach_to: None,
+        params: [],
+        motion: Some(Circle(radius: 2.0, speed: 6.0)),
+        auto_triggers: [("swing_start", 1.0)],
+    )),
+)
