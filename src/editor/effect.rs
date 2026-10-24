@@ -282,9 +282,7 @@ fn builtin_texture_id(file: &str) -> &str {
 }
 
 fn texture_path(asset: &AssetDef) -> &str {
-    match &asset.kind {
-        AssetKind::Texture(t) => &t.path,
-    }
+    asset.kind.path()
 }
 
 /// Texture picker: the project's texture assets plus the built-ins; picking a
@@ -303,7 +301,7 @@ fn ui_for_texture(ui: &mut egui::Ui, texture: &mut Option<String>, assets: &mut 
             // The project's own (non built-in) textures.
             for asset in assets.iter() {
                 let path = texture_path(asset);
-                if path.starts_with(BUILTIN_TEXTURES_PREFIX) {
+                if path.starts_with(BUILTIN_TEXTURES_PREFIX) || asset.kind.as_texture().is_none() {
                     continue;
                 }
                 let current = texture.as_deref() == Some(asset.id.as_str());
@@ -346,6 +344,74 @@ fn ui_for_texture(ui: &mut egui::Ui, texture: &mut Option<String>, assets: &mut 
             ui.colored_label(egui::Color32::from_hex("#FF8866").unwrap(), "⚠ not in assets")
                 .on_hover_text("This texture id has no entry in the project's assets; the layer renders untextured.");
         }
+    }
+}
+
+/// Mesh picker of a particle layer: the default quad, the built-in shapes
+/// and the project's mesh assets.
+fn ui_for_particle_mesh(ui: &mut egui::Ui, mesh: &mut Option<ParticleMeshDef>, assets: &[AssetDef], id: egui::Id) {
+    let selected = match mesh {
+        None => "Quad (default)".to_string(),
+        Some(ParticleMeshDef::Shape(s)) => format!("{} (built-in)", s.name()),
+        Some(ParticleMeshDef::Asset(a)) => format!("{} (mesh asset)", a),
+    };
+    egui::ComboBox::from_id_salt(id.with("mesh"))
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(mesh.is_none(), "Quad (default)")
+                .on_hover_text("bevy_hanabi's flat 1 m square, turned by Orient")
+                .clicked()
+            {
+                *mesh = None;
+            }
+            ui.separator();
+            for shape in ParticleShapeDef::ALL {
+                let current = *mesh == Some(ParticleMeshDef::Shape(shape));
+                if ui
+                    .selectable_label(current, format!("{} (built-in)", shape.name()))
+                    .on_hover_text(particle_shape_hint(shape))
+                    .clicked()
+                {
+                    *mesh = Some(ParticleMeshDef::Shape(shape));
+                }
+            }
+            let meshes: Vec<(&String, &MeshAssetDef)> =
+                assets.iter().filter_map(|a| a.kind.as_mesh().map(|m| (&a.id, m))).collect();
+            ui.separator();
+            if meshes.is_empty() {
+                ui.label(egui::RichText::new("No mesh assets: import a .glb in the ASSETS tab").weak());
+            }
+            for (asset_id, def) in meshes {
+                let current = *mesh == Some(ParticleMeshDef::Asset(asset_id.clone()));
+                if ui
+                    .selectable_label(current, format!("{} (mesh asset)", asset_id))
+                    .on_hover_text(format!("{} {}", def.path, def.label()))
+                    .clicked()
+                {
+                    *mesh = Some(ParticleMeshDef::Asset(asset_id.clone()));
+                }
+            }
+        })
+        .response
+        .on_hover_text(hints::PARTICLE_MESH);
+    if let Some(ParticleMeshDef::Asset(a)) = mesh {
+        if !assets.iter().any(|x| &x.id == a && x.kind.as_mesh().is_some()) {
+            ui.colored_label(egui::Color32::from_hex("#FF8866").unwrap(), "⚠ not a mesh asset")
+                .on_hover_text("This id has no mesh entry in the project's assets; the layer draws quads.");
+        }
+    }
+}
+
+fn particle_shape_hint(shape: ParticleShapeDef) -> &'static str {
+    match shape {
+        ParticleShapeDef::Cube => "A 1 m cube (24 vertices): debris, blocks, pixels",
+        ParticleShapeDef::Sphere => "A sphere 1 m across (low-poly): pebbles, droplets, orbs",
+        ParticleShapeDef::Cone => "A cone along Y, 1 m high and wide: spikes, horns",
+        ParticleShapeDef::Cylinder => "A cylinder along Y, 1 m high and wide: sticks, logs (stretch with size3)",
+        ParticleShapeDef::Shard => "A pointed octahedron 0.5 × 1 × 0.3 m along Y: shards, crystals, splinters",
+        ParticleShapeDef::Torus => "A ring 1 m across: smoke rings, halos",
+        ParticleShapeDef::Quad => "A flat 1 m square facing +Z (like the default, as a mesh)",
     }
 }
 
@@ -616,6 +682,10 @@ pub fn draw_particles_layer(
         ui.horizontal(|ui| ui_for_texture(ui, &mut layer.texture, assets, index));
         ui.end_row();
 
+        ui.label("Mesh").on_hover_text(hints::PARTICLE_MESH);
+        ui.horizontal(|ui| ui_for_particle_mesh(ui, &mut layer.mesh, assets, id));
+        ui.end_row();
+
         ui.label("Parent layer").on_hover_text(hints::PARENT);
         let parent = layer.parent.clone().unwrap_or_else(|| "NONE".to_string());
         ui.menu_button(parent, |ui| {
@@ -670,6 +740,19 @@ pub fn draw_particles_layer(
 
         ui.label("Visible").on_hover_text(hints::VISIBLE);
         ui_for_visible(ui, &mut layer.visible, app, parameters, id);
+        ui.end_row();
+
+        ui.label("Draw order").on_hover_text(hints::PARTICLE_SORT);
+        ui.horizontal(|ui| {
+            layer.sort_bias = ui_for_f32_ex(ui, layer.sort_bias, -50.0, 50.0, 0.01);
+            ui.label("m");
+            if layer.sort_bias != 0.0 && matches!(layer.effect.alpha_mode, AlphaModeDef::Opaque | AlphaModeDef::Mask(_)) {
+                ui.colored_label(egui::Color32::from_hex("#FFCC66").unwrap(), "⚠")
+                    .on_hover_text("Opaque and Mask layers are depth-tested, not sorted: the draw order has no effect");
+            }
+        })
+        .response
+        .on_hover_text(hints::PARTICLE_SORT);
         ui.end_row();
 
         ui.label("Blend").on_hover_text(hints::BLEND);
@@ -751,9 +834,7 @@ pub fn draw_particles_layer(
         .on_hover_text(hints::SPAWNER);
 
     app.layer_texture_grid = layer.texture.as_ref().and_then(|id| {
-        assets.iter().find(|a| &a.id == id).and_then(|a| match &a.kind {
-            AssetKind::Texture(t) => t.grid,
-        })
+        assets.iter().find(|a| &a.id == id).and_then(|a| a.kind.as_texture()).and_then(|t| t.grid)
     });
     let frames = app.layer_texture_grid.map(|(rows, cols)| rows * cols).unwrap_or(16);
     let effect = &mut layer.effect;

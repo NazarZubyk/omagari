@@ -1,12 +1,14 @@
 //! The file side of the asset library, shared by the editor and the MCP
-//! server: importing textures into the game assets folder, guessing their
+//! server: importing textures and glTF models (mesh assets) into the game
+//! assets folder, guessing their
 //! purpose, extracting a channel to a grayscale PNG, and reading texture
 //! files (game folder or built-in) and their headers.
 //!
 //! Import rules: a file inside the game assets folder is referenced in place
 //! (path relative to the folder); a file outside is copied into
-//! `<game assets>/vfx/textures/`. A name already taken by a different file
-//! gets a numeric suffix (`smoke_2.png`); an identical file is reused.
+//! `<game assets>/vfx/textures/` (models: `vfx/models/`, `.glb` only). A
+//! name already taken by a different file gets a numeric suffix
+//! (`smoke_2.png`); an identical file is reused.
 
 use std::fs;
 use std::io::Cursor;
@@ -14,12 +16,15 @@ use std::path::{Component, Path, PathBuf};
 
 use image::{DynamicImage, GrayImage, ImageDecoder, ImageFormat, ImageReader, Luma, RgbaImage};
 use omagari::format::{
-    AssetDef, AssetKind, ChannelDef, ProjectV2, TextureAssetDef, TexturePurpose, BUILTIN_TEXTURES_PREFIX,
+    AssetDef, AssetKind, ChannelDef, MeshAssetDef, ProjectV2, TextureAssetDef, TexturePurpose, BUILTIN_TEXTURES_PREFIX,
 };
 use omagari::runtime::BUILTIN_TEXTURES;
 
 /// Folder of the game assets folder imported textures are copied to.
 pub const IMPORT_DIR: &str = "vfx/textures";
+/// Folder of the game assets folder imported models (mesh assets) are
+/// copied to.
+pub const MODEL_IMPORT_DIR: &str = "vfx/models";
 
 /// Texture file types the editor imports. PNG loads in every game; JPG needs
 /// Bevy's `jpeg` feature in the game; KTX2 is a Bevy default (3D) but has no
@@ -111,15 +116,18 @@ fn clean_file_name(name: &str) -> String {
     name.chars().map(|c| if c == '#' { '_' } else { c }).collect()
 }
 
-/// Imports a texture file into the game assets folder `game_root`, see the
-/// module docs.
+/// Imports a texture or glTF model file into the game assets folder
+/// `game_root`, see the module docs. Models outside the folder are copied to
+/// `vfx/models/`; a `.gltf` (JSON with separate buffer and texture files)
+/// outside it is refused, since its other files would not come along.
 pub fn import_file(source: &Path, game_root: &Path) -> Result<Imported, String> {
     if !source.is_file() {
         return Err(format!("{} is not a file", source.display()));
     }
-    if !is_texture_file(source) {
+    let model = crate::model_info::is_model_file(source);
+    if !is_texture_file(source) && !model {
         return Err(format!(
-            "{}: not a texture Omagari imports (use {})",
+            "{}: not a texture or model Omagari imports (use {}, glb, gltf)",
             source.display(),
             TEXTURE_EXTENSIONS.join(", ")
         ));
@@ -130,9 +138,17 @@ pub fn import_file(source: &Path, game_root: &Path) -> Result<Imported, String> 
     if let Some(path) = relative_game_path(source, game_root) {
         return Ok(Imported { path, kind: ImportKind::InPlace });
     }
+    if model && extension(&source.to_string_lossy()) == "gltf" {
+        return Err(format!(
+            "{}: a .gltf file uses separate buffer and texture files; put it into the game assets folder ({}) or export a .glb",
+            source.display(),
+            game_root.display()
+        ));
+    }
 
     let bytes = fs::read(source).map_err(|e| format!("{}: {}", source.display(), e))?;
-    let dir = game_root.join(IMPORT_DIR);
+    let import_dir = if model { MODEL_IMPORT_DIR } else { IMPORT_DIR };
+    let dir = game_root.join(import_dir);
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {}", dir.display(), e))?;
     let name = clean_file_name(&source.file_name().unwrap_or_default().to_string_lossy());
     let stem = Path::new(&name).file_stem().unwrap_or_default().to_string_lossy().to_string();
@@ -140,7 +156,7 @@ pub fn import_file(source: &Path, game_root: &Path) -> Result<Imported, String> 
     for n in 1.. {
         let file = if n == 1 { format!("{}.{}", stem, ext) } else { format!("{}_{}.{}", stem, n, ext) };
         let target = dir.join(&file);
-        let path = format!("{}/{}", IMPORT_DIR, file);
+        let path = format!("{}/{}", import_dir, file);
         if !target.exists() {
             fs::write(&target, &bytes).map_err(|e| format!("{}: {}", target.display(), e))?;
             return Ok(Imported { path, kind: ImportKind::Copied });
@@ -161,17 +177,10 @@ pub fn add_texture_asset(
     purpose: TexturePurpose,
     id: Option<&str>,
 ) -> Result<(String, bool), String> {
-    if let Some(existing) = project.assets.iter().find(|a| texture_path(a) == path) {
+    if let Some(existing) = project.assets.iter().find(|a| a.kind.as_texture().is_some_and(|t| t.path == path)) {
         return Ok((existing.id.clone(), false));
     }
-    let id = match id.map(str::trim).filter(|i| !i.is_empty()) {
-        Some(id) if project.asset(id).is_some() => return Err(format!("an asset \"{}\" already exists", id)),
-        Some(id) => id.to_string(),
-        None => {
-            let stem = Path::new(path).file_stem().unwrap_or_default().to_string_lossy().to_string();
-            project.unique_asset_id(&stem)
-        }
-    };
+    let id = new_asset_id(project, path, id)?;
     project.assets.push(AssetDef {
         id: id.clone(),
         kind: AssetKind::Texture(TextureAssetDef::new(path, purpose)),
@@ -179,10 +188,61 @@ pub fn add_texture_asset(
     Ok((id, true))
 }
 
-pub fn texture_path(asset: &AssetDef) -> &str {
-    match &asset.kind {
-        AssetKind::Texture(t) => &t.path,
+/// The id for a new asset: `wanted` (must be free), else one made from the
+/// file name.
+fn new_asset_id(project: &ProjectV2, path: &str, wanted: Option<&str>) -> Result<String, String> {
+    match wanted.map(str::trim).filter(|i| !i.is_empty()) {
+        Some(id) if project.asset(id).is_some() => Err(format!("an asset \"{}\" already exists", id)),
+        Some(id) => Ok(id.to_string()),
+        None => {
+            let stem = Path::new(path).file_stem().unwrap_or_default().to_string_lossy().to_string();
+            Ok(project.unique_asset_id(&stem))
+        }
     }
+}
+
+/// Adds a mesh asset for one primitive of the glTF file `path` (relative to
+/// the game assets folder), or finds the asset that already has it. Without
+/// `mesh`, the file's first mesh primitive suitable for mesh particles is
+/// taken (`info` = the file's contents; the id comes from the mesh's name).
+/// Returns the id and whether an asset was added.
+pub fn add_mesh_asset(
+    project: &mut ProjectV2,
+    path: &str,
+    info: &crate::model_info::ModelInfo,
+    mesh: Option<(u32, u32)>,
+    id: Option<&str>,
+) -> Result<(String, bool), String> {
+    let (mi, pi) = match mesh {
+        Some((m, p)) => (m, p),
+        None => {
+            let best = info
+                .primitives()
+                .find(|(_, _, _, p)| p.triangles && p.has_uvs && !p.skinned)
+                .or_else(|| info.primitives().next())
+                .ok_or_else(|| format!("{} has no meshes", path))?;
+            (best.0 as u32, best.1 as u32)
+        }
+    };
+    let (model_mesh, _) = info.primitive(mi as usize, pi as usize).ok_or_else(|| {
+        let list: Vec<String> = info.primitives().map(|(m, p, mesh, _)| format!("Mesh{}/Primitive{} \"{}\"", m, p, mesh.name)).collect();
+        format!("{} has no Mesh{}/Primitive{} (it has {})", path, mi, pi, if list.is_empty() { "no meshes".into() } else { list.join(", ") })
+    })?;
+    let def = MeshAssetDef::new(path, mi, pi, Some(model_mesh.name.clone()));
+    if let Some(existing) =
+        project.assets.iter().find(|a| a.kind.as_mesh().is_some_and(|m| (&m.path, m.mesh, m.primitive) == (&def.path, mi, pi)))
+    {
+        return Ok((existing.id.clone(), false));
+    }
+    let base = if id.is_none() { Some(model_mesh.name.clone()) } else { None };
+    let id = new_asset_id(project, base.as_deref().unwrap_or(path), id)?;
+    project.assets.push(AssetDef { id: id.clone(), kind: AssetKind::Mesh(def) });
+    Ok((id, true))
+}
+
+/// The file of an asset (texture or mesh model).
+pub fn texture_path(asset: &AssetDef) -> &str {
+    asset.kind.path()
 }
 
 /// Whether an asset path is a built-in texture (`omagari://textures/...`).
@@ -545,6 +605,53 @@ pub mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Models: a `.glb` outside the game folder is copied to `vfx/models/`,
+    /// a `.gltf` outside it is refused (its buffers would not come along),
+    /// and its meshes become mesh assets by glTF label.
+    #[test]
+    fn models_import_as_mesh_assets() {
+        use crate::model_info::tests::glb::write_rock_glb;
+        use crate::model_info::ModelInfo;
+        let dir = temp_dir("import_model");
+        let game = dir.join("game");
+        fs::create_dir_all(&game).unwrap();
+        write_rock_glb(&dir.join("art/debris.glb"));
+        let imported = import_file(&dir.join("art/debris.glb"), &game).unwrap();
+        assert_eq!(imported, Imported { path: "vfx/models/debris.glb".into(), kind: ImportKind::Copied });
+        fs::write(dir.join("art/scene.gltf"), "{}").unwrap();
+        assert!(import_file(&dir.join("art/scene.gltf"), &game).unwrap_err().contains("export a .glb"));
+        fs::write(game.join("in_place.gltf"), "{}").unwrap();
+        assert_eq!(import_file(&game.join("in_place.gltf"), &game).unwrap().kind, ImportKind::InPlace);
+
+        let info = ModelInfo::load(&game.join(&imported.path)).unwrap();
+        let mut project = ProjectV2::default();
+        // Default: the first mesh particles can draw (Rock has UVs).
+        let (id, added) = add_mesh_asset(&mut project, &imported.path, &info, None, None).unwrap();
+        assert_eq!((id.as_str(), added), ("Rock", true));
+        let rock = project.mesh("Rock").unwrap();
+        assert_eq!(rock.asset_path(), "vfx/models/debris.glb#Mesh0/Primitive0");
+        assert_eq!(rock.name.as_deref(), Some("Rock"));
+        // The same mesh again: the same asset; another mesh: a new one.
+        assert_eq!(add_mesh_asset(&mut project, &imported.path, &info, Some((0, 0)), None).unwrap(), ("Rock".into(), false));
+        let (bare, _) = add_mesh_asset(&mut project, &imported.path, &info, Some((1, 0)), Some("plain")).unwrap();
+        assert_eq!(project.mesh(&bare).unwrap().label(), "Mesh1/Primitive0");
+        let err = add_mesh_asset(&mut project, &imported.path, &info, Some((5, 0)), None).unwrap_err();
+        assert!(err.contains("has no Mesh5/Primitive0") && err.contains("Mesh0/Primitive0 \"Rock\""), "{}", err);
+
+        // Users, rename and delete follow mesh particles.
+        project.layers.push(omagari::format::LayerDef::Particles(omagari::format::ParticlesLayerDef {
+            name: "debris".into(),
+            mesh: Some(omagari::format::ParticleMeshDef::Asset("Rock".into())),
+            ..Default::default()
+        }));
+        assert_eq!(project.asset_users("Rock"), vec!["debris".to_string()]);
+        assert!(project.delete_asset("Rock").is_err());
+        project.rename_asset("Rock", "stone").unwrap();
+        assert_eq!(project.layers[0].as_particles().unwrap().mesh_asset(), Some("stone"));
+        assert!(project.delete_asset("plain").is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn imported_files_become_assets_once() {
         let mut project = ProjectV2::default();
@@ -650,7 +757,7 @@ pub mod tests {
             add_texture_asset(&mut project, &imported.path, guess_purpose(file), None).unwrap();
         }
         assert_eq!(project.texture("perlin_noise").unwrap().purpose, TexturePurpose::Noise);
-        let AssetKind::Texture(noise) = &mut project.assets[0].kind;
+        let noise = project.assets[0].kind.as_texture_mut().unwrap();
         noise.filter = Some(TextureFilter::Nearest);
         for id in ["perlin_noise", "smoke", "ember"] {
             project.layers.push(LayerDef::Particles(ParticlesLayerDef {

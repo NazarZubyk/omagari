@@ -5,6 +5,7 @@
 use bevy_egui::egui::{self, RichText};
 use omagari::format::{LayerDef, ProjectV2};
 
+use super::actions::Action;
 use super::assets::{assets_tab, TexturePreviews};
 use super::camera::PreviewCamera;
 use super::effect::draw_particles_layer;
@@ -108,6 +109,18 @@ fn layer_tab(
                 }
             });
             subject_box(ui, session, &name);
+            ui.horizontal(|ui| {
+                ui.menu_button("✨ PRESETS", |ui| {
+                    for preset in super::particle_presets::ParticlePreset::ALL {
+                        if ui.button(preset.label()).on_hover_text(preset.hint()).clicked() {
+                            session.actions.push(Action::ApplyParticlePreset { layer: index, preset });
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(hints::PARTICLE_PRESETS);
+            });
             ui.add_space(4.0);
             draw_particles_layer(layer, assets, parameters, app, ui, index as u64);
         }

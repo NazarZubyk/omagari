@@ -21,6 +21,7 @@ pub mod model_panel;
 pub mod modifiers;
 pub mod package;
 pub mod params_panel;
+pub mod particle_presets;
 pub mod playback;
 pub mod problems;
 pub mod scene;

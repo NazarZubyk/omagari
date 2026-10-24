@@ -58,6 +58,9 @@ pub enum Action {
     AddAfterimageLayer,
     /// ➕ ADD → Light layer.
     AddLightLayer,
+    /// A ribbon or mesh-particle preset on the particle layer `layer` (may
+    /// add layers after it).
+    ApplyParticlePreset { layer: usize, preset: super::particle_presets::ParticlePreset },
     SelectLayer(usize),
     DuplicateLayer(usize),
     DeleteLayer(usize),
@@ -304,6 +307,17 @@ impl ActionContext<'_> {
                 self.session.preview_built();
             }
             Action::FocusCamera => self.session.focus_camera = true,
+            Action::ApplyParticlePreset { layer, preset } => {
+                match super::particle_presets::apply_particle_preset(self.project, layer, preset) {
+                    Ok(added) => {
+                        self.session.select(layer);
+                        self.session.revalidate();
+                        let more = if added > 0 { format!(" (+{} layer)", added) } else { String::new() };
+                        self.status(format!("Preset {}{}", preset.label(), more));
+                    }
+                    Err(e) => self.status(format!("Preset {} not applied: {}", preset.label(), e)),
+                }
+            }
             Action::AddParticlesLayer => {
                 let names: Vec<String> = self.project.layers.iter().map(|l| l.name().to_string()).collect();
                 let layer = new_particles_layer(&mut self.project.assets, &names);
@@ -465,14 +479,28 @@ impl ActionContext<'_> {
                     continue;
                 }
             };
-            match library::add_texture_asset(self.project, &imported.path, library::guess_purpose(&name), None) {
-                Ok((id, _)) => {
-                    let how = match imported.kind {
-                        ImportKind::Copied => format!("copied to {}", imported.path),
-                        ImportKind::Reused => format!("same file as {}", imported.path),
-                        ImportKind::InPlace => format!("used in place: {}", imported.path),
-                    };
-                    done.push(format!("\"{}\" ({})", id, how));
+            let how = match imported.kind {
+                ImportKind::Copied => format!("copied to {}", imported.path),
+                ImportKind::Reused => format!("same file as {}", imported.path),
+                ImportKind::InPlace => format!("used in place: {}", imported.path),
+            };
+            let added = if crate::model_info::is_model_file(&file) {
+                // A model: its first mesh suitable for mesh particles; the
+                // ASSETS tab picks another one.
+                crate::model_info::ModelInfo::cached(&root.join(&imported.path)).and_then(|info| {
+                    let meshes = info.primitives().count();
+                    library::add_mesh_asset(self.project, &imported.path, &info, None, None).map(|(id, added)| {
+                        let more = if meshes > 1 { format!(", {} meshes in the file: pick one in ASSETS", meshes) } else { String::new() };
+                        (id, added, more)
+                    })
+                })
+            } else {
+                library::add_texture_asset(self.project, &imported.path, library::guess_purpose(&name), None)
+                    .map(|(id, added)| (id, added, String::new()))
+            };
+            match added {
+                Ok((id, _, more)) => {
+                    done.push(format!("\"{}\" ({}{})", id, how, more));
                     last = Some(id);
                 }
                 Err(e) => skipped.push(e),
