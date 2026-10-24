@@ -15,6 +15,7 @@ use super::instance::{VfxInstance, VfxLayerState, VfxState};
 use super::package::VfxPackage;
 use super::params::VfxWarnOnce;
 use super::afterimage::AfterimageLayerState;
+use super::distortion::DistortionLayerState;
 use super::light::LightLayerState;
 use super::shape::ShapeLayerState;
 use super::trail::TrailLayerState;
@@ -84,8 +85,8 @@ impl TriggerArgs {
 /// Applies the triggers fired since the last frame on running instances:
 /// pulses start, `OnTrigger` layers get a burst queued (played by
 /// [`drive_layer_spawners`] once their spawner exists), `Between` layers are
-/// held on / let go, `OnTrigger` shape and light layers start over (with the
-/// payload position), `Between` shapes and lights switch, trail and
+/// held on / let go, `OnTrigger` shape, light and distortion layers start
+/// over (with the payload position), `Between` ones switch, trail and
 /// afterimage layers start or stop emitting. Triggers wait while
 /// the instance is starting (so `spawn_vfx` + `trigger_at` in one frame
 /// works) and are dropped while it stops.
@@ -98,6 +99,7 @@ pub(crate) fn apply_triggers(
     mut trails: Query<&mut TrailLayerState>,
     mut afterimages: Query<&mut AfterimageLayerState>,
     mut lights: Query<&mut LightLayerState>,
+    mut distortions: Query<&mut DistortionLayerState>,
 ) {
     for mut instance in instances.iter_mut() {
         if instance.triggers.is_empty() {
@@ -166,6 +168,18 @@ pub(crate) fn apply_triggers(
                     continue;
                 }
                 if let Ok(mut state) = lights.get_mut(entity) {
+                    match play {
+                        PlayDef::OnTrigger(_) => state.pending_trigger = Some(args),
+                        _ => state.pending_switches.push(name.clone()),
+                    }
+                }
+            }
+            for (index, &entity) in instance.distortions.iter().enumerate() {
+                let Some(play) = package.distortion_layers.get(index).map(|l| &l.def.play) else { continue };
+                if !play.triggers().contains(&name.as_str()) {
+                    continue;
+                }
+                if let Ok(mut state) = distortions.get_mut(entity) {
                     match play {
                         PlayDef::OnTrigger(_) => state.pending_trigger = Some(args),
                         _ => state.pending_switches.push(name.clone()),

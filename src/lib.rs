@@ -22,7 +22,7 @@ pub mod runtime;
 
 pub use format::ParamValue;
 pub use runtime::{
-    TriggerArgs, VfxCommandsExt, VfxControl, VfxFinished, VfxInstance, VfxPackage, VfxSeparateModel, VfxSettings,
+    distortion_camera, TriggerArgs, VfxCommandsExt, VfxControl, VfxFinished, VfxInstance, VfxPackage, VfxSeparateModel, VfxSettings,
     VfxSpawn, VfxState,
 };
 
